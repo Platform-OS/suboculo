@@ -1,0 +1,120 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://suboculo.local/cep-schema.json",
+  "title": "Common Event Protocol (CEP)",
+  "description": "Universal event schema for agent action monitoring across different runners",
+  "type": "object",
+  "required": ["ts", "event", "runner"],
+  "properties": {
+    "ts": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of when the event occurred"
+    },
+    "event": {
+      "type": "string",
+      "enum": [
+        "session.start",
+        "session.end",
+        "session.update",
+        "tool.start",
+        "tool.end",
+        "message",
+        "error",
+        "subagent.spawn",
+        "custom"
+      ],
+      "description": "Type of event"
+    },
+    "runner": {
+      "type": "string",
+      "description": "Name of the agent runner that generated this event",
+      "examples": ["opencode", "claude-code", "aider", "custom"]
+    },
+    "sessionId": {
+      "type": "string",
+      "description": "Unique identifier for the current session"
+    },
+    "parentSessionId": {
+      "type": ["string", "null"],
+      "description": "Parent session ID if this is a subagent session"
+    },
+    "traceId": {
+      "type": "string",
+      "description": "Unique identifier for tracing related events (e.g., tool.start and tool.end pairs)"
+    },
+    "data": {
+      "type": "object",
+      "description": "Event-specific data payload",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Session title (for session events)"
+        },
+        "directory": {
+          "type": "string",
+          "description": "Working directory (for session.start)"
+        },
+        "reason": {
+          "type": "string",
+          "description": "Reason for session end (for session.end)"
+        },
+        "tool": {
+          "type": "string",
+          "description": "Tool name (for tool events)"
+        },
+        "args": {
+          "type": "object",
+          "description": "Tool arguments (for tool events)"
+        },
+        "durationMs": {
+          "type": "number",
+          "description": "Duration in milliseconds (for tool.end)"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["success", "error", "timeout", "cancelled"],
+          "description": "Tool execution status (for tool.end)"
+        },
+        "outputLen": {
+          "type": "number",
+          "description": "Length of tool output (for tool.end)"
+        },
+        "outputPreview": {
+          "type": ["string", "null"],
+          "description": "Preview of tool output (for tool.end)"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["user", "assistant", "system"],
+          "description": "Message role (for message events)"
+        },
+        "contentPreview": {
+          "type": "string",
+          "description": "Preview of message content (for message events)"
+        },
+        "message": {
+          "type": "string",
+          "description": "Error message (for error events)"
+        },
+        "code": {
+          "type": "string",
+          "description": "Error code (for error events)"
+        },
+        "childSessionId": {
+          "type": "string",
+          "description": "ID of spawned subagent session (for subagent.spawn)"
+        },
+        "subagentType": {
+          "type": "string",
+          "description": "Type of subagent (for subagent.spawn)"
+        }
+      }
+    },
+    "meta": {
+      "type": "object",
+      "description": "Additional metadata (runner-specific, optional)",
+      "additionalProperties": true
+    }
+  }
+}

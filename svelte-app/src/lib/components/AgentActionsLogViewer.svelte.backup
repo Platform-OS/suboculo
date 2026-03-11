@@ -1,0 +1,823 @@
+<script>
+  import { onMount } from "svelte";
+  import Card from "./ui/Card.svelte";
+  import CardContent from "./ui/CardContent.svelte";
+  import Button from "./ui/Button.svelte";
+  import Input from "./ui/Input.svelte";
+  import Label from "./ui/Label.svelte";
+  import Select from "./ui/Select.svelte";
+  import Badge from "./ui/Badge.svelte";
+  import Separator from "./ui/Separator.svelte";
+  import Tabs from "./ui/Tabs.svelte";
+  import TabsList from "./ui/TabsList.svelte";
+  import TabsTrigger from "./ui/TabsTrigger.svelte";
+  import TabsContent from "./ui/TabsContent.svelte";
+  import Textarea from "./ui/Textarea.svelte";
+  import { Search, Upload, Download, Tag, X, ArrowUpDown, Trash2 } from "lucide-svelte";
+
+  // State
+  let fileInput;
+  let rawName = "(no file)";
+  let entries = [];
+  let parseErrors = 0;
+
+  let tagsByKey = {};
+  let notesByKey = {};
+
+  // Filters
+  let query = "";
+  let kind = "all";
+  let type = "all";
+  let tool = "all";
+  let subagent = "all";
+  let rootSession = "all";
+  let tagFilter = "all";
+
+  // Sorting
+  let sortKey = "ts";
+  let sortDir = "desc";
+
+  // Selection
+  let selectedKey = null;
+
+  // Pagination
+  let pageSize = 100;
+  let page = 1;
+
+  // Load tags from localStorage on mount
+  onMount(() => {
+    loadTagStore();
+  });
+
+  // Save tags whenever they change
+  $: if (tagsByKey || notesByKey) {
+    saveTagStore();
+  }
+
+  function loadTagStore() {
+    try {
+      const raw = localStorage.getItem("agentActions.tags.v1");
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      tagsByKey = parsed?.tagsByKey || {};
+      notesByKey = parsed?.notesByKey || {};
+    } catch {
+      tagsByKey = {};
+      notesByKey = {};
+    }
+  }
+
+  function saveTagStore() {
+    localStorage.setItem(
+      "agentActions.tags.v1",
+      JSON.stringify({ tagsByKey, notesByKey })
+    );
+  }
+
+  function safeJsonParse(line) {
+    try {
+      return JSON.parse(line);
+    } catch {
+      return null;
+    }
+  }
+
+  function normalizeEntry(e, idx) {
+    // Create a unique key by combining callID/callId with kind and timestamp
+    // This ensures tool.before and tool.after events don't have duplicate keys
+    const callId = e?.callID || e?.callId;
+    const key = callId && e?.kind && e?.ts
+      ? `${callId}::${e.kind}::${e.ts}`
+      : callId && e?.kind
+      ? `${callId}::${e.kind}::${idx}`
+      : e?.sessionID && e?.ts
+      ? `${e.sessionID}::${e.ts}::${idx}`
+      : `idx::${idx}`;
+    return { ...e, __key: key, __idx: idx };
+  }
+
+  function uniq(arr) {
+    return Array.from(new Set(arr.filter(Boolean)));
+  }
+
+  function formatTs(ts) {
+    if (!ts) return "";
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return String(ts);
+    return d.toLocaleString();
+  }
+
+  function clamp(n, min, max) {
+    return Math.max(min, Math.min(max, n));
+  }
+
+  function onUploadFile(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    rawName = file.name;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = String(reader.result || "");
+      const lines = text.split(/\r?\n/);
+      let err = 0;
+      const parsed = [];
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        const obj = safeJsonParse(line);
+        if (!obj) {
+          err++;
+          continue;
+        }
+        parsed.push(normalizeEntry(obj, parsed.length));
+      }
+      entries = parsed;
+      parseErrors = err;
+      selectedKey = null;
+      page = 1;
+    };
+    reader.readAsText(file);
+  }
+
+  function addTag(key, tag) {
+    const clean = tag.trim();
+    if (!clean) return;
+    const existing = tagsByKey[key] || [];
+    if (existing.includes(clean)) return;
+    tagsByKey = {
+      ...tagsByKey,
+      [key]: [...existing, clean].sort(),
+    };
+  }
+
+  function removeTag(key, tag) {
+    const existing = tagsByKey[key] || [];
+    const nextTags = existing.filter((t) => t !== tag);
+    tagsByKey = {
+      ...tagsByKey,
+      [key]: nextTags,
+    };
+  }
+
+  function setNote(key, note) {
+    notesByKey = {
+      ...notesByKey,
+      [key]: note,
+    };
+  }
+
+  function clearAllTags() {
+    tagsByKey = {};
+    notesByKey = {};
+  }
+
+  function exportTags() {
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      file: rawName,
+      tagsByKey,
+      notesByKey,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "agent-actions-tags.json";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function importTags(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const obj = JSON.parse(String(reader.result || "{}"));
+        tagsByKey = obj?.tagsByKey || {};
+        notesByKey = obj?.notesByKey || {};
+      } catch {
+        // ignore
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  // sessionID -> last known title (from kind=="session.event")
+  $: sessionTitleById = (() => {
+    const m = {};
+    for (const e of entries) {
+      if (e?.kind === "session.event" && e?.sessionID && e?.title) {
+        m[e.sessionID] = e.title;
+      }
+    }
+    return m;
+  })();
+
+  function extractHandleFromTitle(title) {
+    if (!title) return null;
+    // Matches: ".... (@platformos-qa subagent)" -> platformos-qa
+    const m = String(title).match(/\(@([^\s)]+)\s+subagent\)/i);
+    return m ? m[1] : null;
+  }
+
+  function isActionRow(e) {
+    // rows where "who did it" is meaningful in the table
+    return (
+      e?.kind === "tool.after" ||
+      e?.kind === "tool.before" ||
+      e?.kind === "task.spawn" ||
+      e?.kind === "message.toolpart"
+    );
+  }
+
+  function subagentLabel(e) {
+    // For non-action rows (session events etc.), don't show subagent at all.
+    if (!isActionRow(e)) return "—";
+
+    // If it's a real string, use it
+    if (typeof e?.subagentType === "string" && e.subagentType.trim() !== "") {
+      return e.subagentType.trim();
+    }
+
+    // Otherwise try session title → extract @handle
+    const title = e?.sessionID ? sessionTitleById[e.sessionID] : null;
+    const handle = extractHandleFromTitle(title);
+    if (handle) return handle;
+
+    // If we have a title but no handle, don't spam the table with long titles.
+    // Show a short indicator instead.
+    if (title) return "unknown (titled)";
+
+    return "unknown";
+  }
+
+  // Computed values
+  $: facets = (() => {
+    const kinds = uniq(entries.map((e) => e.kind));
+    const types = uniq(entries.map((e) => e.type));
+    const tools = uniq(entries.map((e) => e.tool));
+    const subagents = uniq(entries.filter(isActionRow).map((e) => subagentLabel(e)));
+    const roots = uniq(entries.map((e) => e.rootSessionID));
+    const allTags = uniq(
+      Object.values(tagsByKey).flatMap((t) => (Array.isArray(t) ? t : []))
+    ).sort((a, b) => a.localeCompare(b));
+
+    return {
+      kinds: kinds.sort((a, b) => a.localeCompare(b)),
+      types: types.sort((a, b) => a.localeCompare(b)),
+      tools: tools.sort((a, b) => a.localeCompare(b)),
+      subagents: subagents.sort((a, b) => a.localeCompare(b)),
+      roots,
+      allTags,
+    };
+  })();
+
+  $: selected = selectedKey
+    ? entries.find((e) => e.__key === selectedKey) || null
+    : null;
+
+  $: selectedTags = selectedKey ? tagsByKey[selectedKey] || [] : [];
+
+  $: filtered = (() => {
+    const q = query.trim().toLowerCase();
+
+    const hasQ = (e) => {
+      if (!q) return true;
+      const hay = [
+        e.kind,
+        e.tool,
+        e.sessionID,
+        e.rootSessionID,
+        e.subagentType,
+        e.callID,
+        e.callId,
+        e.type,
+        e.title,
+        e.parentSessionID,
+        e.childSessionID,
+        e.outputPreview,
+      ]
+        .filter(Boolean)
+        .join(" | ")
+        .toLowerCase();
+      if (hay.includes(q)) return true;
+      try {
+        if (e.args && JSON.stringify(e.args).toLowerCase().includes(q)) return true;
+      } catch {}
+      const t = tagsByKey[e.__key] || [];
+      if (t.join(" ").toLowerCase().includes(q)) return true;
+      const n = notesByKey[e.__key] || "";
+      if (String(n).toLowerCase().includes(q)) return true;
+      return false;
+    };
+
+    const hasTagFilter = (e) => {
+      if (tagFilter === "all") return true;
+      const t = tagsByKey[e.__key] || [];
+      return t.includes(tagFilter);
+    };
+
+    const out = entries
+      .filter((e) => (kind === "all" ? true : e.kind === kind))
+      .filter((e) => (type === "all" ? true : e.type === type))
+      .filter((e) => (tool === "all" ? true : e.tool === tool))
+      .filter((e) => {
+        if (subagent === "all") return true;
+        if (!isActionRow(e)) return true; // don't exclude session rows
+        return subagentLabel(e) === subagent;
+      })
+      .filter((e) => (rootSession === "all" ? true : (e.rootSessionID || "") === rootSession))
+      .filter(hasTagFilter)
+      .filter(hasQ);
+
+    const dir = sortDir === "asc" ? 1 : -1;
+    const cmp = (a, b) => {
+      const va = a?.[sortKey];
+      const vb = b?.[sortKey];
+
+      if (sortKey === "ts") {
+        const da = new Date(a.ts).getTime();
+        const db = new Date(b.ts).getTime();
+        return (da - db) * dir;
+      }
+
+      if (typeof va === "number" && typeof vb === "number") return (va - vb) * dir;
+      return String(va ?? "").localeCompare(String(vb ?? "")) * dir;
+    };
+
+    out.sort(cmp);
+    return out;
+  })();
+
+  $: totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+
+  $: if (totalPages) {
+    page = clamp(page, 1, totalPages);
+  }
+
+  $: pageItems = (() => {
+    const start = (page - 1) * pageSize;
+    return filtered.slice(start, start + pageSize);
+  })();
+
+  $: stats = (() => {
+    const toolAfter = entries.filter((e) => e.kind === "tool.after");
+    const avgDur = (() => {
+      const d = toolAfter.map((e) => e.durationMs).filter((x) => typeof x === "number");
+      if (!d.length) return null;
+      return Math.round(d.reduce((a, b) => a + b, 0) / d.length);
+    })();
+    return {
+      total: entries.length,
+      filtered: filtered.length,
+      parseErrors,
+      avgDur,
+    };
+  })();
+
+  // Select options
+  $: kindOptions = [
+    { value: "all", label: "All" },
+    ...facets.kinds.map((k) => ({ value: k, label: k })),
+  ];
+
+  $: typeOptions = [
+    { value: "all", label: "All" },
+    ...facets.types.map((t) => ({ value: t, label: t })),
+  ];
+
+  $: toolOptions = [
+    { value: "all", label: "All" },
+    ...facets.tools.map((t) => ({ value: t, label: t })),
+  ];
+
+  $: subagentOptions = [
+    { value: "all", label: "All" },
+    ...facets.subagents.map((s) => ({ value: s, label: s })),
+  ];
+
+  $: rootSessionOptions = [
+    { value: "all", label: "All" },
+    ...facets.roots.map((r) => ({ value: r, label: r })),
+  ];
+
+  $: tagFilterOptions = [
+    { value: "all", label: "All" },
+    ...facets.allTags.map((t) => ({ value: t, label: t })),
+  ];
+
+  $: sortKeyOptions = [
+    { value: "ts", label: "Timestamp" },
+    { value: "durationMs", label: "Duration" },
+    { value: "tool", label: "Tool" },
+    { value: "kind", label: "Kind" },
+  ];
+
+  $: pageSizeOptions = [50, 100, 200, 500, 1000].map((n) => ({
+    value: String(n),
+    label: String(n),
+  }));
+
+  let newTag = "";
+  let importTagsInput;
+  let activeTab = "tags";
+</script>
+
+<div class="min-h-screen bg-background text-foreground p-4 md:p-6">
+  <div class="max-w-[1800px] mx-auto space-y-4">
+    <!-- Header -->
+    <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+      <div>
+        <div class="text-xl md:text-2xl font-semibold">Agent Actions Log Viewer</div>
+        <div class="text-sm text-muted-foreground">
+          Upload <code>agent-actions.jsonl</code>, then filter/sort and tag entries. Tags are stored
+          in your browser.
+        </div>
+      </div>
+
+      <div class="flex flex-wrap gap-2 items-center">
+        <input
+          bind:this={fileInput}
+          type="file"
+          accept=".jsonl,.txt,application/json"
+          class="hidden"
+          on:change={onUploadFile}
+        />
+        <Button on:click={() => fileInput?.click()} class="gap-2">
+          <Upload class="w-4 h-4" /> Upload JSONL
+        </Button>
+
+        <Button variant="secondary" on:click={exportTags} class="gap-2">
+          <Download class="w-4 h-4" /> Export tags
+        </Button>
+
+        <input
+          bind:this={importTagsInput}
+          type="file"
+          accept=".json,application/json"
+          class="hidden"
+          on:change={importTags}
+        />
+        <Button variant="secondary" on:click={() => importTagsInput?.click()} class="gap-2">
+          <Upload class="w-4 h-4" /> Import tags
+        </Button>
+
+        <Button variant="destructive" on:click={clearAllTags} class="gap-2">
+          <Trash2 class="w-4 h-4" /> Clear tags
+        </Button>
+      </div>
+    </div>
+
+    <!-- Filters Card -->
+    <Card class="rounded-2xl shadow-sm">
+      <CardContent class="p-4 md:p-5 space-y-4">
+        <div class="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+          <div class="space-y-1">
+            <div class="text-sm font-medium">Loaded file</div>
+            <div class="text-sm text-muted-foreground">{rawName}</div>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <Badge variant="secondary">Total: {stats.total}</Badge>
+            <Badge variant="secondary">Filtered: {stats.filtered}</Badge>
+            {#if stats.parseErrors}
+              <Badge variant="destructive">Parse errors: {stats.parseErrors}</Badge>
+            {/if}
+            {#if stats.avgDur != null}
+              <Badge variant="secondary">Avg duration: {stats.avgDur}ms</Badge>
+            {/if}
+          </div>
+        </div>
+
+        <Separator />
+
+        <div class="grid grid-cols-1 md:grid-cols-12 gap-3">
+          <div class="md:col-span-3 space-y-1">
+            <Label>Search</Label>
+            <div class="relative">
+              <Search class="w-4 h-4 absolute left-3 top-2.5 text-muted-foreground" />
+              <Input
+                bind:value={query}
+                placeholder="Search tool, kind, session, callID, tags, notes..."
+                class="pl-9"
+              />
+            </div>
+          </div>
+
+          <div class="md:col-span-2 space-y-1">
+            <Label>Kind</Label>
+            <Select bind:value={kind} options={kindOptions} />
+          </div>
+
+          <div class="md:col-span-2 space-y-1">
+            <Label>Type</Label>
+            <Select bind:value={type} options={typeOptions} />
+          </div>
+
+          <div class="md:col-span-2 space-y-1">
+            <Label>Tool</Label>
+            <Select bind:value={tool} options={toolOptions} />
+          </div>
+
+          <div class="md:col-span-2 space-y-1">
+            <Label>Subagent</Label>
+            <Select bind:value={subagent} options={subagentOptions} />
+          </div>
+
+          <div class="md:col-span-1 space-y-1">
+            <Label>Tag</Label>
+            <Select bind:value={tagFilter} options={tagFilterOptions} />
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-12 gap-3">
+          <div class="md:col-span-4 space-y-1">
+            <Label>Root session</Label>
+            <Select bind:value={rootSession} options={rootSessionOptions} />
+          </div>
+
+          <div class="md:col-span-4 space-y-1">
+            <Label>Sort</Label>
+            <div class="flex gap-2">
+              <Select bind:value={sortKey} options={sortKeyOptions} />
+              <Button
+                variant="secondary"
+                on:click={() => (sortDir = sortDir === "asc" ? "desc" : "asc")}
+                class="gap-2"
+                title="Toggle sort direction"
+              >
+                <ArrowUpDown class="w-4 h-4" />
+                {sortDir.toUpperCase()}
+              </Button>
+            </div>
+          </div>
+
+          <div class="md:col-span-4 space-y-1">
+            <Label>Page size</Label>
+            <Select
+              value={String(pageSize)}
+              options={pageSizeOptions}
+              on:change={(e) => (pageSize = Number(e.target.value))}
+            />
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+
+    <!-- Main Content -->
+    <div class="grid grid-cols-1 xl:grid-cols-[1fr_500px] gap-4">
+      <!-- Entries List -->
+      <Card class="rounded-2xl shadow-sm">
+        <CardContent class="p-0">
+          <div class="flex items-center justify-between p-4 bg-muted/5">
+            <div class="text-base font-semibold">Entries</div>
+            <div class="text-sm text-muted-foreground font-medium">
+              Page <span class="text-foreground">{page}</span> / <span class="text-foreground">{totalPages}</span>
+            </div>
+          </div>
+          <Separator />
+
+          <div class="max-h-[70vh] overflow-auto">
+            <table class="w-full text-sm">
+              <thead class="sticky top-0 bg-background z-10 border-b-2">
+                <tr class="text-left">
+                  <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Time</th>
+                  <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Kind</th>
+                  <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Type</th>
+                  <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Tool</th>
+                  <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Subagent</th>
+                  <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Duration</th>
+                  <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Tags</th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each pageItems as e, idx (e.__key)}
+                  {@const key = e.__key}
+                  {@const isSel = selectedKey === key}
+                  {@const tags = tagsByKey[key] || []}
+                  {@const dur = typeof e.durationMs === "number" ? `${e.durationMs}ms` : ""}
+                  <tr
+                    class="group cursor-pointer transition-all duration-150 {isSel
+                      ? 'bg-blue-50 border-l-4 border-l-blue-500'
+                      : idx % 2 === 0 ? 'bg-background hover:bg-muted/30' : 'bg-muted/10 hover:bg-muted/40'}"
+                    on:click={() => (selectedKey = key)}
+                  >
+                    <td class="px-4 py-3 whitespace-nowrap text-xs">{formatTs(e.ts)}</td>
+                    <td class="px-4 py-3">
+                      <Badge variant="secondary" class="rounded-full text-xs font-medium">
+                        {e.kind || ""}
+                      </Badge>
+                    </td>
+                    <td class="px-4 py-3 text-xs text-muted-foreground">{e.type || "—"}</td>
+                    <td class="px-4 py-3 font-mono text-xs font-semibold">{e.tool || ""}</td>
+                    <td class="px-4 py-3 text-xs">{subagentLabel(e)}</td>
+                    <td class="px-4 py-3 text-xs font-medium {typeof e.durationMs === 'number' && e.durationMs > 1000 ? 'text-orange-600' : ''}">{dur}</td>
+                    <td class="px-4 py-3">
+                      <div class="flex flex-wrap gap-1">
+                        {#each tags.slice(0, 3) as t}
+                          <Badge variant="outline" class="rounded-full">
+                            {t}
+                          </Badge>
+                        {/each}
+                        {#if tags.length > 3}
+                          <Badge variant="outline" class="rounded-full">
+                            +{tags.length - 3}
+                          </Badge>
+                        {/if}
+                      </div>
+                    </td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+
+          <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3 p-4 border-t bg-muted/5">
+            <div class="text-sm text-muted-foreground font-medium">
+              Showing <span class="text-foreground">{(page - 1) * pageSize + 1}–{Math.min(page * pageSize, filtered.length)}</span> of <span class="text-foreground">{filtered.length}</span>
+            </div>
+            <div class="flex gap-2">
+              <Button variant="outline" on:click={() => (page = 1)} disabled={page === 1} class="font-medium">
+                First
+              </Button>
+              <Button
+                variant="outline"
+                on:click={() => (page = Math.max(1, page - 1))}
+                disabled={page === 1}
+                class="font-medium"
+              >
+                ← Prev
+              </Button>
+              <Button
+                variant="outline"
+                on:click={() => (page = Math.min(totalPages, page + 1))}
+                disabled={page === totalPages}
+                class="font-medium"
+              >
+                Next →
+              </Button>
+              <Button
+                variant="outline"
+                on:click={() => (page = totalPages)}
+                disabled={page === totalPages}
+                class="font-medium"
+              >
+                Last
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <!-- Details Panel -->
+      <Card class="rounded-2xl shadow-sm">
+        <CardContent class="p-4 space-y-4">
+          <div class="flex items-start justify-between gap-2 pb-2">
+            <div>
+              <div class="text-base font-semibold">Details</div>
+              <div class="text-xs text-muted-foreground break-all font-mono mt-1">
+                {selected ? selected.__key : "Select an entry"}
+              </div>
+            </div>
+            {#if selected}
+              <Button variant="ghost" on:click={() => (selectedKey = null)} class="h-8 w-8 p-0">
+                <X class="w-4 h-4" />
+              </Button>
+            {/if}
+          </div>
+
+          {#if selected}
+            <div class="space-y-2">
+              <div class="flex flex-wrap gap-2">
+                <Badge variant="secondary" class="rounded-full">{selected.kind}</Badge>
+                {#if selected.tool}
+                  <Badge variant="outline" class="rounded-full font-mono text-xs"
+                    >{selected.tool}</Badge
+                  >
+                {/if}
+                {#if selected.subagentType}
+                  <Badge variant="outline" class="rounded-full">{selected.subagentType}</Badge>
+                {:else}
+                  <Badge variant="outline" class="rounded-full">lead</Badge>
+                {/if}
+              </div>
+
+              <div class="text-xs text-muted-foreground space-y-1">
+                {#if selected.ts}
+                  <div><span class="font-medium">Time:</span> {formatTs(selected.ts)}</div>
+                {/if}
+                {#if selected.sessionID}
+                  <div class="break-all">
+                    <span class="font-medium">Session:</span>
+                    {selected.sessionID}
+                  </div>
+                {/if}
+                {#if selected.rootSessionID}
+                  <div class="break-all">
+                    <span class="font-medium">Root:</span>
+                    {selected.rootSessionID}
+                  </div>
+                {/if}
+                {#if selected.callID}
+                  <div class="break-all">
+                    <span class="font-medium">Call:</span>
+                    {selected.callID}
+                  </div>
+                {/if}
+                {#if typeof selected.durationMs === "number"}
+                  <div><span class="font-medium">Duration:</span> {selected.durationMs}ms</div>
+                {/if}
+              </div>
+            </div>
+
+            <Separator />
+
+            <Tabs value={activeTab}>
+              <TabsList class="w-full">
+                <TabsTrigger value="tags" class="flex-1">Tags</TabsTrigger>
+                <TabsTrigger value="notes" class="flex-1">Notes</TabsTrigger>
+                <TabsTrigger value="json" class="flex-1">JSON</TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="tags" class="space-y-3">
+                <div class="flex gap-2">
+                  <Input
+                    bind:value={newTag}
+                    placeholder="Add tag (e.g. bug, perf, secret, flaky)"
+                    on:keydown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        addTag(selected.__key, newTag);
+                        newTag = "";
+                      }
+                    }}
+                  />
+                  <Button
+                    on:click={() => {
+                      addTag(selected.__key, newTag);
+                      newTag = "";
+                    }}
+                    class="gap-2"
+                  >
+                    <Tag class="w-4 h-4" /> Add
+                  </Button>
+                </div>
+
+                <div class="flex flex-wrap gap-2">
+                  {#if selectedTags.length}
+                    {#each selectedTags as t}
+                      <Badge variant="outline" class="rounded-full flex items-center gap-2">
+                        {t}
+                        <button
+                          class="text-muted-foreground hover:text-foreground"
+                          on:click={(e) => {
+                            e.stopPropagation();
+                            removeTag(selected.__key, t);
+                          }}
+                          title="Remove tag"
+                        >
+                          <X class="w-3 h-3" />
+                        </button>
+                      </Badge>
+                    {/each}
+                  {:else}
+                    <div class="text-sm text-muted-foreground">No tags yet.</div>
+                  {/if}
+                </div>
+              </TabsContent>
+
+              <TabsContent value="notes" class="space-y-2">
+                <Label>Notes</Label>
+                <Textarea
+                  value={notesByKey[selected.__key] || ""}
+                  on:input={(e) => setNote(selected.__key, e.target.value)}
+                  placeholder="Write a short note about this entry..."
+                  class="min-h-[160px]"
+                />
+                <div class="text-xs text-muted-foreground">
+                  Notes are stored locally in your browser.
+                </div>
+              </TabsContent>
+
+              <TabsContent value="json" class="space-y-2">
+                <Label>Raw entry</Label>
+                <pre
+                  class="text-xs bg-muted/30 rounded-xl p-4 overflow-auto max-h-[75vh] whitespace-pre-wrap break-words font-mono leading-relaxed">{JSON.stringify(
+                    selected,
+                    null,
+                    2
+                  )}</pre>
+              </TabsContent>
+            </Tabs>
+          {:else}
+            <div class="text-sm text-muted-foreground">
+              Upload a JSONL file and click an entry to see details.
+            </div>
+          {/if}
+        </CardContent>
+      </Card>
+    </div>
+  </div>
+</div>

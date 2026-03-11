@@ -1,0 +1,19 @@
+{
+  "name": "suboculo",
+  "version": "0.1.0",
+  "description": "Real-time monitoring and analytics for AI coding agents",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/your-org/suboculo.git"
+  },
+  "keywords": [
+    "ai-agents",
+    "monitoring",
+    "telemetry",
+    "claude-code",
+    "agent-analytics"
+  ],
+  "author": "",
+  "license": "MIT",
+  "private": true
+}

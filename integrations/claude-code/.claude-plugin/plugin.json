@@ -1,0 +1,11 @@
+{
+  "name": "suboculo-claude-code",
+  "description": "Suboculo integration for Claude Code - real-time monitoring of tool usage, agent spawns, and session events",
+  "version": "0.1.0",
+  "author": {
+    "name": ""
+  },
+  "homepage": "https://github.com/your-org/suboculo",
+  "repository": "https://github.com/your-org/suboculo",
+  "license": "MIT"
+}

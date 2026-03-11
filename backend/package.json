@@ -1,0 +1,19 @@
+{
+  "name": "@suboculo/backend",
+  "version": "0.1.0",
+  "description": "Suboculo backend - AI agent monitoring server",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": ["suboculo", "ai-agents", "monitoring"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^12.6.2",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "multer": "^2.1.1"
+  }
+}

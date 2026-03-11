@@ -1,0 +1,7 @@
+{"ts":"2026-03-05T13:00:00.000Z","event":"session.start","runner":"claude-code","sessionId":"ses_xyz789","parentSessionId":null,"data":{"title":"Debug authentication flow","directory":"/home/user/auth-service"}}
+{"ts":"2026-03-05T13:00:02.000Z","event":"tool.start","runner":"claude-code","sessionId":"ses_xyz789","traceId":"tool_grep_1","data":{"tool":"grep","args":{"pattern":"authenticate","path":"src/"}}}
+{"ts":"2026-03-05T13:00:02.234Z","event":"tool.end","runner":"claude-code","sessionId":"ses_xyz789","traceId":"tool_grep_1","data":{"tool":"grep","args":{"pattern":"authenticate","path":"src/"},"durationMs":234,"status":"success","outputLen":512,"outputPreview":"src/auth.js:15: function authenticate(user) {\nsrc/auth.js:42: ..."}}
+{"ts":"2026-03-05T13:00:10.000Z","event":"subagent.spawn","runner":"claude-code","sessionId":"ses_xyz789","data":{"childSessionId":"ses_child_001","subagentType":"explorer"}}
+{"ts":"2026-03-05T13:00:10.100Z","event":"tool.start","runner":"claude-code","sessionId":"ses_child_001","parentSessionId":"ses_xyz789","traceId":"tool_read_2","data":{"tool":"read","args":{"filePath":"src/auth.js"}}}
+{"ts":"2026-03-05T13:00:10.156Z","event":"tool.end","runner":"claude-code","sessionId":"ses_child_001","parentSessionId":"ses_xyz789","traceId":"tool_read_2","data":{"tool":"read","args":{"filePath":"src/auth.js"},"durationMs":56,"status":"success","outputLen":2048}}
+{"ts":"2026-03-05T13:05:00.000Z","event":"session.end","runner":"claude-code","sessionId":"ses_xyz789","data":{"title":"Debug authentication flow","reason":"completed"}}

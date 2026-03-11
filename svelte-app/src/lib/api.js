@@ -1,0 +1,249 @@
+const API_BASE = 'http://localhost:3000/api';
+
+export async function uploadFile(file) {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const response = await fetch(`${API_BASE}/upload`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    throw new Error('Upload failed');
+  }
+
+  return response.json();
+}
+
+export async function getEntries(filters) {
+  const params = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== null) {
+      params.append(key, value);
+    }
+  }
+
+  const response = await fetch(`${API_BASE}/entries?${params}`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch entries');
+  }
+
+  return response.json();
+}
+
+export async function getFacets() {
+  const response = await fetch(`${API_BASE}/facets`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch facets');
+  }
+
+  return response.json();
+}
+
+export async function getStats() {
+  const response = await fetch(`${API_BASE}/stats`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch stats');
+  }
+
+  return response.json();
+}
+
+export async function getTags() {
+  const response = await fetch(`${API_BASE}/tags`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch tags');
+  }
+
+  return response.json();
+}
+
+export async function addTag(entryKey, tag) {
+  const response = await fetch(`${API_BASE}/tags`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entryKey, tag, action: 'add' }),
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to add tag');
+  }
+
+  return response.json();
+}
+
+export async function removeTag(entryKey, tag) {
+  const response = await fetch(`${API_BASE}/tags`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entryKey, tag, action: 'remove' }),
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to remove tag');
+  }
+
+  return response.json();
+}
+
+export async function getNotes() {
+  const response = await fetch(`${API_BASE}/notes`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch notes');
+  }
+
+  return response.json();
+}
+
+export async function setNote(entryKey, note) {
+  const response = await fetch(`${API_BASE}/notes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entryKey, note }),
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to set note');
+  }
+
+  return response.json();
+}
+
+export async function exportTags() {
+  const response = await fetch(`${API_BASE}/export`);
+
+  if (!response.ok) {
+    throw new Error('Failed to export');
+  }
+
+  return response.json();
+}
+
+export async function importTags(data) {
+  const response = await fetch(`${API_BASE}/import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to import');
+  }
+
+  return response.json();
+}
+
+/**
+ * Subscribe to real-time event stream via SSE
+ * @param {Function} onMessage - Called when new event arrives
+ * @param {Function} onConnectionChange - Called when connection state changes (connected: boolean)
+ * @returns {Function} - Unsubscribe function
+ */
+export function subscribeToEvents(onMessage, onConnectionChange) {
+  const eventSource = new EventSource(`${API_BASE}/events/stream`);
+
+  eventSource.onopen = () => {
+    console.log('SSE connection opened');
+    if (onConnectionChange) onConnectionChange(true);
+  };
+
+  eventSource.onmessage = (e) => {
+    try {
+      const event = JSON.parse(e.data);
+      onMessage(event);
+    } catch (err) {
+      console.error('Failed to parse SSE event:', err);
+    }
+  };
+
+  eventSource.onerror = (err) => {
+    console.error('SSE connection error:', err);
+    if (onConnectionChange) onConnectionChange(false);
+    // Browser will automatically reconnect
+  };
+
+  // Return unsubscribe function
+  return () => {
+    eventSource.close();
+    if (onConnectionChange) onConnectionChange(false);
+  };
+}
+
+/**
+ * Analyze selected events with LLM (Anthropic API)
+ * @param {Array<string>} keys - Event keys to analyze
+ * @param {Object} options - Analysis options (model, apiKey, prompt)
+ * @returns {Promise<Object>} - Analysis result
+ */
+export async function analyzeEvents(keys, options = {}) {
+  const response = await fetch(`${API_BASE}/analyze`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      keys,
+      model: options.model,
+      apiKey: options.apiKey,
+      prompt: options.prompt
+    })
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Analysis failed');
+  }
+
+  return response.json();
+}
+
+/**
+ * Get all saved analyses
+ * @returns {Promise<Array>} - List of analysis summaries
+ */
+export async function getAnalyses() {
+  const response = await fetch(`${API_BASE}/analyses-history`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch analyses');
+  }
+
+  return response.json();
+}
+
+/**
+ * Get a specific analysis by ID
+ * @param {number} id - Analysis ID
+ * @returns {Promise<Object>} - Full analysis details
+ */
+export async function getAnalysis(id) {
+  const response = await fetch(`${API_BASE}/analyses-history/${id}`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch analysis');
+  }
+
+  return response.json();
+}
+
+/**
+ * Delete an analysis
+ * @param {number} id - Analysis ID
+ * @returns {Promise<Object>} - Success response
+ */
+export async function deleteAnalysis(id) {
+  const response = await fetch(`${API_BASE}/analyses-history/${id}`, {
+    method: 'DELETE'
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to delete analysis');
+  }
+
+  return response.json();
+}
