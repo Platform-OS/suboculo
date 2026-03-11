@@ -1,6 +1,6 @@
-# Agent Actions Log Viewer - Backend
+# Suboculo Backend
 
-Node.js + Express + SQLite backend for handling large log files.
+Node.js + Express + SQLite backend for the Suboculo AI agent monitoring platform.
 
 ## Features
 

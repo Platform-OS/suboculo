@@ -1,6 +1,6 @@
-# Agent Actions Log Viewer
+# Suboculo Viewer
 
-A modern, lightweight Svelte application for viewing and analyzing agent action logs in JSONL format.
+Frontend viewer for the Suboculo AI agent monitoring platform.
 
 ## Features
 
@@ -13,7 +13,7 @@ A modern, lightweight Svelte application for viewing and analyzing agent action 
 - **Pagination** - Handle large log files with configurable page sizes
 - **Export/Import** - Export and import tags and notes as JSON
 - **Light theme** - Clean, modern light theme design
-- **Local storage** - Tags and notes persist in browser localStorage
+- **Database persistence** - Tags and notes are stored in the SQLite backend
 
 ## Tech Stack
 
