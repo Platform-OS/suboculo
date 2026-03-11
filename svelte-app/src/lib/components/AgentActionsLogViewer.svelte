@@ -1,5 +1,6 @@
 <script>
   import { onMount } from "svelte";
+  import { marked } from "marked";
   import * as api from "$lib/api.js";
   import Card from "./ui/Card.svelte";
   import CardContent from "./ui/CardContent.svelte";
@@ -15,6 +16,9 @@
   import TabsContent from "./ui/TabsContent.svelte";
   import Textarea from "./ui/Textarea.svelte";
   import { Search, Upload, Download, Tag, X, ArrowUpDown, Trash2, Sparkles, FileText, Eye } from "lucide-svelte";
+
+  // Markdown rendering
+  marked.setOptions({ breaks: true });
 
   // State
   let fileInput;
@@ -1222,8 +1226,8 @@ ${analysisResult.analysis}
 
                     <div>
                       <div class="text-sm text-muted-foreground mb-2">Analysis</div>
-                      <div class="prose prose-sm max-w-none bg-muted p-4 rounded whitespace-pre-wrap">
-{selectedAnalysis.analysis}
+                      <div class="prose prose-sm max-w-none bg-muted p-4 rounded">
+                        {@html marked(selectedAnalysis.analysis)}
                       </div>
                     </div>
                   </div>
@@ -1342,10 +1346,8 @@ ${analysisResult.analysis}
 
                 <Separator />
 
-                <div class="prose prose-sm max-w-none">
-                  <div class="whitespace-pre-wrap bg-muted/30 rounded-lg p-4 text-sm leading-relaxed">
-                    {analysisResult.analysis}
-                  </div>
+                <div class="prose prose-sm max-w-none bg-muted/30 rounded-lg p-4 text-sm leading-relaxed">
+                  {@html marked(analysisResult.analysis)}
                 </div>
 
                 <div class="flex gap-2">
