@@ -6,222 +6,292 @@ Real-time monitoring and analytics platform for AI coding agents.
 
 ## Architecture
 
+**Per-Project Installation** - Self-contained monitoring for each project
 **Frontend:** Svelte + Vite + Tailwind CSS + shadcn-svelte
 **Backend:** Node.js + Express + SQLite (better-sqlite3)
+**Integration:** Claude Code hooks + MCP analytics server
 
-## Why SQLite Backend?
+## Why Per-Project?
 
-✅ **Handles huge files** - 900MB, 9GB, or larger
-✅ **Fast queries** - Indexed searches return results instantly
-✅ **Low memory usage** - Only loads filtered results
-✅ **Persistent storage** - No re-parsing on reload
-✅ **Real database** - Complex queries, aggregations, full-text search
+✅ **Isolation** - Each project has its own event database
+✅ **Sandboxed environments** - Works in Docker, bubblewrap, etc.
+✅ **Context-specific** - Analyze agent behavior in project context
+✅ **No cross-contamination** - Events stay within project scope
+✅ **Self-contained** - Everything lives in `.suboculo/` directory
 
 ## Quick Start
 
-### 1. Start Backend (Terminal 1)
+### Installation
+
+From this repository:
 
 ```bash
-cd backend
-npm install
-npm start
+./install-suboculo.sh /path/to/your/project
 ```
 
-Backend runs on `http://localhost:3000`
+This installs Suboculo into `your-project/.suboculo/` with:
+- Event capture hooks (writes to SQLite)
+- MCP analytics server (query tools for Claude)
+- Web backend + frontend (visual monitoring)
+- All dependencies
 
-### 2. Start Frontend (Terminal 2)
+### Usage
 
+**1. Restart Claude Code** (to load hooks)
+
+**2. Events are captured automatically** as you work
+
+**3. Query via MCP tools:**
+```
+What tools have I used most?
+Show me events from the last hour
+Analyze my Read vs Edit ratio
+```
+
+**4. Visual monitoring (optional):**
 ```bash
-cd svelte-app
-npm install
-npm run dev
+cd your-project
+node .suboculo/backend/server.js
 ```
-
-Frontend runs on `http://localhost:5173`
-
-### 3. Use the App
-
-1. Open `http://localhost:5173` in your browser
-2. Click **"Upload JSONL"** and select your large log file
-3. Wait for import (progress shown in console)
-4. Filter, search, tag, and analyze!
+Then open http://localhost:3000
 
 ## What It Does
 
-Monitor and analyze AI coding agents in real-time:
+Monitor and analyze AI agent activity in real-time:
 
-- ✅ **Claude Code integration** - Real-time monitoring via plugin ([installation guide](./integrations/claude-code/))
-- ✅ **Real-time streaming** - Server-Sent Events for live session monitoring
-- ✅ **LLM-powered analysis** - Analyze agent behavior patterns with Claude
-- ✅ **Session tracking** - Correlate events across agent sessions
-- ✅ **Persistent storage** - SQLite backend handles unlimited event history
-- ✅ **Rich filtering** - By runner, tool, event type, session, or custom tags
-- ✅ **Analysis history** - Save and review past LLM analyses
-- 🚧 **OpenCode & Codex CLI** - Integrations planned
+- ✅ **Automatic event capture** - All tool usage tracked via hooks
+- ✅ **Real-time streaming** - SSE updates when web UI is running
+- ✅ **Resilient capture** - Events stored even if server is down
+- ✅ **MCP analytics** - Query events via natural language
+- ✅ **LLM-powered analysis** - Analyze agent behavior patterns
+- ✅ **Session tracking** - Correlate events across sessions
+- ✅ **Tool diversity** - Bash, Read, Edit, MCP tools, all captured
+- ✅ **Duration tracking** - Automatic timing for tool execution
 
 ## Features
 
-### Real-time Monitoring
-- Live event streaming via SSE
-- Session start/end tracking
-- Tool execution timing
-- Success/error status monitoring
+### Event Capture
+- Automatic hooks for Claude Code (PreToolUse, PostToolUse, SessionStart)
+- Direct SQLite writes (resilient, works offline)
+- Optional SSE notifications (real-time when server running)
+- Handles all tool types (different response structures)
 
-### Analysis & Insights
-- LLM-powered workflow analysis
-- Custom prompts for specific insights
-- Analysis history with export
-- Event correlation and patterns
+### Analysis & Querying
+- **MCP tools** for CLI queries via Claude
+- **Web UI** for visual filtering and exploration
+- **LLM analysis** with custom prompts
+- **Duration calculation** for performance insights
+- **Session correlation** across multiple agent invocations
 
 ### Data Management
-- SQLite backend for massive datasets
-- Tag and annotate events
-- Full-text search
-- Export/import capabilities
+- Per-project SQLite database (`.suboculo/events.db`)
+- Efficient indexing for fast queries
+- Common Event Protocol (CEP) format
+- Tag and annotate events (via web UI)
 
 ## How It Works
 
+**Event Flow:**
 ```
-User uploads 900MB JSONL
+Claude executes tool
         ↓
-Backend parses line-by-line
+Hook captures event → event-writer.mjs → SQLite (.suboculo/events.db)
+                   ↘ (if server running) → POST /api/notify → SSE clients
         ↓
-Inserts into SQLite with indexes
-        ↓
-Frontend sends filter/search query
-        ↓
-Backend runs SQL query
-        ↓
-Returns only matching results (paginated)
-        ↓
-Frontend displays results
+Frontend updates in real-time (or query via MCP)
 ```
 
-## Performance
+**Dual-Write Architecture:**
+1. **Primary:** Direct write to SQLite (always works)
+2. **Secondary:** HTTP POST to `/api/notify` (triggers SSE if server running)
 
-**Old approach (client-side):**
-- ❌ 900MB file → Browser crashes
-- ❌ All data in memory
-- ❌ Slow filtering
+This ensures events are never lost while enabling real-time updates when monitoring.
 
-**New approach (SQLite):**
-- ✅ 900MB file → Imports in ~30 seconds
-- ✅ ~50MB in memory (only DB connection)
-- ✅ Instant filtering (indexed queries)
+## Installation Details
 
-## API Endpoints
-
-See `backend/README.md` for full API documentation.
-
-## Project Structure
+When you run `install-suboculo.sh`, it creates:
 
 ```
-suboculo/
-├── backend/              # Node.js + Express + SQLite
-│   ├── server.js
-│   ├── adapters/        # Event format processors
-│   └── actions.db       # SQLite database (auto-created)
-├── svelte-app/          # Frontend viewer
-│   └── src/
-│       ├── lib/
-│       │   ├── api.js
-│       │   └── components/
-│       └── App.svelte
-├── integrations/        # Client-side integrations
-│   └── claude-code/    # Claude Code plugin
-│       └── hooks/
-└── docs/               # Documentation
+your-project/
+  .suboculo/
+    integrations/claude-code/
+      event-writer.mjs       # Captures events to DB
+    backend/
+      server.js              # Web server (API + static files)
+      cep-processor.js       # Event validation
+      mcp-analytics-server.mjs  # MCP query server
+    frontend/                # Built web UI
+    package.json
+    node_modules/
+    events.db               # SQLite database (created on first event)
+  .claude/
+    settings.local.json     # Hooks configuration
+  .mcp.json                 # MCP server configuration
+```
+
+See [INSTALL.md](./INSTALL.md) for detailed installation instructions and troubleshooting.
+
+## Use Cases
+
+**Visual filtering + scoped analysis:**
+1. Browse events in web UI
+2. Filter to interesting subset (e.g., errors, specific tools)
+3. Go back to Claude CLI with specific scope for analysis
+4. Save tokens by pre-filtering visually
+
+**Session analysis:**
+```
+What did I do in this session?
+Show me the timeline for session abc123
+Compare my tool usage today vs yesterday
+```
+
+**Performance monitoring:**
+```
+Which tools are slowest?
+Show me events that took > 5 seconds
+Analyze my workflow efficiency
+```
+
+## Project Structure (This Repository)
+
+```
+agent-actions-viewer/
+├── backend/                    # Backend components
+│   ├── server.js              # Express server (API + static serving)
+│   ├── cep-processor.js       # CEP event validation
+│   └── mcp-analytics-server.mjs  # MCP server for queries
+├── svelte-app/                # Frontend
+│   ├── src/
+│   └── dist/                  # Built files (copied on install)
+├── integrations/claude-code/  # Claude Code integration
+│   └── hooks/
+│       ├── event-writer.mjs   # Direct SQLite writer
+│       ├── hooks.json         # Hook definitions (source)
+│       └── package.json       # Dependencies
+├── install-suboculo.sh        # Installation script
+├── INSTALL.md                 # Installation guide
+└── README.md                  # This file
 ```
 
 ## Development
 
-### Backend
+### Working on Suboculo itself
+
+**Backend:**
 ```bash
 cd backend
-npm run dev  # Node.js with auto-reload (add nodemon)
+npm install
+SUBOCULO_DB_PATH=./events.db node server.js
 ```
 
-### Frontend
+**Frontend:**
 ```bash
 cd svelte-app
-npm run dev  # Vite dev server with HMR
+npm install
+npm run dev  # http://localhost:5173
+```
+
+**Build frontend for installation:**
+```bash
+cd svelte-app
+npm run build  # Creates dist/ directory
+```
+
+### Testing in a project
+
+```bash
+# Install in test project
+./install-suboculo.sh /path/to/test/project
+
+# Restart Claude Code in that project
+cd /path/to/test/project
+claude  # (with Suboculo hooks loaded)
 ```
 
 ## Security
 
-Suboculo is designed as a **local-first tool**. By default, everything runs on localhost and never leaves your machine.
+Suboculo is **local-first** by default.
 
-### Default Setup (localhost)
-
-In the default configuration:
-
-- **Backend** listens on `localhost:3000`
-- **Frontend** runs on `localhost:5173`
-- **Integrations** send events to `localhost:3000`
-- **CORS** is permissive — this is intentional for local development
-- **No authentication** is required — your machine, your data
-- **LLM analysis API keys** travel from your browser to your local backend to the Anthropic API — they never touch a third-party server
-
-This is safe for single-user, local use.
-
-### Network / Team Deployment
-
-If you expose Suboculo on a network (e.g., for a team), you **must** add:
-
-1. **HTTPS** — API keys and event data will travel over the network
-2. **Authentication** — without it, anyone who can reach port 3000 can read your data, inject events, or trigger LLM analysis
-3. **CORS restrictions** — lock down `cors()` in `server.js` to your specific origin
-4. **Reverse proxy** — use nginx or similar to terminate TLS and manage access
-
-Suboculo does not currently include built-in authentication. This is a deliberate choice for v0.1 to keep the local setup simple. Network auth support is planned for a future release.
+### Per-Project Setup (Default)
+- Events stored in project's `.suboculo/events.db`
+- Backend runs on `localhost:3000` (per project)
+- MCP server communicates via stdio (local)
+- No network exposure unless you expose the port
+- Data never leaves your machine
 
 ### What Gets Stored
+- **Event data:** tool names, arguments, outputs, session IDs
+- **Timing:** timestamps, durations
+- **Context:** working directory, session metadata
+- **Analysis:** LLM analysis results (if you run analysis)
 
-- **Event data** — tool names, arguments, file paths, command outputs, session IDs
-- **Analysis history** — LLM analysis results and the events they were run against
-- **Tags and notes** — your annotations on events
+All data stays in `.suboculo/events.db`. Add `.suboculo/` to `.gitignore` (done automatically by install script).
 
-All data is stored locally in `backend/actions.db` (SQLite). No data is sent externally unless you explicitly run an LLM analysis, which sends selected events to the Anthropic API using your own API key.
+### Network Deployment (Optional)
+If exposing on a network:
+1. Use HTTPS (TLS termination via reverse proxy)
+2. Add authentication (not built-in yet)
+3. Restrict CORS in server.js
+4. Consider data sensitivity (command outputs may contain secrets)
 
-## Production Build
+## Sandboxed Environments
 
-### Frontend
-```bash
-cd svelte-app
-npm run build
-npm run preview
-```
+Suboculo works in isolated environments:
 
-### Backend
-```bash
-cd backend
-npm start
-```
+- ✅ **Docker containers** - Full stack per container
+- ✅ **Bubblewrap** - Filesystem isolation supported
+- ✅ **Per-user sandboxes** - Each user gets their own instance
 
-For production, consider:
-- Using PM2 or systemd to run backend
-- Serving frontend build with nginx
-- See [Security](#security) section for network deployment requirements
+The per-project architecture means each sandbox gets its own complete Suboculo installation without sharing state.
 
 ## Troubleshooting
 
-### Backend won't start
+### No events appearing
 ```bash
-cd backend
-rm actions.db  # Delete old database
-npm start
+# Check database exists
+ls -la .suboculo/events.db
+
+# Check hooks are installed
+cat .claude/settings.local.json | jq '.hooks'
+
+# Restart Claude Code
 ```
 
-### Frontend can't connect to backend
-- Ensure backend is running on `http://localhost:3000`
-- Check browser console for CORS errors
-- Verify `src/lib/api.js` has correct API_BASE URL
+### Real-time updates not working
+```bash
+# Check backend is running
+lsof -ti:3000
 
-### Upload fails
-- Check file is valid JSONL (one JSON object per line)
-- Check backend console for errors
-- Ensure `backend/uploads/` directory exists
+# Check SSE connection in browser console (should see "SSE connection opened")
+
+# If curl errors in hooks, server may be down - events still captured to DB
+```
+
+### MCP tools not available
+```bash
+# Check MCP configuration
+cat .mcp.json
+
+# Check MCP server file exists
+ls -la .suboculo/backend/mcp-analytics-server.mjs
+
+# Run /mcp command in Claude Code to see server status
+```
+
+### Native module errors
+```bash
+# Rebuild better-sqlite3 for your Node version
+cd .suboculo
+npm rebuild better-sqlite3
+```
+
+See [INSTALL.md](./INSTALL.md) for detailed troubleshooting.
 
 ## License
 
 MIT
+
+---
+
+**Note:** This is v0.1 - per-project architecture. The original centralized design (all projects → one backend) is deprecated in favor of project-specific isolation, especially for sandboxed environments.
