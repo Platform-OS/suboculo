@@ -7,5 +7,14 @@
   },
   "homepage": "https://github.com/your-org/suboculo",
   "repository": "https://github.com/your-org/suboculo",
-  "license": "MIT"
+  "license": "MIT",
+  "mcpServers": {
+    "suboculo": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/../../backend/mcp-analytics-server.mjs"],
+      "env": {
+        "SUBOCULO_DB_PATH": ".suboculo/events.db"
+      }
+    }
+  }
 }

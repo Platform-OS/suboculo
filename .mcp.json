@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "suboculo": {
+      "command": "node",
+      "args": ["./backend/mcp-analytics-server.mjs"],
+      "env": {
+        "SUBOCULO_DB_PATH": "./backend/events.db"
+      }
+    }
+  }
+}

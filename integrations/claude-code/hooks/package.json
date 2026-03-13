@@ -1,0 +1,16 @@
+{
+  "name": "@suboculo/tools",
+  "version": "0.1.0",
+  "description": "Suboculo event writer, MCP analytics server, and web backend",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "better-sqlite3": "^12.6.2",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "multer": "^2.1.1",
+    "zod": "^3.24.4"
+  }
+}

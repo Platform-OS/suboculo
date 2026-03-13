@@ -17,8 +17,20 @@ sseEmitter.setMaxListeners(100); // Support up to 100 concurrent SSE connections
 app.use(cors());
 app.use(express.json());
 
+// Serve static frontend files
+const frontendPath = path.join(__dirname, '../frontend');
+console.log('[suboculo] Checking frontend path:', frontendPath);
+console.log('[suboculo] Frontend exists?', fs.existsSync(frontendPath));
+if (fs.existsSync(frontendPath)) {
+  app.use(express.static(frontendPath));
+  console.log('[suboculo] Static files enabled from:', frontendPath);
+} else {
+  console.log('[suboculo] Frontend not found - web UI unavailable');
+}
+
 // Database setup
-const dbPath = path.join(__dirname, 'actions.db');
+// Defaults to ../events.db for per-project, or set SUBOCULO_DB_PATH for custom location
+const dbPath = process.env.SUBOCULO_DB_PATH || path.join(__dirname, '../events.db');
 let db;
 
 function initDatabase() {
@@ -149,6 +161,47 @@ function generateKey(entry, idx) {
 }
 
 // API: Ingest single CEP event (real-time)
+// Notify endpoint - for hooks that already wrote to DB, just emit SSE
+app.post('/api/notify', (req, res) => {
+  try {
+    const event = req.body;
+
+    // Calculate duration for tool.end events
+    if (event.event === 'tool.end' && event.traceId) {
+      try {
+        const startEvent = db.prepare(`
+          SELECT data FROM entries
+          WHERE traceId = ? AND event = 'tool.start'
+          ORDER BY ts DESC LIMIT 1
+        `).get(event.traceId);
+
+        if (startEvent) {
+          const startData = JSON.parse(startEvent.data);
+          const startTime = new Date(startData.ts);
+          const endTime = new Date(event.ts);
+          const durationMs = endTime - startTime;
+          if (!event.data) event.data = {};
+          event.data.durationMs = durationMs;
+        }
+      } catch (err) {
+        console.warn('Failed to calculate duration:', err.message);
+      }
+    }
+
+    // Emit to SSE clients
+    const key = `${event.traceId || 'unknown'}::${event.event}::${event.ts}`;
+    sseEmitter.emit('event', {
+      __key: key,
+      ...event
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Notify error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post('/api/ingest', (req, res) => {
   try {
     const event = req.body;
