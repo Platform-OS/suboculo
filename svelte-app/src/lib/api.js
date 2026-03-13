@@ -203,6 +203,40 @@ export async function analyzeEvents(keys, options = {}) {
 }
 
 /**
+ * Save selected event keys to selection.json for MCP bridge (CLI analysis)
+ * @param {Array<string>} keys - Event keys to save
+ * @returns {Promise<Object>} - { success: true, count: N }
+ */
+export async function saveSelection(keys) {
+  const response = await fetch(`${API_BASE}/selection`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ keys })
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Failed to save selection');
+  }
+
+  return response.json();
+}
+
+/**
+ * Get current selection saved for CLI
+ * @returns {Promise<Object>} - Selection data
+ */
+export async function getSelection() {
+  const response = await fetch(`${API_BASE}/selection`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch selection');
+  }
+
+  return response.json();
+}
+
+/**
  * Get all saved analyses
  * @returns {Promise<Array>} - List of analysis summaries
  */

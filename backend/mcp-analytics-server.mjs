@@ -32,6 +32,20 @@ try {
   process.exit(1);
 }
 
+// Decode base64-encoded fields from hooks (safe shell transport → readable data)
+function decodeBase64Fields(data) {
+  if (!data) return data;
+  for (const field of ['args', 'response']) {
+    if (typeof data[field] !== 'string') continue;
+    try {
+      data[field] = JSON.parse(Buffer.from(data[field], 'base64').toString('utf-8'));
+    } catch {
+      // Not base64 or not JSON — leave as-is
+    }
+  }
+  return data;
+}
+
 const server = new McpServer({
   name: 'suboculo',
   version: '0.1.0',
@@ -293,6 +307,7 @@ server.tool(
 
     rows.forEach((row, i) => {
       const data = JSON.parse(row.data);
+      decodeBase64Fields(data.data);
       lines.push(`${offset + i + 1}. [${row.ts}] ${row.event || data.event}`);
       if (row.tool) lines.push(`   Tool: ${row.tool}`);
       if (row.runner) lines.push(`   Runner: ${row.runner}`);
@@ -373,6 +388,7 @@ server.tool(
 
     rows.forEach((row, i) => {
       const data = JSON.parse(row.data);
+      decodeBase64Fields(data.data);
 
       lines.push(`${i + 1}. [${row.ts}] ${row.event || data.event}`);
       if (row.tool) lines.push(`   Tool: ${row.tool}`);
@@ -401,6 +417,91 @@ server.tool(
 
       const status = data.data?.status;
       if (status) lines.push(`   Status: ${status}`);
+
+      lines.push('');
+    });
+
+    return { content: [{ type: 'text', text: lines.join('\n') }] };
+  }
+);
+
+// ── Tool 6: suboculo_get_selection ───────────────────────────────────────────
+
+server.tool(
+  'suboculo_get_selection',
+  'Get events selected in the Suboculo web UI. Use this when the user asks you to analyze their selected events. The web UI "Send to CLI" button saves the selection for this tool to read.',
+  {},
+  async () => {
+    const selectionPath = dbPath.replace(/[^/]+$/, 'selection.json');
+
+    let selectionData;
+    try {
+      const { readFileSync } = await import('fs');
+      const raw = readFileSync(selectionPath, 'utf-8');
+      selectionData = JSON.parse(raw);
+    } catch (err) {
+      if (err.code === 'ENOENT') {
+        return {
+          content: [{
+            type: 'text',
+            text: 'No events selected. Use the Suboculo web UI to select events and click "Send to CLI".'
+          }]
+        };
+      }
+      throw err;
+    }
+
+    if (!selectionData.events || selectionData.events.length === 0) {
+      return {
+        content: [{
+          type: 'text',
+          text: 'Selection file exists but contains no events. Select events in the web UI and click "Send to CLI".'
+        }]
+      };
+    }
+
+    const events = selectionData.events;
+    const tools = [...new Set(events.map(e => e.data?.tool).filter(Boolean))];
+    const runners = [...new Set(events.map(e => e.runner).filter(Boolean))];
+    const sessions = [...new Set(events.map(e => e.sessionId).filter(Boolean))];
+
+    const lines = [];
+    lines.push('=== Selected Events from Web UI ===');
+    lines.push(`Selected at: ${selectionData.timestamp}`);
+    lines.push(`Total events: ${selectionData.count}`);
+    lines.push(`Runners: ${runners.join(', ') || 'unknown'}`);
+    lines.push(`Sessions: ${sessions.length}`);
+    lines.push(`Tools used: ${tools.join(', ') || 'none'}`);
+    lines.push('');
+
+    events.forEach((e, i) => {
+      lines.push(`${i + 1}. [${e.ts}] ${e.event}`);
+      if (e.data?.tool) lines.push(`   Tool: ${e.data.tool}`);
+      if (e.runner) lines.push(`   Runner: ${e.runner}`);
+      if (e.sessionId) lines.push(`   Session: ${e.sessionId}`);
+      if (e.traceId) lines.push(`   Trace: ${e.traceId}`);
+      if (e.data?.durationMs) lines.push(`   Duration: ${e.data.durationMs}ms`);
+      if (e.data?.status) lines.push(`   Status: ${e.data.status}`);
+
+      const args = e.data?.args;
+      if (args) {
+        const argsStr = JSON.stringify(args);
+        if (argsStr.length <= 300) {
+          lines.push(`   Args: ${argsStr}`);
+        } else {
+          lines.push(`   Args: ${argsStr.substring(0, 300)}...`);
+        }
+      }
+
+      const result = e.data?.result || e.data?.outputPreview;
+      if (result) {
+        const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
+        if (resultStr.length <= 300) {
+          lines.push(`   Result: ${resultStr}`);
+        } else {
+          lines.push(`   Result: ${resultStr.substring(0, 300)}...`);
+        }
+      }
 
       lines.push('');
     });

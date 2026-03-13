@@ -150,6 +150,18 @@ function insertCEPEvent(event) {
   }
 
   const rootSessionId = parentSessionId || sessionId;
+
+  // Inject calculated values back into event data before serializing,
+  // so the stored JSON blob has complete data for the API to return
+  if (durationMs != null) {
+    if (!event.data) event.data = {};
+    event.data.durationMs = durationMs;
+  }
+  if (status && (!event.data || !event.data.status)) {
+    if (!event.data) event.data = {};
+    event.data.status = status;
+  }
+
   const eventData = JSON.stringify(event);
 
   const stmt = db.prepare(`
@@ -197,7 +209,22 @@ process.stdin.on('end', () => {
   processEvent(event);
 });
 
+// Decode base64-encoded fields from hooks (safe shell transport → readable storage)
+function decodeBase64Fields(event) {
+  if (!event.data) return;
+  for (const field of ['args', 'response']) {
+    if (typeof event.data[field] !== 'string') continue;
+    try {
+      event.data[field] = JSON.parse(Buffer.from(event.data[field], 'base64').toString('utf-8'));
+    } catch {
+      // Not base64 or not JSON — leave as-is
+    }
+  }
+}
+
 function processEvent(event) {
+  // Decode base64 fields before storing
+  decodeBase64Fields(event);
 
   // Validate and insert
   const validation = validateCEPEvent(event);

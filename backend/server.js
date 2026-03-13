@@ -160,6 +160,19 @@ function generateKey(entry, idx) {
   return `idx::${idx}`;
 }
 
+// Decode base64-encoded fields from hooks (safe shell transport → readable storage)
+function decodeBase64Fields(event) {
+  if (!event.data) return;
+  for (const field of ['args', 'response']) {
+    if (typeof event.data[field] !== 'string') continue;
+    try {
+      event.data[field] = JSON.parse(Buffer.from(event.data[field], 'base64').toString('utf-8'));
+    } catch {
+      // Not base64 or not JSON — leave as-is
+    }
+  }
+}
+
 // API: Ingest single CEP event (real-time)
 // Notify endpoint - for hooks that already wrote to DB, just emit SSE
 app.post('/api/notify', (req, res) => {
@@ -187,6 +200,9 @@ app.post('/api/notify', (req, res) => {
         console.warn('Failed to calculate duration:', err.message);
       }
     }
+
+    // Decode base64 fields before emitting to SSE clients
+    decodeBase64Fields(event);
 
     // Emit to SSE clients
     const key = `${event.traceId || 'unknown'}::${event.event}::${event.ts}`;
@@ -416,9 +432,22 @@ app.get('/api/entries', (req, res) => {
     // Execute query
     const entries = db.prepare(sql).all(...params);
 
-    // Return clean CEP events (no duplication)
+    // Return clean CEP events, supplementing with DB column values
     const parsedEntries = entries.map(row => {
       const cepEvent = JSON.parse(row.data);
+
+      // Supplement event data with DB column values for older entries
+      // where these weren't stored in the JSON blob
+      if (!cepEvent.data) cepEvent.data = {};
+      if (row.durationMs != null && cepEvent.data.durationMs == null) {
+        cepEvent.data.durationMs = row.durationMs;
+      }
+      if (row.status && !cepEvent.data.status) {
+        cepEvent.data.status = row.status;
+      }
+
+      // Decode base64-encoded fields from older entries
+      decodeBase64Fields(cepEvent);
 
       // Add __key for Svelte's keyed each blocks
       return {
@@ -657,6 +686,67 @@ Be concise and actionable.`;
 
   } catch (error) {
     console.error('Analysis error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// API: Save selected events for MCP bridge (CLI analysis)
+app.post('/api/selection', (req, res) => {
+  try {
+    const { keys } = req.body;
+
+    if (!keys || !Array.isArray(keys) || keys.length === 0) {
+      return res.status(400).json({ error: 'No event keys provided' });
+    }
+
+    // Fetch full event data for the selected keys
+    const placeholders = keys.map(() => '?').join(',');
+    const rows = db.prepare(`
+      SELECT key, data FROM entries
+      WHERE key IN (${placeholders})
+      ORDER BY ts ASC
+    `).all(...keys);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'No events found for the provided keys' });
+    }
+
+    const events = rows.map(row => {
+      const cepEvent = JSON.parse(row.data);
+      decodeBase64Fields(cepEvent);
+      return { __key: row.key, ...cepEvent };
+    });
+
+    const selection = {
+      timestamp: new Date().toISOString(),
+      count: events.length,
+      events
+    };
+
+    // Write to selection.json next to the database file
+    const selectionPath = path.join(path.dirname(dbPath), 'selection.json');
+    fs.writeFileSync(selectionPath, JSON.stringify(selection, null, 2));
+
+    res.json({ success: true, count: events.length });
+  } catch (error) {
+    console.error('Save selection error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// API: Get current selection
+app.get('/api/selection', (req, res) => {
+  try {
+    const selectionPath = path.join(path.dirname(dbPath), 'selection.json');
+
+    if (!fs.existsSync(selectionPath)) {
+      return res.json({ timestamp: null, count: 0, events: [] });
+    }
+
+    const data = JSON.parse(fs.readFileSync(selectionPath, 'utf-8'));
+    res.json(data);
+  } catch (error) {
+    console.error('Get selection error:', error);
     res.status(500).json({ error: error.message });
   }
 });

@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "EVENT=$(jq -c '{ts: (now | todate), event: \"tool.end\", runner: \"claude-code\", sessionId: .session_id, traceId: .tool_use_id, data: {tool: .tool_name, args: (.tool_input | tojson | @base64), response: (.tool_response | tojson | @base64)}}') && echo \"$EVENT\" | node ./.suboculo/integrations/claude-code/event-writer.mjs && (echo \"$EVENT\" | curl -s -X POST -H 'Content-Type: application/json' -d @- http://localhost:3000/api/notify 2>/dev/null || true)",
+            "command": "EVENT=$(jq -c '{ts: (now | todate), event: \"tool.end\", runner: \"claude-code\", sessionId: .session_id, traceId: .tool_use_id, data: {tool: .tool_name, status: \"success\", args: (.tool_input | tojson | @base64), response: (.tool_response | tojson | @base64)}}') && echo \"$EVENT\" | node ./.suboculo/integrations/claude-code/event-writer.mjs && (echo \"$EVENT\" | curl -s -X POST -H 'Content-Type: application/json' -d @- http://localhost:3000/api/notify 2>/dev/null || true)",
             "timeout": 5
           }
         ]

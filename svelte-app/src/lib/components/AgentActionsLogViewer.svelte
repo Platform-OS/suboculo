@@ -504,6 +504,32 @@
     }
   }
 
+  // Send to CLI state
+  let sendToCliMessage = '';
+  let sendToCliLoading = false;
+
+  async function sendSelectionToCLI() {
+    if (selectedEntries.size === 0) return;
+
+    sendToCliLoading = true;
+    sendToCliMessage = '';
+
+    try {
+      const keys = Array.from(selectedEntries);
+      const result = await api.saveSelection(keys);
+      sendToCliMessage = `${result.count} events sent to CLI. In Claude Code, say: "Analyze my selected events"`;
+
+      // Auto-clear message after 8 seconds
+      setTimeout(() => {
+        sendToCliMessage = '';
+      }, 8000);
+    } catch (error) {
+      sendToCliMessage = `Error: ${error.message}`;
+    } finally {
+      sendToCliLoading = false;
+    }
+  }
+
   function closeAnalysisDialog() {
     showAnalysisDialog = false;
     analysisResult = null;
@@ -833,9 +859,21 @@ ${analysisResult.analysis}
             </div>
             {#if selectedEntries.size > 0}
               <div class="flex items-center gap-2">
+                <Button variant="outline" size="sm" class="gap-2" on:click={sendSelectionToCLI} disabled={sendToCliLoading}>
+                  {#if sendToCliLoading}
+                    <span class="animate-spin">⏳</span> Sending...
+                  {:else}
+                    <span>↗</span> Send to CLI
+                  {/if}
+                </Button>
                 <Button variant="default" size="sm" class="gap-2" on:click={analyzeSelection}>
                   <span>🔍</span> Analyze
                 </Button>
+              </div>
+            {/if}
+            {#if sendToCliMessage}
+              <div class="text-xs px-3 py-1.5 rounded-full {sendToCliMessage.startsWith('Error') ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}">
+                {sendToCliMessage}
               </div>
             {/if}
           </div>
