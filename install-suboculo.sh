@@ -36,21 +36,19 @@ echo "📦 Installing dependencies..."
 cd "$SUBOCULO_DIR"
 npm install --silent
 
-# Create .mcp.json
-echo "⚙️  Generating .mcp.json..."
-cat > "$TARGET_DIR/.mcp.json" <<'EOF'
-{
-  "mcpServers": {
-    "suboculo": {
-      "command": "node",
-      "args": ["./.suboculo/backend/mcp-analytics-server.mjs"],
-      "env": {
-        "SUBOCULO_DB_PATH": ".suboculo/events.db"
-      }
-    }
-  }
-}
-EOF
+# Create or merge .mcp.json
+MCP_FILE="$TARGET_DIR/.mcp.json"
+SUBOCULO_MCP='{"command":"node","args":["./.suboculo/backend/mcp-analytics-server.mjs"],"env":{"SUBOCULO_DB_PATH":".suboculo/events.db"}}'
+
+if [ -f "$MCP_FILE" ] && [ -s "$MCP_FILE" ]; then
+  echo "⚙️  Merging suboculo into existing .mcp.json..."
+  TEMP_FILE=$(mktemp)
+  jq --argjson srv "$SUBOCULO_MCP" '.mcpServers.suboculo = $srv' "$MCP_FILE" > "$TEMP_FILE"
+  mv "$TEMP_FILE" "$MCP_FILE"
+else
+  echo "⚙️  Generating .mcp.json..."
+  jq -n --argjson srv "$SUBOCULO_MCP" '{mcpServers: {suboculo: $srv}}' > "$MCP_FILE"
+fi
 
 # Create .gitignore entry
 if [ -f "$TARGET_DIR/.gitignore" ]; then
