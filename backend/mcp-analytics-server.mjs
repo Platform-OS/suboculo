@@ -523,7 +523,8 @@ server.tool(
   },
   async ({ analysis, event_count, event_keys, prompt }) => {
     try {
-      const response = await fetch('http://localhost:3000/api/analyses', {
+      const port = process.env.SUBOCULO_PORT || '3000';
+      const response = await fetch(`http://localhost:${port}/api/analyses`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

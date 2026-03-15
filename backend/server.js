@@ -7,7 +7,7 @@ const { insertCEPEvent, insertCEPEventsBatch, validateCEPEvent } = require('./ce
 const EventEmitter = require('events');
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.SUBOCULO_PORT || 3000;
 
 // SSE Event Emitter for real-time updates
 const sseEmitter = new EventEmitter();

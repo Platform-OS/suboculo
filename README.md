@@ -29,6 +29,11 @@ From this repository:
 ./install-suboculo.sh /path/to/your/project
 ```
 
+Custom port (for multiple instances):
+```bash
+./install-suboculo.sh /path/to/your/project --port 3001
+```
+
 This installs Suboculo into `your-project/.suboculo/` with:
 - Event capture hooks (writes to SQLite)
 - MCP analytics server (query tools for Claude)
@@ -51,9 +56,9 @@ Analyze my Read vs Edit ratio
 **4. Visual monitoring (optional):**
 ```bash
 cd your-project
-node .suboculo/backend/server.js
+SUBOCULO_PORT=3000 node .suboculo/backend/server.js
 ```
-Then open http://localhost:3000
+Then open http://localhost:3000 (use the port you chose during installation)
 
 ## What It Does
 
@@ -64,22 +69,26 @@ Monitor and analyze AI agent activity in real-time:
 - ✅ **Resilient capture** - Events stored even if server is down
 - ✅ **MCP analytics** - Query events via natural language
 - ✅ **LLM-powered analysis** - Analyze agent behavior patterns
+- ✅ **CLI-to-UI bridge** - Select events in web UI, analyze in CLI, view results in UI
 - ✅ **Session tracking** - Correlate events across sessions
 - ✅ **Tool diversity** - Bash, Read, Edit, MCP tools, all captured
 - ✅ **Duration tracking** - Automatic timing for tool execution
+- ✅ **Multi-instance support** - Run on custom ports for multiple projects
 
 ## Features
 
 ### Event Capture
-- Automatic hooks for Claude Code (PreToolUse, PostToolUse, SessionStart)
+- Automatic hooks for Claude Code (PreToolUse, PostToolUse, PostToolUseFailure, SessionStart)
 - Direct SQLite writes (resilient, works offline)
 - Optional SSE notifications (real-time when server running)
 - Handles all tool types (different response structures)
+- Error capture with status and interrupt detection
 
 ### Analysis & Querying
-- **MCP tools** for CLI queries via Claude
+- **MCP tools** for CLI queries via Claude (7 tools)
 - **Web UI** for visual filtering and exploration
-- **LLM analysis** with custom prompts
+- **LLM analysis** with custom prompts (API or CLI)
+- **CLI bridge** - Select in UI, analyze in Claude Code, save back to UI
 - **Duration calculation** for performance insights
 - **Session correlation** across multiple agent invocations
 
@@ -136,8 +145,9 @@ See [INSTALL.md](./INSTALL.md) for detailed installation instructions and troubl
 **Visual filtering + scoped analysis:**
 1. Browse events in web UI
 2. Filter to interesting subset (e.g., errors, specific tools)
-3. Go back to Claude CLI with specific scope for analysis
-4. Save tokens by pre-filtering visually
+3. Select events and click "Send to CLI"
+4. In Claude Code: "Analyze my selected events"
+5. Tell Claude to save the analysis — it appears in the web UI Analyses tab
 
 **Session analysis:**
 ```
@@ -201,8 +211,11 @@ npm run build  # Creates dist/ directory
 ### Testing in a project
 
 ```bash
-# Install in test project
+# Install in test project (default port 3000)
 ./install-suboculo.sh /path/to/test/project
+
+# Or with a custom port
+./install-suboculo.sh /path/to/test/project --port 3001
 
 # Restart Claude Code in that project
 cd /path/to/test/project
@@ -215,7 +228,7 @@ Suboculo is **local-first** by default.
 
 ### Per-Project Setup (Default)
 - Events stored in project's `.suboculo/events.db`
-- Backend runs on `localhost:3000` (per project)
+- Backend runs on `localhost` (configurable port, default 3000)
 - MCP server communicates via stdio (local)
 - No network exposure unless you expose the port
 - Data never leaves your machine
@@ -260,7 +273,7 @@ cat .claude/settings.local.json | jq '.hooks'
 
 ### Real-time updates not working
 ```bash
-# Check backend is running
+# Check backend is running (replace 3000 with your port)
 lsof -ti:3000
 
 # Check SSE connection in browser console (should see "SSE connection opened")

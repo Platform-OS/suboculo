@@ -5,9 +5,26 @@ set -e
 # Copies required files and sets up per-project monitoring
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TARGET_DIR="${1:-.}"
+TARGET_DIR=""
+PORT=3000
 
-echo "📊 Installing Suboculo to: $TARGET_DIR"
+# Parse arguments
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --port)
+      PORT="$2"
+      shift 2
+      ;;
+    *)
+      TARGET_DIR="$1"
+      shift
+      ;;
+  esac
+done
+
+TARGET_DIR="${TARGET_DIR:-.}"
+
+echo "📊 Installing Suboculo to: $TARGET_DIR (port: $PORT)"
 echo ""
 
 # Validate target directory
@@ -27,6 +44,7 @@ echo "📋 Copying files..."
 cp "$SCRIPT_DIR/integrations/claude-code/hooks/event-writer.mjs" "$SUBOCULO_DIR/integrations/claude-code/"
 cp "$SCRIPT_DIR/backend/mcp-analytics-server.mjs" "$SUBOCULO_DIR/backend/"
 cp "$SCRIPT_DIR/backend/server.js" "$SUBOCULO_DIR/backend/"
+sed -i "s/process.env.SUBOCULO_PORT || 3000/process.env.SUBOCULO_PORT || $PORT/" "$SUBOCULO_DIR/backend/server.js"
 cp "$SCRIPT_DIR/backend/cep-processor.js" "$SUBOCULO_DIR/backend/"
 cp -r "$SCRIPT_DIR/svelte-app/dist/"* "$SUBOCULO_DIR/frontend/" 2>/dev/null || echo "⚠️  Frontend not built yet (run 'cd svelte-app && npm run build')"
 cp "$SCRIPT_DIR/integrations/claude-code/hooks/package.json" "$SUBOCULO_DIR/"
@@ -38,7 +56,7 @@ npm install --silent
 
 # Create or merge .mcp.json
 MCP_FILE="$TARGET_DIR/.mcp.json"
-SUBOCULO_MCP='{"command":"node","args":["./.suboculo/backend/mcp-analytics-server.mjs"],"env":{"SUBOCULO_DB_PATH":".suboculo/events.db"}}'
+SUBOCULO_MCP="{\"command\":\"node\",\"args\":[\"./.suboculo/backend/mcp-analytics-server.mjs\"],\"env\":{\"SUBOCULO_DB_PATH\":\".suboculo/events.db\",\"SUBOCULO_PORT\":\"$PORT\"}}"
 
 if [ -f "$MCP_FILE" ] && [ -s "$MCP_FILE" ]; then
   echo "⚙️  Merging suboculo into existing .mcp.json..."
@@ -65,8 +83,8 @@ SETTINGS_FILE="$CLAUDE_DIR/settings.local.json"
 
 mkdir -p "$CLAUDE_DIR"
 
-# Load hooks from source file
-HOOKS_JSON=$(jq '.hooks' "$SCRIPT_DIR/integrations/claude-code/hooks/hooks.json")
+# Load hooks from source file, replacing default port with configured port
+HOOKS_JSON=$(jq '.hooks' "$SCRIPT_DIR/integrations/claude-code/hooks/hooks.json" | sed "s|localhost:3000|localhost:$PORT|g")
 
 # Check if settings file exists
 if [ -f "$SETTINGS_FILE" ] && [ -s "$SETTINGS_FILE" ]; then
@@ -107,7 +125,7 @@ echo "1. Restart Claude Code"
 echo "2. Run any tool to generate events"
 echo "3. Query via MCP: 'What tools have I used?'"
 echo "4. Start web UI: cd $TARGET_DIR && node ./.suboculo/backend/server.js"
-echo "   Then open http://localhost:3000"
+echo "   Then open http://localhost:$PORT"
 echo ""
 echo "📊 Data stored in: .suboculo/events.db"
 echo "🔧 MCP server configured and ready"
