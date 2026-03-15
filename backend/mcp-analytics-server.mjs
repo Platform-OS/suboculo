@@ -510,6 +510,59 @@ server.tool(
   }
 );
 
+// ── Tool 7: suboculo_save_analysis ────────────────────────────────────────────
+
+server.tool(
+  'suboculo_save_analysis',
+  'Save your analysis so it appears in the Suboculo web UI Analyses tab. Call this after analyzing events (from suboculo_get_selection or suboculo_get_session) to persist your analysis for the user to review in the browser.',
+  {
+    analysis: z.string().describe('Your full analysis text (markdown supported)'),
+    event_count: z.number().optional().describe('Number of events that were analyzed'),
+    event_keys: z.array(z.string()).optional().describe('Keys of the events that were analyzed'),
+    prompt: z.string().optional().describe('The prompt/question the user asked'),
+  },
+  async ({ analysis, event_count, event_keys, prompt }) => {
+    try {
+      const response = await fetch('http://localhost:3000/api/analyses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'claude-code-cli',
+          event_count: event_count || 0,
+          event_keys: event_keys || [],
+          analysis,
+          prompt: prompt || null,
+        }),
+      });
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ error: response.statusText }));
+        return {
+          content: [{
+            type: 'text',
+            text: `Failed to save analysis: ${err.error || response.statusText}. Is the Suboculo web server running? (node .suboculo/backend/server.js)`
+          }]
+        };
+      }
+
+      const result = await response.json();
+      return {
+        content: [{
+          type: 'text',
+          text: `Analysis saved (ID: ${result.analysisId}). It is now visible in the Suboculo web UI under the Analyses tab.`
+        }]
+      };
+    } catch (err) {
+      return {
+        content: [{
+          type: 'text',
+          text: `Failed to save analysis: ${err.message}. Make sure the Suboculo web server is running (node .suboculo/backend/server.js).`
+        }]
+      };
+    }
+  }
+);
+
 // ── Start server ────────────────────────────────────────────────────────────
 
 async function main() {

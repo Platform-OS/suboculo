@@ -555,6 +555,34 @@ app.get('/api/analyses-history/:id', (req, res) => {
   }
 });
 
+// API: Save externally-generated analysis (e.g. from CLI via MCP)
+app.post('/api/analyses', (req, res) => {
+  try {
+    const { model, event_count, event_keys, analysis, prompt } = req.body;
+
+    if (!analysis || typeof analysis !== 'string') {
+      return res.status(400).json({ error: 'analysis (string) is required' });
+    }
+
+    const analysisId = db.prepare(`
+      INSERT INTO analyses (timestamp, model, event_count, event_keys, analysis, prompt)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      new Date().toISOString(),
+      model || 'claude-code-cli',
+      event_count || 0,
+      JSON.stringify(event_keys || []),
+      analysis,
+      prompt || null
+    ).lastInsertRowid;
+
+    res.json({ success: true, analysisId });
+  } catch (error) {
+    console.error('Save analysis error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // API: Delete analysis
 app.delete('/api/analyses-history/:id', (req, res) => {
   try {
