@@ -55,19 +55,31 @@ function initSchema() {
       runner TEXT,
       event TEXT,
       traceId TEXT,
-      status TEXT
+      status TEXT,
+      agentId TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_runner ON entries(runner);
     CREATE INDEX IF NOT EXISTS idx_event ON entries(event);
     CREATE INDEX IF NOT EXISTS idx_traceId ON entries(traceId);
     CREATE INDEX IF NOT EXISTS idx_status ON entries(status);
+    CREATE INDEX IF NOT EXISTS idx_agentId ON entries(agentId);
     CREATE INDEX IF NOT EXISTS idx_kind ON entries(kind);
     CREATE INDEX IF NOT EXISTS idx_tool ON entries(tool);
     CREATE INDEX IF NOT EXISTS idx_ts ON entries(ts);
     CREATE INDEX IF NOT EXISTS idx_sessionID ON entries(sessionID);
     CREATE INDEX IF NOT EXISTS idx_rootSessionID ON entries(rootSessionID);
   `);
+
+  // Migrate: add columns that may not exist in older databases
+  const migrations = ['runner', 'event', 'traceId', 'status', 'agentId'];
+  for (const col of migrations) {
+    try {
+      db.exec(`ALTER TABLE entries ADD COLUMN ${col} TEXT`);
+    } catch {
+      // Column already exists
+    }
+  }
 }
 
 initSchema();
@@ -83,7 +95,7 @@ function validateCEPEvent(event) {
   const validEvents = [
     'session.start', 'session.end', 'session.update',
     'tool.start', 'tool.end',
-    'message', 'error', 'subagent.spawn', 'custom'
+    'message', 'error', 'subagent.spawn', 'subagent.stop', 'custom'
   ];
   if (event.event && !validEvents.includes(event.event)) {
     errors.push(`Invalid event type: ${event.event}`);
@@ -124,7 +136,8 @@ function insertCEPEvent(event) {
   const outputLen = data.outputLen || null;
   const outputPreview = data.outputPreview || null;
   const title = data.title || null;
-  const subagentType = data.subagentType || null;
+  const subagentType = data.agentType || data.subagentType || null;
+  const agentId = data.agentId || null;
   const childSessionId = data.childSessionId || null;
   const args = data.args ? JSON.stringify(data.args) : null;
   const status = data.status || null;
@@ -169,15 +182,15 @@ function insertCEPEvent(event) {
     (key, ts, kind, type, tool, sessionID, rootSessionID, subagentType,
      callID, durationMs, outputLen, outputPreview, title,
      parentSessionID, childSessionID, args, data,
-     runner, event, traceId, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     runner, event, traceId, status, agentId)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   stmt.run(
     key, ts, cepEvent, null, tool, sessionId, rootSessionId, subagentType,
     traceId, durationMs, outputLen, outputPreview, title,
     parentSessionId, childSessionId, args, eventData,
-    runner, cepEvent, traceId, status
+    runner, cepEvent, traceId, status, agentId
   );
 
   return key;

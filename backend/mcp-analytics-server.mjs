@@ -61,6 +61,7 @@ server.tool(
     const runners = db.prepare('SELECT DISTINCT runner FROM entries WHERE runner IS NOT NULL ORDER BY runner').all();
     const events = db.prepare('SELECT DISTINCT event FROM entries WHERE event IS NOT NULL ORDER BY event').all();
     const tools = db.prepare('SELECT DISTINCT tool FROM entries WHERE tool IS NOT NULL ORDER BY tool').all();
+    const agentTypes = db.prepare('SELECT DISTINCT subagentType FROM entries WHERE subagentType IS NOT NULL ORDER BY subagentType').all();
     const sessions = db.prepare(`
       SELECT DISTINCT sessionID, runner, MIN(ts) as firstSeen
       FROM entries
@@ -81,6 +82,13 @@ server.tool(
 
     lines.push(`\nTools (${tools.length}):`);
     tools.forEach(r => lines.push(`  - ${r.tool}`));
+
+    lines.push(`\nAgent types (${agentTypes.length}):`);
+    if (agentTypes.length === 0) {
+      lines.push('  (none — all events from lead agent)');
+    } else {
+      agentTypes.forEach(r => lines.push(`  - ${r.subagentType}`));
+    }
 
     lines.push(`\nRecent sessions (up to 50):`);
     sessions.forEach(s => {
@@ -311,6 +319,7 @@ server.tool(
       lines.push(`${offset + i + 1}. [${row.ts}] ${row.event || data.event}`);
       if (row.tool) lines.push(`   Tool: ${row.tool}`);
       if (row.runner) lines.push(`   Runner: ${row.runner}`);
+      if (data.data?.agentType) lines.push(`   Agent: ${data.data.agentType}${data.data.agentId ? ` (${data.data.agentId})` : ''}`);
       if (row.sessionID) lines.push(`   Session: ${row.sessionID}`);
       if (row.traceId) lines.push(`   Trace: ${row.traceId}`);
       if (row.durationMs) lines.push(`   Duration: ${row.durationMs}ms`);
@@ -392,6 +401,7 @@ server.tool(
 
       lines.push(`${i + 1}. [${row.ts}] ${row.event || data.event}`);
       if (row.tool) lines.push(`   Tool: ${row.tool}`);
+      if (data.data?.agentType) lines.push(`   Agent: ${data.data.agentType}${data.data.agentId ? ` (${data.data.agentId})` : ''}`);
       if (row.traceId) lines.push(`   Trace: ${row.traceId}`);
       if (row.durationMs) lines.push(`   Duration: ${row.durationMs}ms`);
 

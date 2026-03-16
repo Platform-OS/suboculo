@@ -82,6 +82,7 @@ Show me events from the last 30 minutes
 What Bash commands did I run today?
 Analyze my Read vs Edit ratio
 Which tools take the longest?
+What did the Explore subagents do?
 ```
 
 ### Web UI
@@ -90,14 +91,15 @@ Start the web server:
 
 ```bash
 cd your-project
-SUBOCULO_PORT=3000 node .suboculo/backend/server.js
+node .suboculo/backend/server.js
 ```
 
-Open http://localhost:3000 (use the port you chose during installation).
+Open http://localhost:3000 (port is set during installation).
 
 Features:
 - Real-time event streaming (SSE)
-- Filter by tool, event type, session, runner
+- Filter by tool, event type, session, runner, agent type
+- Agent/subagent tracking (see which agent executed each tool)
 - Select events and send to CLI for analysis
 - Analyses tab for viewing saved analyses
 - Tag and annotate events

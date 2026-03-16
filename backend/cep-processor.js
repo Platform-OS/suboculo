@@ -152,6 +152,7 @@ function validateCEPEvent(event) {
     'message',
     'error',
     'subagent.spawn',
+    'subagent.stop',
     'custom'
   ];
   if (event.event && !validEvents.includes(event.event)) {

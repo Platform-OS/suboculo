@@ -630,7 +630,7 @@ ${analysisResult.analysis}
   let activeTab = "tags";
 
   function subagentLabel(e) {
-    return e?.subagentType || "lead";
+    return e?.data?.agentType || e?.subagentType || "lead";
   }
 </script>
 
@@ -894,6 +894,7 @@ ${analysisResult.analysis}
                   <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Runner</th>
                   <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Event</th>
                   <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Tool</th>
+                  <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Agent</th>
                   <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Status</th>
                   <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Duration</th>
                   <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Tags</th>
@@ -938,6 +939,15 @@ ${analysisResult.analysis}
                       </Badge>
                     </td>
                     <td class="px-4 py-3 font-mono text-xs font-semibold" on:click={() => selectEntry(key)}>{tool || "—"}</td>
+                    <td class="px-4 py-3 text-xs" on:click={() => selectEntry(key)}>
+                      {#if e.data?.agentType}
+                        <Badge variant="outline" class="rounded-full text-xs" title={e.data?.agentId || ''}>
+                          {e.data.agentType}
+                        </Badge>
+                      {:else}
+                        <span class="text-muted-foreground">lead</span>
+                      {/if}
+                    </td>
                     <td class="px-4 py-3 text-xs" on:click={() => selectEntry(key)}>
                       {#if cepStatus === 'success'}
                         <Badge variant="outline" class="rounded-full text-green-600 border-green-600">✓</Badge>

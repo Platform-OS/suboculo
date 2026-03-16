@@ -106,12 +106,20 @@ function initDatabase() {
     // Column already exists
   }
 
+  try {
+    db.exec(`ALTER TABLE entries ADD COLUMN agentId TEXT`);
+    console.log('Added column: agentId');
+  } catch (e) {
+    // Column already exists
+  }
+
   // Create indexes for CEP fields
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_runner ON entries(runner);
     CREATE INDEX IF NOT EXISTS idx_event ON entries(event);
     CREATE INDEX IF NOT EXISTS idx_traceId ON entries(traceId);
     CREATE INDEX IF NOT EXISTS idx_status ON entries(status);
+    CREATE INDEX IF NOT EXISTS idx_agentId ON entries(agentId);
     CREATE INDEX IF NOT EXISTS idx_kind ON entries(kind);
     CREATE INDEX IF NOT EXISTS idx_type ON entries(type);
     CREATE INDEX IF NOT EXISTS idx_tool ON entries(tool);

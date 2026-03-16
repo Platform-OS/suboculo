@@ -56,9 +56,9 @@ Analyze my Read vs Edit ratio
 **4. Visual monitoring (optional):**
 ```bash
 cd your-project
-SUBOCULO_PORT=3000 node .suboculo/backend/server.js
+node .suboculo/backend/server.js
 ```
-Then open http://localhost:3000 (use the port you chose during installation)
+Then open http://localhost:3000 (port is set during installation)
 
 ## What It Does
 
@@ -70,6 +70,7 @@ Monitor and analyze AI agent activity in real-time:
 - ✅ **MCP analytics** - Query events via natural language
 - ✅ **LLM-powered analysis** - Analyze agent behavior patterns
 - ✅ **CLI-to-UI bridge** - Select events in web UI, analyze in CLI, view results in UI
+- ✅ **Agent/subagent tracking** - See which agent (lead, Explore, Plan, etc.) executed each tool
 - ✅ **Session tracking** - Correlate events across sessions
 - ✅ **Tool diversity** - Bash, Read, Edit, MCP tools, all captured
 - ✅ **Duration tracking** - Automatic timing for tool execution
@@ -79,6 +80,7 @@ Monitor and analyze AI agent activity in real-time:
 
 ### Event Capture
 - Automatic hooks for Claude Code (PreToolUse, PostToolUse, PostToolUseFailure, SessionStart)
+- Agent/subagent identification (agent type and ID for each tool call)
 - Direct SQLite writes (resilient, works offline)
 - Optional SSE notifications (real-time when server running)
 - Handles all tool types (different response structures)
@@ -102,12 +104,12 @@ Monitor and analyze AI agent activity in real-time:
 
 **Event Flow:**
 ```
-Claude executes tool
+Claude (lead or subagent) executes tool
         ↓
-Hook captures event → event-writer.mjs → SQLite (.suboculo/events.db)
-                   ↘ (if server running) → POST /api/notify → SSE clients
+Hook captures event (tool, args, agent type/id)
         ↓
-Frontend updates in real-time (or query via MCP)
+event-writer.mjs → SQLite (.suboculo/events.db)
+  ↘ (if server running) → POST /api/notify → SSE → frontend
 ```
 
 **Dual-Write Architecture:**
@@ -161,6 +163,13 @@ Compare my tool usage today vs yesterday
 Which tools are slowest?
 Show me events that took > 5 seconds
 Analyze my workflow efficiency
+```
+
+**Agent/subagent analysis:**
+```
+What did the Explore subagents do?
+How many tools did each agent type use?
+Show me the lead agent vs subagent activity
 ```
 
 ## Project Structure (This Repository)
@@ -235,6 +244,7 @@ Suboculo is **local-first** by default.
 
 ### What Gets Stored
 - **Event data:** tool names, arguments, outputs, session IDs
+- **Agent context:** agent type (Explore, Plan, Bash, etc.) and agent ID
 - **Timing:** timestamps, durations
 - **Context:** working directory, session metadata
 - **Analysis:** LLM analysis results (if you run analysis)
