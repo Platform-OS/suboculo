@@ -896,7 +896,8 @@ ${analysisResult.analysis}
                   <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Tool</th>
                   <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Agent</th>
                   <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Status</th>
-                  <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Duration / Tokens</th>
+                  <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Duration</th>
+                  <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Tokens</th>
                   <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Tags</th>
                 </tr>
               </thead>
@@ -913,12 +914,19 @@ ${analysisResult.analysis}
                   {@const cepStatus = e.data?.status || ""}
                   {@const tool = e.data?.tool || ""}
                   {@const isUsageEvent = cepEvent === "usage"}
+                  {@const embeddedUsage = e.data?.response?.usage}
+                  {@const hasUsage = isUsageEvent || embeddedUsage}
                   {@const usageModel = isUsageEvent ? e.data?.model : null}
                   {@const usageTokens = isUsageEvent ? {
                     input: e.data?.inputTokens || 0,
                     output: e.data?.outputTokens || 0,
                     cacheCreate: e.data?.cacheCreationTokens || 0,
                     cacheRead: e.data?.cacheReadTokens || 0
+                  } : embeddedUsage ? {
+                    input: embeddedUsage.input_tokens || 0,
+                    output: embeddedUsage.output_tokens || 0,
+                    cacheCreate: embeddedUsage.cache_creation_input_tokens || 0,
+                    cacheRead: embeddedUsage.cache_read_input_tokens || 0
                   } : null}
                   <tr
                     class="group cursor-pointer transition-all duration-150 {isChecked
@@ -974,13 +982,16 @@ ${analysisResult.analysis}
                       {/if}
                     </td>
                     <td class="px-4 py-3 text-xs font-medium {typeof durationMs === 'number' && durationMs > 1000 ? 'text-orange-600' : ''}" on:click={() => selectEntry(key)}>
-                      {#if isUsageEvent && usageTokens}
+                      {dur}
+                    </td>
+                    <td class="px-4 py-3 text-xs font-medium" on:click={() => selectEntry(key)}>
+                      {#if hasUsage && usageTokens}
                         <div class="text-xs space-y-0.5">
                           <div>out: {usageTokens.output.toLocaleString()}</div>
                           <div class="text-muted-foreground text-[10px]">cache: {usageTokens.cacheRead.toLocaleString()}</div>
                         </div>
                       {:else}
-                        {dur}
+                        <span class="text-muted-foreground">—</span>
                       {/if}
                     </td>
                     <td class="px-4 py-3" on:click={() => selectEntry(key)}>
@@ -1105,27 +1116,34 @@ ${analysisResult.analysis}
                 {#if typeof selected.data?.durationMs === "number"}
                   <div><span class="font-medium">Duration:</span> {selected.data.durationMs === 0 ? "<1ms" : `${selected.data.durationMs}ms`}</div>
                 {/if}
-
-                {#if selected.event === "usage"}
-                  {@const totalInput = (selected.data?.inputTokens || 0) + (selected.data?.cacheCreationTokens || 0) + (selected.data?.cacheReadTokens || 0)}
-                  {@const cacheHitRatio = totalInput > 0 ? ((selected.data?.cacheReadTokens || 0) / totalInput * 100).toFixed(1) : '0.0'}
-                  <div class="mt-3 pt-3 border-t border-border space-y-1">
-                    <div class="font-semibold text-foreground">Token Usage</div>
-                    {#if selected.data?.model}
-                      <div><span class="font-medium">Model:</span> {selected.data.model}</div>
-                    {/if}
-                    {#if selected.data?.agentId}
-                      <div><span class="font-medium">Agent:</span> {selected.data.agentId}</div>
-                    {/if}
-                    <div><span class="font-medium">Input tokens:</span> {(selected.data?.inputTokens || 0).toLocaleString()}</div>
-                    <div><span class="font-medium">Output tokens:</span> {(selected.data?.outputTokens || 0).toLocaleString()}</div>
-                    <div><span class="font-medium">Cache creation:</span> {(selected.data?.cacheCreationTokens || 0).toLocaleString()}</div>
-                    <div><span class="font-medium">Cache read:</span> {(selected.data?.cacheReadTokens || 0).toLocaleString()}</div>
-                    <div><span class="font-medium">Total input:</span> {totalInput.toLocaleString()}</div>
-                    <div><span class="font-medium">Cache hit ratio:</span> {cacheHitRatio}%</div>
-                  </div>
-                {/if}
               </div>
+
+
+              {#if selected.event === "usage" || selected.data?.response?.usage}
+                {@const detailEmbeddedUsage = selected.data?.response?.usage}
+                {@const detailIsUsageEvent = selected.event === "usage"}
+                {@const detailInputTokens = detailIsUsageEvent ? (selected.data?.inputTokens || 0) : (detailEmbeddedUsage?.input_tokens || 0)}
+                {@const detailOutputTokens = detailIsUsageEvent ? (selected.data?.outputTokens || 0) : (detailEmbeddedUsage?.output_tokens || 0)}
+                {@const detailCacheCreate = detailIsUsageEvent ? (selected.data?.cacheCreationTokens || 0) : (detailEmbeddedUsage?.cache_creation_input_tokens || 0)}
+                {@const detailCacheRead = detailIsUsageEvent ? (selected.data?.cacheReadTokens || 0) : (detailEmbeddedUsage?.cache_read_input_tokens || 0)}
+                {@const totalInput = detailInputTokens + detailCacheCreate + detailCacheRead}
+                {@const cacheHitRatio = totalInput > 0 ? (detailCacheRead / totalInput * 100).toFixed(1) : '0.0'}
+                <div class="text-xs text-muted-foreground mt-3 pt-3 border-t border-border space-y-1">
+                  <div class="font-semibold text-foreground">Token Usage</div>
+                  {#if selected.data?.model}
+                    <div><span class="font-medium">Model:</span> {selected.data.model}</div>
+                  {/if}
+                  {#if selected.data?.agentId}
+                    <div><span class="font-medium">Agent:</span> {selected.data.agentId}</div>
+                  {/if}
+                  <div><span class="font-medium">Input tokens:</span> {detailInputTokens.toLocaleString()}</div>
+                  <div><span class="font-medium">Output tokens:</span> {detailOutputTokens.toLocaleString()}</div>
+                  <div><span class="font-medium">Cache creation:</span> {detailCacheCreate.toLocaleString()}</div>
+                  <div><span class="font-medium">Cache read:</span> {detailCacheRead.toLocaleString()}</div>
+                  <div><span class="font-medium">Total input:</span> {totalInput.toLocaleString()}</div>
+                  <div><span class="font-medium">Cache hit ratio:</span> {cacheHitRatio}%</div>
+                </div>
+              {/if}
             </div>
 
             <Separator />
