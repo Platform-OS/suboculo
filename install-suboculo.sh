@@ -42,6 +42,7 @@ mkdir -p "$SUBOCULO_DIR/frontend"
 # Copy files from monorepo structure
 echo "📋 Copying files..."
 cp "$SCRIPT_DIR/integrations/claude-code/hooks/event-writer.mjs" "$SUBOCULO_DIR/integrations/claude-code/"
+sed -i "s/const NOTIFY_PORT = 3000/const NOTIFY_PORT = $PORT/" "$SUBOCULO_DIR/integrations/claude-code/event-writer.mjs"
 cp "$SCRIPT_DIR/backend/mcp-analytics-server.mjs" "$SUBOCULO_DIR/backend/"
 cp "$SCRIPT_DIR/backend/server.js" "$SUBOCULO_DIR/backend/"
 sed -i "s/process.env.SUBOCULO_PORT || 3000/process.env.SUBOCULO_PORT || $PORT/" "$SUBOCULO_DIR/backend/server.js"

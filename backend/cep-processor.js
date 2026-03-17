@@ -16,6 +16,20 @@ function generateCEPKey(event, idx = 0) {
     return `${event.traceId}::${event.event}::${event.ts}`;
   }
 
+  // Usage events: unique by session + model + agent + timestamp
+  if (event.event === 'usage' && event.sessionId) {
+    const agent = event.data?.agentId || 'lead';
+    const model = event.data?.model || 'unknown';
+    return `usage::${event.sessionId}::${model}::${agent}::${event.ts}`;
+  }
+
+  // Subagent lifecycle events have no traceId — use agentId to prevent
+  // key collisions when multiple agents spawn/stop in the same second
+  const agentId = event.data?.agentId;
+  if (agentId && event.sessionId && event.event) {
+    return `${event.sessionId}::${event.event}::${agentId}::${event.ts}`;
+  }
+
   // Use sessionId + timestamp + event type
   if (event.sessionId && event.event && event.ts) {
     return `${event.sessionId}::${event.event}::${event.ts}`;
@@ -153,6 +167,7 @@ function validateCEPEvent(event) {
     'error',
     'subagent.spawn',
     'subagent.stop',
+    'usage',
     'custom'
   ];
   if (event.event && !validEvents.includes(event.event)) {

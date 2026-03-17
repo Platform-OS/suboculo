@@ -46,6 +46,49 @@ function decodeBase64Fields(data) {
   return data;
 }
 
+// Shared event renderer — returns formatted lines for a single CEP event
+function formatEventLines(cepEvent, limit = 200) {
+  const lines = [];
+  const d = cepEvent.data || {};
+
+  if (d.tool) lines.push(`   Tool: ${d.tool}`);
+  if (cepEvent.runner) lines.push(`   Runner: ${cepEvent.runner}`);
+  if (d.agentType || d.agentId) {
+    const label = d.agentType
+      ? `${d.agentType}${d.agentId ? ` (${d.agentId})` : ''}`
+      : d.agentId;
+    lines.push(`   Agent: ${label}`);
+  }
+  if (cepEvent.sessionId) lines.push(`   Session: ${cepEvent.sessionId}`);
+  if (cepEvent.traceId) lines.push(`   Trace: ${cepEvent.traceId}`);
+  if (d.parentTraceId) lines.push(`   Parent Task: ${d.parentTraceId}`);
+  if (d.durationMs) lines.push(`   Duration: ${d.durationMs}ms`);
+  if (d.status) lines.push(`   Status: ${d.status}`);
+
+  if (d.args) {
+    const s = JSON.stringify(d.args);
+    lines.push(`   Args: ${s.length <= limit ? s : s.substring(0, limit) + '...'}`);
+  }
+
+  // Response (tool output from tool.end / subagent.stop)
+  const resp = d.response;
+  if (resp) {
+    const s = typeof resp === 'string' ? resp : JSON.stringify(resp);
+    lines.push(`   Response: ${s.length <= limit ? s : s.substring(0, limit) + '...'}`);
+  }
+
+  // Legacy result/outputPreview (only if no response)
+  if (!resp) {
+    const result = d.result || d.outputPreview;
+    if (result) {
+      const s = typeof result === 'string' ? result : JSON.stringify(result);
+      lines.push(`   Result: ${s.length <= limit ? s : s.substring(0, limit) + '...'}`);
+    }
+  }
+
+  return lines;
+}
+
 const server = new McpServer({
   name: 'suboculo',
   version: '0.1.0',
@@ -62,6 +105,12 @@ server.tool(
     const events = db.prepare('SELECT DISTINCT event FROM entries WHERE event IS NOT NULL ORDER BY event').all();
     const tools = db.prepare('SELECT DISTINCT tool FROM entries WHERE tool IS NOT NULL ORDER BY tool').all();
     const agentTypes = db.prepare('SELECT DISTINCT subagentType FROM entries WHERE subagentType IS NOT NULL ORDER BY subagentType').all();
+    const agentIds = db.prepare(`
+      SELECT DISTINCT agentId, subagentType
+      FROM entries
+      WHERE agentId IS NOT NULL
+      ORDER BY agentId
+    `).all();
     const sessions = db.prepare(`
       SELECT DISTINCT sessionID, runner, MIN(ts) as firstSeen
       FROM entries
@@ -88,6 +137,13 @@ server.tool(
       lines.push('  (none — all events from lead agent)');
     } else {
       agentTypes.forEach(r => lines.push(`  - ${r.subagentType}`));
+    }
+
+    lines.push(`\nAgent IDs (${agentIds.length}):`);
+    if (agentIds.length === 0) {
+      lines.push('  (none — no agent attribution data)');
+    } else {
+      agentIds.forEach(r => lines.push(`  - ${r.agentId}${r.subagentType ? ` (${r.subagentType})` : ''}`));
     }
 
     lines.push(`\nRecent sessions (up to 50):`);
@@ -171,6 +227,21 @@ server.tool(
       });
     }
 
+    const agentStats = db.prepare(`
+      SELECT agentId, subagentType, COUNT(*) as count
+      FROM entries
+      WHERE agentId IS NOT NULL
+      GROUP BY agentId
+      ORDER BY count DESC
+      LIMIT 20
+    `).all();
+    const withAttribution = db.prepare(
+      `SELECT COUNT(*) as count FROM entries WHERE agentId IS NOT NULL`
+    ).get();
+    const withParent = db.prepare(
+      `SELECT COUNT(*) as count FROM entries WHERE data LIKE '%parentTraceId%'`
+    ).get();
+
     lines.push('\nRecent sessions:');
     recentSessions.forEach(s => {
       lines.push(`  ${s.sessionID}`);
@@ -179,6 +250,25 @@ server.tool(
       lines.push(`    Last event: ${s.lastEvent}`);
       lines.push(`    Events: ${s.eventCount}`);
     });
+
+    lines.push(`\nAgent attribution:`);
+    lines.push(`  Events with agentId: ${withAttribution.count} of ${total.count}`);
+    lines.push(`  Events with parentTraceId: ${withParent.count}`);
+    if (agentStats.length > 0) {
+      lines.push('  Events by agent:');
+      agentStats.forEach(r => {
+        lines.push(`    ${r.agentId}${r.subagentType ? ` (${r.subagentType})` : ''}: ${r.count}`);
+      });
+    }
+
+    // Token usage summary
+    const usageCount = db.prepare(`SELECT COUNT(*) as count FROM entries WHERE event = 'usage'`).get();
+    if (usageCount.count > 0) {
+      lines.push(`\nToken usage: ${usageCount.count} usage events recorded`);
+      lines.push('  Use suboculo_get_usage for detailed breakdown.');
+    } else {
+      lines.push('\nToken usage: no data yet (extracted from transcripts on Task completion)');
+    }
 
     return { content: [{ type: 'text', text: lines.join('\n') }] };
   }
@@ -251,6 +341,8 @@ server.tool(
     tool: z.string().optional().describe('Filter by tool name'),
     event: z.string().optional().describe('Filter by event type (e.g. "tool.start", "tool.end", "session.start")'),
     sessionId: z.string().optional().describe('Filter by session ID'),
+    agentId: z.string().optional().describe('Filter by agent ID to see a specific subagent\'s activity'),
+    parentTraceId: z.string().optional().describe('Filter by parent Task trace ID to see all inner tool calls of a Task'),
     search: z.string().optional().describe('Text search across args, output preview, and title'),
     since: z.string().optional().describe('Only events after this ISO timestamp (e.g. "2026-03-11T14:00:00Z")'),
     until: z.string().optional().describe('Only events before this ISO timestamp (e.g. "2026-03-11T15:00:00Z")'),
@@ -258,8 +350,8 @@ server.tool(
     offset: z.number().min(0).default(0).describe('Offset for pagination (default 0)'),
     sort: z.enum(['asc', 'desc']).default('desc').describe('Sort by timestamp (default desc = newest first)'),
   },
-  async ({ runner, tool, event, sessionId, search, since, until, limit, offset, sort }) => {
-    let sql = 'SELECT key, ts, event, runner, tool, sessionID, traceId, durationMs, data FROM entries WHERE 1=1';
+  async ({ runner, tool, event, sessionId, agentId, parentTraceId, search, since, until, limit, offset, sort }) => {
+    let sql = 'SELECT key, ts, event, runner, tool, sessionID, traceId, durationMs, agentId, data FROM entries WHERE 1=1';
     const params = [];
 
     if (runner) {
@@ -278,6 +370,14 @@ server.tool(
       sql += ' AND sessionID = ?';
       params.push(sessionId);
     }
+    if (agentId) {
+      sql += ' AND agentId = ?';
+      params.push(agentId);
+    }
+    if (parentTraceId) {
+      sql += ' AND data LIKE ?';
+      params.push(`%"parentTraceId":"${parentTraceId}"%`);
+    }
     if (since) {
       sql += ' AND ts >= ?';
       params.push(since);
@@ -294,7 +394,7 @@ server.tool(
 
     // Count total matches
     const countSql = sql.replace(
-      'SELECT key, ts, event, runner, tool, sessionID, traceId, durationMs, data',
+      'SELECT key, ts, event, runner, tool, sessionID, traceId, durationMs, agentId, data',
       'SELECT COUNT(*) as count'
     );
     const total = db.prepare(countSql).get(...params).count;
@@ -314,41 +414,10 @@ server.tool(
     lines.push(`=== Events (showing ${rows.length} of ${total}, offset ${offset}) ===\n`);
 
     rows.forEach((row, i) => {
-      const data = JSON.parse(row.data);
-      decodeBase64Fields(data.data);
-      lines.push(`${offset + i + 1}. [${row.ts}] ${row.event || data.event}`);
-      if (row.tool) lines.push(`   Tool: ${row.tool}`);
-      if (row.runner) lines.push(`   Runner: ${row.runner}`);
-      if (data.data?.agentType) lines.push(`   Agent: ${data.data.agentType}${data.data.agentId ? ` (${data.data.agentId})` : ''}`);
-      if (row.sessionID) lines.push(`   Session: ${row.sessionID}`);
-      if (row.traceId) lines.push(`   Trace: ${row.traceId}`);
-      if (row.durationMs) lines.push(`   Duration: ${row.durationMs}ms`);
-
-      // Show args summary
-      const args = data.data?.args;
-      if (args) {
-        const argsStr = JSON.stringify(args);
-        if (argsStr.length <= 200) {
-          lines.push(`   Args: ${argsStr}`);
-        } else {
-          lines.push(`   Args: ${argsStr.substring(0, 200)}...`);
-        }
-      }
-
-      // Show result/output preview
-      const result = data.data?.result || data.data?.outputPreview;
-      if (result) {
-        const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
-        if (resultStr.length <= 200) {
-          lines.push(`   Result: ${resultStr}`);
-        } else {
-          lines.push(`   Result: ${resultStr.substring(0, 200)}...`);
-        }
-      }
-
-      const status = data.data?.status;
-      if (status) lines.push(`   Status: ${status}`);
-
+      const cep = JSON.parse(row.data);
+      decodeBase64Fields(cep.data);
+      lines.push(`${offset + i + 1}. [${row.ts}] ${row.event || cep.event}`);
+      lines.push(...formatEventLines(cep, 200));
       lines.push('');
     });
 
@@ -396,38 +465,10 @@ server.tool(
     lines.push('');
 
     rows.forEach((row, i) => {
-      const data = JSON.parse(row.data);
-      decodeBase64Fields(data.data);
-
-      lines.push(`${i + 1}. [${row.ts}] ${row.event || data.event}`);
-      if (row.tool) lines.push(`   Tool: ${row.tool}`);
-      if (data.data?.agentType) lines.push(`   Agent: ${data.data.agentType}${data.data.agentId ? ` (${data.data.agentId})` : ''}`);
-      if (row.traceId) lines.push(`   Trace: ${row.traceId}`);
-      if (row.durationMs) lines.push(`   Duration: ${row.durationMs}ms`);
-
-      const args = data.data?.args;
-      if (args) {
-        const argsStr = JSON.stringify(args);
-        if (argsStr.length <= 300) {
-          lines.push(`   Args: ${argsStr}`);
-        } else {
-          lines.push(`   Args: ${argsStr.substring(0, 300)}...`);
-        }
-      }
-
-      const result = data.data?.result || data.data?.outputPreview;
-      if (result) {
-        const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
-        if (resultStr.length <= 300) {
-          lines.push(`   Result: ${resultStr}`);
-        } else {
-          lines.push(`   Result: ${resultStr.substring(0, 300)}...`);
-        }
-      }
-
-      const status = data.data?.status;
-      if (status) lines.push(`   Status: ${status}`);
-
+      const cep = JSON.parse(row.data);
+      decodeBase64Fields(cep.data);
+      lines.push(`${i + 1}. [${row.ts}] ${row.event || cep.event}`);
+      lines.push(...formatEventLines(cep, 300));
       lines.push('');
     });
 
@@ -485,34 +526,9 @@ server.tool(
     lines.push('');
 
     events.forEach((e, i) => {
+      decodeBase64Fields(e.data);
       lines.push(`${i + 1}. [${e.ts}] ${e.event}`);
-      if (e.data?.tool) lines.push(`   Tool: ${e.data.tool}`);
-      if (e.runner) lines.push(`   Runner: ${e.runner}`);
-      if (e.sessionId) lines.push(`   Session: ${e.sessionId}`);
-      if (e.traceId) lines.push(`   Trace: ${e.traceId}`);
-      if (e.data?.durationMs) lines.push(`   Duration: ${e.data.durationMs}ms`);
-      if (e.data?.status) lines.push(`   Status: ${e.data.status}`);
-
-      const args = e.data?.args;
-      if (args) {
-        const argsStr = JSON.stringify(args);
-        if (argsStr.length <= 300) {
-          lines.push(`   Args: ${argsStr}`);
-        } else {
-          lines.push(`   Args: ${argsStr.substring(0, 300)}...`);
-        }
-      }
-
-      const result = e.data?.result || e.data?.outputPreview;
-      if (result) {
-        const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
-        if (resultStr.length <= 300) {
-          lines.push(`   Result: ${resultStr}`);
-        } else {
-          lines.push(`   Result: ${resultStr.substring(0, 300)}...`);
-        }
-      }
-
+      lines.push(...formatEventLines(e, 300));
       lines.push('');
     });
 
@@ -520,7 +536,108 @@ server.tool(
   }
 );
 
-// ── Tool 7: suboculo_save_analysis ────────────────────────────────────────────
+// ── Tool 7: suboculo_get_usage ──────────────────────────────────────────────
+
+server.tool(
+  'suboculo_get_usage',
+  'Get token usage statistics extracted from session transcripts. Shows totals by session, model, and agent. Usage data is extracted when Task tools complete (triggering transcript analysis).',
+  {
+    sessionId: z.string().optional().describe('Filter by session ID (default: all sessions)'),
+  },
+  async ({ sessionId }) => {
+    let sql = `SELECT data FROM entries WHERE event = 'usage'`;
+    const params = [];
+
+    if (sessionId) {
+      sql += ' AND sessionID = ?';
+      params.push(sessionId);
+    }
+
+    sql += ' ORDER BY ts ASC';
+    const rows = db.prepare(sql).all(...params);
+
+    if (rows.length === 0) {
+      return {
+        content: [{
+          type: 'text',
+          text: sessionId
+            ? `No usage data found for session ${sessionId}. Usage is extracted from transcripts when Task tools complete.`
+            : 'No usage data found. Usage is extracted from transcripts when Task tools complete.'
+        }]
+      };
+    }
+
+    // Aggregate by session → model → agent
+    const sessions = new Map();
+    let grandTotal = { input: 0, output: 0, cacheCreate: 0, cacheRead: 0, apiCalls: 0 };
+
+    for (const row of rows) {
+      const cep = JSON.parse(row.data);
+      const d = cep.data || {};
+      const sid = cep.sessionId || 'unknown';
+      const model = d.model || 'unknown';
+      const agent = d.agentId || 'lead';
+
+      if (!sessions.has(sid)) sessions.set(sid, { models: new Map(), total: { input: 0, output: 0, cacheCreate: 0, cacheRead: 0, apiCalls: 0 } });
+      const session = sessions.get(sid);
+
+      const modelKey = `${model}::${agent}`;
+      if (!session.models.has(modelKey)) session.models.set(modelKey, { model, agent, input: 0, output: 0, cacheCreate: 0, cacheRead: 0, apiCalls: 0 });
+      const bucket = session.models.get(modelKey);
+
+      const inp = d.inputTokens || 0;
+      const out = d.outputTokens || 0;
+      const cc = d.cacheCreationTokens || 0;
+      const cr = d.cacheReadTokens || 0;
+
+      bucket.input += inp; bucket.output += out; bucket.cacheCreate += cc; bucket.cacheRead += cr; bucket.apiCalls++;
+      session.total.input += inp; session.total.output += out; session.total.cacheCreate += cc; session.total.cacheRead += cr; session.total.apiCalls++;
+      grandTotal.input += inp; grandTotal.output += out; grandTotal.cacheCreate += cc; grandTotal.cacheRead += cr; grandTotal.apiCalls++;
+    }
+
+    const lines = [];
+    lines.push('=== Token Usage ===\n');
+
+    const fmtTokens = (t) => {
+      const totalInput = t.input + t.cacheCreate + t.cacheRead;
+      const cacheRatio = totalInput > 0 ? ((t.cacheRead / totalInput) * 100).toFixed(1) : '0.0';
+      return [
+        `  API calls: ${t.apiCalls}`,
+        `  Input tokens: ${t.input.toLocaleString()} (non-cached)`,
+        `  Output tokens: ${t.output.toLocaleString()}`,
+        `  Cache creation: ${t.cacheCreate.toLocaleString()} tokens`,
+        `  Cache read: ${t.cacheRead.toLocaleString()} tokens`,
+        `  Cache hit ratio: ${cacheRatio}%`,
+        `  Total input (all): ${totalInput.toLocaleString()} tokens`,
+      ];
+    };
+
+    if (sessions.size > 1) {
+      lines.push('Grand Total:');
+      lines.push(...fmtTokens(grandTotal));
+      lines.push('');
+    }
+
+    for (const [sid, session] of sessions) {
+      lines.push(`Session: ${sid}`);
+      lines.push(...fmtTokens(session.total));
+      lines.push('');
+
+      // Breakdown by model/agent
+      const sorted = [...session.models.values()].sort((a, b) => (b.output + b.cacheCreate) - (a.output + a.cacheCreate));
+      for (const b of sorted) {
+        const label = b.agent === 'lead' ? b.model : `${b.model} (agent: ${b.agent})`;
+        lines.push(`  ${label}:`);
+        lines.push(`    ${b.apiCalls} calls | out: ${b.output.toLocaleString()} | cache-create: ${b.cacheCreate.toLocaleString()} | cache-read: ${b.cacheRead.toLocaleString()}`);
+      }
+      lines.push('');
+    }
+
+    return { content: [{ type: 'text', text: lines.join('\n') }] };
+  }
+);
+
+// ── Tool 8: suboculo_save_analysis ────────────────────────────────────────────
 
 server.tool(
   'suboculo_save_analysis',

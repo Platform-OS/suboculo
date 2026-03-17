@@ -12,7 +12,8 @@
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { mkdirSync, existsSync } from 'fs';
+import { mkdirSync, existsSync, openSync, readSync, closeSync, statSync } from 'fs';
+import { execFileSync } from 'child_process';
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
@@ -29,6 +30,7 @@ if (!existsSync(DB_DIR)) {
 
 // Open/create database
 const db = new Database(DB_PATH);
+db.pragma('busy_timeout = 5000'); // Wait up to 5s for lock under concurrent writes
 
 // Initialize schema (idempotent)
 function initSchema() {
@@ -95,7 +97,7 @@ function validateCEPEvent(event) {
   const validEvents = [
     'session.start', 'session.end', 'session.update',
     'tool.start', 'tool.end',
-    'message', 'error', 'subagent.spawn', 'subagent.stop', 'custom'
+    'message', 'error', 'subagent.spawn', 'subagent.stop', 'usage', 'custom'
   ];
   if (event.event && !validEvents.includes(event.event)) {
     errors.push(`Invalid event type: ${event.event}`);
@@ -112,6 +114,17 @@ function validateCEPEvent(event) {
 function generateCEPKey(event) {
   if (event.traceId && event.event) {
     return `${event.traceId}::${event.event}::${event.ts}`;
+  }
+  // Usage events: unique by session + model + agent + timestamp
+  if (event.event === 'usage' && event.sessionId) {
+    const agent = event.data?.agentId || 'lead';
+    const model = event.data?.model || 'unknown';
+    return `usage::${event.sessionId}::${model}::${agent}::${event.ts}`;
+  }
+  // Subagent lifecycle events have no traceId — use agentId to prevent
+  // key collisions when multiple agents spawn/stop in the same second
+  if (event.data?.agentId && event.sessionId && event.event) {
+    return `${event.sessionId}::${event.event}::${event.data.agentId}::${event.ts}`;
   }
   if (event.sessionId && event.event && event.ts) {
     return `${event.sessionId}::${event.event}::${event.ts}`;
@@ -235,6 +248,362 @@ function decodeBase64Fields(event) {
   }
 }
 
+// --- Subagent transcript extraction ---
+
+const NOTIFY_PORT = 3000;
+
+// Scan forward from byteOffset to find the byte position after the next newline
+function seekPastNewline(fd, byteOffset, fileSize, buf) {
+  let pos = byteOffset;
+  while (pos < fileSize) {
+    const toRead = Math.min(buf.length, fileSize - pos);
+    const bytesRead = readSync(fd, buf, 0, toRead, pos);
+    if (bytesRead === 0) return fileSize;
+    for (let i = 0; i < bytesRead; i++) {
+      if (buf[i] === 0x0A) return pos + i + 1;
+    }
+    pos += bytesRead;
+  }
+  return fileSize;
+}
+
+// Read one complete JSONL line starting at offset
+function readLineAt(fd, offset, fileSize, buf) {
+  if (offset >= fileSize) return { line: null, nextOffset: fileSize };
+  let result = '';
+  let pos = offset;
+  while (pos < fileSize) {
+    const toRead = Math.min(buf.length, fileSize - pos);
+    const bytesRead = readSync(fd, buf, 0, toRead, pos);
+    if (bytesRead === 0) break;
+    const chunk = buf.toString('utf8', 0, bytesRead);
+    const nlIdx = chunk.indexOf('\n');
+    if (nlIdx !== -1) {
+      result += chunk.substring(0, nlIdx);
+      return { line: result, nextOffset: pos + nlIdx + 1 };
+    }
+    result += chunk;
+    pos += bytesRead;
+  }
+  return { line: result || null, nextOffset: fileSize };
+}
+
+// Extract timestamp from a JSONL line via regex (no JSON parse)
+const TS_RE = /"timestamp":"([^"]+)"/;
+function extractTimestamp(line) {
+  const m = TS_RE.exec(line);
+  return m ? m[1] : null;
+}
+
+// Binary search JSONL file for byte offset of first line with timestamp >= targetTs
+function findOffsetByTimestamp(filePath, targetTs) {
+  const { size: fileSize } = statSync(filePath);
+  if (fileSize === 0) return 0;
+
+  const fd = openSync(filePath, 'r');
+  const buf = Buffer.alloc(8192);
+  // 2s buffer for clock precision
+  const target = new Date(new Date(targetTs).getTime() - 2000).toISOString();
+
+  let lo = 0, hi = fileSize;
+  let bestOffset = fileSize;
+
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    const lineStart = mid === 0 ? 0 : seekPastNewline(fd, mid, fileSize, buf);
+
+    if (lineStart >= fileSize) {
+      hi = mid;
+      continue;
+    }
+
+    const { line, nextOffset } = readLineAt(fd, lineStart, fileSize, buf);
+    if (!line) {
+      hi = mid;
+      continue;
+    }
+
+    const ts = extractTimestamp(line);
+    if (!ts || ts < target) {
+      lo = nextOffset;
+    } else {
+      hi = mid;
+      bestOffset = lineStart;
+    }
+  }
+
+  closeSync(fd);
+  return bestOffset;
+}
+
+// Parse transcript from offset, extract subagent tool calls as CEP events
+function extractSubagentToolCalls(transcriptPath, taskTraceId, sessionId, startTs, endTs) {
+  const offset = findOffsetByTimestamp(transcriptPath, startTs);
+  const { size: fileSize } = statSync(transcriptPath);
+
+  if (offset >= fileSize) return [];
+
+  const fd = openSync(transcriptPath, 'r');
+  const buf = Buffer.alloc(64 * 1024); // 64KB read buffer
+
+  const events = [];
+  const toolNames = new Map(); // tool_use_id → tool name
+  let pos = offset;
+
+  // Upper bound: stop scanning past endTs + 2s buffer
+  const upperTs = new Date(new Date(endTs).getTime() + 2000).toISOString();
+
+  while (pos < fileSize) {
+    const { line, nextOffset } = readLineAt(fd, pos, fileSize, buf);
+    if (!line) break;
+    pos = nextOffset;
+
+    // Quick reject: must reference parent Task's traceId
+    if (!line.includes(taskTraceId)) {
+      const ts = extractTimestamp(line);
+      if (ts && ts > upperTs) break;
+      continue;
+    }
+    if (!line.includes('"progress"')) continue;
+
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+
+    if (entry.type !== 'progress') continue;
+    if (entry.parentToolUseID !== taskTraceId) continue;
+
+    const msg = entry.data?.message;
+    if (!msg?.message?.content) continue;
+
+    const agentId = entry.data?.agentId;
+    const ts = msg.timestamp || entry.timestamp;
+    const content = msg.message.content;
+
+    if (!Array.isArray(content)) continue;
+
+    for (const block of content) {
+      if (block.type === 'tool_use') {
+        toolNames.set(block.id, block.name);
+        events.push({
+          ts,
+          event: 'tool.start',
+          runner: 'claude-code',
+          sessionId,
+          traceId: block.id,
+          data: {
+            tool: block.name,
+            agentId,
+            parentTraceId: taskTraceId,
+            args: block.input
+          }
+        });
+      } else if (block.type === 'tool_result') {
+        const toolName = toolNames.get(block.tool_use_id) || 'unknown';
+        events.push({
+          ts,
+          event: 'tool.end',
+          runner: 'claude-code',
+          sessionId,
+          traceId: block.tool_use_id,
+          data: {
+            tool: toolName,
+            agentId,
+            parentTraceId: taskTraceId,
+            status: block.is_error ? 'error' : 'success',
+            response: typeof block.content === 'string'
+              ? block.content
+              : JSON.stringify(block.content)
+          }
+        });
+      }
+    }
+  }
+
+  closeSync(fd);
+  return events;
+}
+
+// Extract all token usage entries from transcript as CEP events
+function extractUsageFromTranscript(transcriptPath, sessionId) {
+  const { size: fileSize } = statSync(transcriptPath);
+  if (fileSize === 0) return [];
+
+  const fd = openSync(transcriptPath, 'r');
+  const buf = Buffer.alloc(64 * 1024);
+
+  const events = [];
+  let pos = 0;
+
+  while (pos < fileSize) {
+    const { line, nextOffset } = readLineAt(fd, pos, fileSize, buf);
+    if (!line) break;
+    pos = nextOffset;
+
+    // Quick reject: must contain usage data
+    if (!line.includes('"usage"')) continue;
+    // Skip non-message progress entries
+    if (line.includes('"hook_progress"') || line.includes('"mcp_progress"')) continue;
+
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+
+    let usage, model, agentId, ts;
+
+    if (entry.type === 'assistant' && entry.message?.usage) {
+      // Main agent API response
+      usage = entry.message.usage;
+      model = entry.message?.model || entry.model || 'unknown';
+      ts = entry.timestamp;
+      agentId = null;
+    } else if (entry.type === 'progress') {
+      if (entry.data?.type !== 'agent_progress') continue;
+      const innerMsg = entry.data?.message;
+      if (!innerMsg?.message?.usage) continue;
+
+      usage = innerMsg.message.usage;
+      model = innerMsg.message?.model || innerMsg.model || entry.model || 'unknown';
+      agentId = entry.data?.agentId || entry.agentId || null;
+      ts = innerMsg.timestamp || entry.timestamp;
+    } else {
+      continue;
+    }
+
+    if (!usage || !ts) continue;
+
+    // Skip synthetic/zero entries
+    if (model === '<synthetic>') continue;
+    const inp = usage.input_tokens || 0;
+    const out = usage.output_tokens || 0;
+    const cacheCreate = usage.cache_creation_input_tokens || 0;
+    const cacheRead = usage.cache_read_input_tokens || 0;
+    if (inp === 0 && out === 0 && cacheCreate === 0 && cacheRead === 0) continue;
+
+    const evt = {
+      ts,
+      event: 'usage',
+      runner: 'claude-code',
+      sessionId,
+      data: {
+        model,
+        inputTokens: inp,
+        outputTokens: out,
+        cacheCreationTokens: cacheCreate,
+        cacheReadTokens: cacheRead,
+      }
+    };
+    if (agentId) evt.data.agentId = agentId;
+
+    events.push(evt);
+  }
+
+  closeSync(fd);
+  return events;
+}
+
+// Fire-and-forget batch SSE notification
+function notifyBatch(events) {
+  try {
+    execFileSync('curl', [
+      '-s', '-X', 'POST',
+      '-H', 'Content-Type: application/json',
+      '-d', JSON.stringify(events),
+      `http://localhost:${NOTIFY_PORT}/api/notify/batch`,
+      '--max-time', '2'
+    ], { timeout: 3000, stdio: 'ignore' });
+  } catch {
+    // Fire-and-forget — server may not be running
+  }
+}
+
+// Orchestrator: extract subagent tool calls from transcript and insert into DB
+function extractAndInsertSubagentEvents(event) {
+  const { traceId, sessionId, ts: endTs } = event;
+  const { transcriptPath } = event.data;
+
+  if (!transcriptPath || !existsSync(transcriptPath)) return;
+
+  // Get start timestamp from matching tool.start
+  let startTs;
+  try {
+    const row = db.prepare(
+      `SELECT ts FROM entries WHERE traceId = ? AND event = 'tool.start' LIMIT 1`
+    ).get(traceId);
+    startTs = row?.ts;
+  } catch { /* ignore */ }
+
+  if (!startTs) {
+    // Fallback: 1 hour before end
+    startTs = new Date(new Date(endTs).getTime() - 3600000).toISOString();
+  }
+
+  const extracted = extractSubagentToolCalls(transcriptPath, traceId, sessionId, startTs, endTs);
+  if (extracted.length === 0) return;
+
+  // Dedup: find events already captured by hooks (same traceId + event type)
+  // so we can ENRICH them with agentId/parentTraceId instead of inserting duplicates
+  const traceIds = [...new Set(extracted.map(e => e.traceId).filter(Boolean))];
+  const existingMap = new Map();
+
+  for (let i = 0; i < traceIds.length; i += 100) {
+    const batch = traceIds.slice(i, i + 100);
+    const placeholders = batch.map(() => '?').join(',');
+    const rows = db.prepare(
+      `SELECT key, traceId, event, data FROM entries
+       WHERE traceId IN (${placeholders}) AND event IN ('tool.start', 'tool.end')`
+    ).all(...batch);
+    for (const row of rows) {
+      existingMap.set(`${row.traceId}::${row.event}`, row);
+    }
+  }
+
+  const updateStmt = db.prepare(
+    `UPDATE entries SET agentId = ?, data = ? WHERE key = ?`
+  );
+  const newEvents = [];
+  let enrichedCount = 0;
+
+  const processAll = db.transaction(() => {
+    for (const evt of extracted) {
+      const existing = existingMap.get(`${evt.traceId}::${evt.event}`);
+
+      if (existing) {
+        // Enrich hook-captured event with attribution (no duplicate)
+        const existingData = JSON.parse(existing.data);
+        if (!existingData.data) existingData.data = {};
+        existingData.data.agentId = evt.data.agentId;
+        existingData.data.parentTraceId = evt.data.parentTraceId;
+        updateStmt.run(evt.data.agentId, JSON.stringify(existingData), existing.key);
+        enrichedCount++;
+      } else {
+        // New event not captured by hooks — insert
+        try { insertCEPEvent(evt); newEvents.push(evt); } catch { /* skip */ }
+      }
+    }
+  });
+  processAll();
+
+  // SSE notification only for truly new events (enriched ones were already sent by hooks)
+  if (newEvents.length > 0) notifyBatch(newEvents);
+
+  console.error(`[suboculo] Task ${traceId}: ${enrichedCount} enriched, ${newEvents.length} new (${extracted.length} total from transcript)`);
+
+  // Extract all token usage from transcript (main agent + subagents)
+  try {
+    const usageEvents = extractUsageFromTranscript(transcriptPath, sessionId);
+    if (usageEvents.length > 0) {
+      const insertUsage = db.transaction(() => {
+        for (const evt of usageEvents) {
+          try { insertCEPEvent(evt); } catch { /* duplicate key — skip */ }
+        }
+      });
+      insertUsage();
+      console.error(`[suboculo] Usage: ${usageEvents.length} events extracted from transcript`);
+    }
+  } catch (err) {
+    console.error('[suboculo] Usage extraction failed (non-fatal):', err.message);
+  }
+}
+
 function processEvent(event) {
   // Decode base64 fields before storing
   decodeBase64Fields(event);
@@ -248,7 +617,36 @@ function processEvent(event) {
 
   try {
     const key = insertCEPEvent(event);
-    // Silent success (hooks don't need output)
+
+    // After successful insert, extract subagent inner tool calls for Task tool.end
+    if (event.event === 'tool.end' && event.data?.tool === 'Task' && event.data?.transcriptPath) {
+      try {
+        extractAndInsertSubagentEvents(event);
+      } catch (err) {
+        console.error('[suboculo] Subagent extraction failed (non-fatal):', err.message);
+      }
+    } else if (event.event === 'tool.end' && event.data?.transcriptPath) {
+      // For non-Task tool.end events, extract usage if not yet done for this session
+      try {
+        const hasUsage = db.prepare(
+          'SELECT 1 FROM entries WHERE sessionID = ? AND event = ? LIMIT 1'
+        ).get(event.sessionId, 'usage');
+        if (!hasUsage) {
+          const usageEvents = extractUsageFromTranscript(event.data.transcriptPath, event.sessionId);
+          if (usageEvents.length > 0) {
+            const insertUsage = db.transaction(() => {
+              for (const evt of usageEvents) {
+                try { insertCEPEvent(evt); } catch { /* skip */ }
+              }
+            });
+            insertUsage();
+            console.error(`[suboculo] Usage (first extract): ${usageEvents.length} events`);
+          }
+        }
+      } catch (err) {
+        console.error('[suboculo] Usage extraction failed (non-fatal):', err.message);
+      }
+    }
   } catch (err) {
     console.error('Failed to insert event:', err.message);
     process.exit(1);

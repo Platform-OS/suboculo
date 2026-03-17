@@ -896,7 +896,7 @@ ${analysisResult.analysis}
                   <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Tool</th>
                   <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Agent</th>
                   <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Status</th>
-                  <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Duration</th>
+                  <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Duration / Tokens</th>
                   <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Tags</th>
                 </tr>
               </thead>
@@ -912,6 +912,14 @@ ${analysisResult.analysis}
                   {@const cepRunner = e.runner || "unknown"}
                   {@const cepStatus = e.data?.status || ""}
                   {@const tool = e.data?.tool || ""}
+                  {@const isUsageEvent = cepEvent === "usage"}
+                  {@const usageModel = isUsageEvent ? e.data?.model : null}
+                  {@const usageTokens = isUsageEvent ? {
+                    input: e.data?.inputTokens || 0,
+                    output: e.data?.outputTokens || 0,
+                    cacheCreate: e.data?.cacheCreationTokens || 0,
+                    cacheRead: e.data?.cacheReadTokens || 0
+                  } : null}
                   <tr
                     class="group cursor-pointer transition-all duration-150 {isChecked
                       ? 'bg-blue-100/50 border-l-4 border-l-blue-500'
@@ -938,7 +946,13 @@ ${analysisResult.analysis}
                         {cepEvent}
                       </Badge>
                     </td>
-                    <td class="px-4 py-3 font-mono text-xs font-semibold" on:click={() => selectEntry(key)}>{tool || "—"}</td>
+                    <td class="px-4 py-3 font-mono text-xs font-semibold" on:click={() => selectEntry(key)}>
+                      {#if isUsageEvent}
+                        <Badge variant="outline" class="rounded-full text-xs">{usageModel || "unknown"}</Badge>
+                      {:else}
+                        {tool || "—"}
+                      {/if}
+                    </td>
                     <td class="px-4 py-3 text-xs" on:click={() => selectEntry(key)}>
                       {#if e.data?.agentType}
                         <Badge variant="outline" class="rounded-full text-xs" title={e.data?.agentId || ''}>
@@ -959,7 +973,16 @@ ${analysisResult.analysis}
                         <span class="text-muted-foreground">—</span>
                       {/if}
                     </td>
-                    <td class="px-4 py-3 text-xs font-medium {typeof durationMs === 'number' && durationMs > 1000 ? 'text-orange-600' : ''}" on:click={() => selectEntry(key)}>{dur}</td>
+                    <td class="px-4 py-3 text-xs font-medium {typeof durationMs === 'number' && durationMs > 1000 ? 'text-orange-600' : ''}" on:click={() => selectEntry(key)}>
+                      {#if isUsageEvent && usageTokens}
+                        <div class="text-xs space-y-0.5">
+                          <div>out: {usageTokens.output.toLocaleString()}</div>
+                          <div class="text-muted-foreground text-[10px]">cache: {usageTokens.cacheRead.toLocaleString()}</div>
+                        </div>
+                      {:else}
+                        {dur}
+                      {/if}
+                    </td>
                     <td class="px-4 py-3" on:click={() => selectEntry(key)}>
                       <div class="flex flex-wrap gap-1">
                         {#each tags.slice(0, 3) as t}
@@ -1081,6 +1104,26 @@ ${analysisResult.analysis}
                 {/if}
                 {#if typeof selected.data?.durationMs === "number"}
                   <div><span class="font-medium">Duration:</span> {selected.data.durationMs === 0 ? "<1ms" : `${selected.data.durationMs}ms`}</div>
+                {/if}
+
+                {#if selected.event === "usage"}
+                  {@const totalInput = (selected.data?.inputTokens || 0) + (selected.data?.cacheCreationTokens || 0) + (selected.data?.cacheReadTokens || 0)}
+                  {@const cacheHitRatio = totalInput > 0 ? ((selected.data?.cacheReadTokens || 0) / totalInput * 100).toFixed(1) : '0.0'}
+                  <div class="mt-3 pt-3 border-t border-border space-y-1">
+                    <div class="font-semibold text-foreground">Token Usage</div>
+                    {#if selected.data?.model}
+                      <div><span class="font-medium">Model:</span> {selected.data.model}</div>
+                    {/if}
+                    {#if selected.data?.agentId}
+                      <div><span class="font-medium">Agent:</span> {selected.data.agentId}</div>
+                    {/if}
+                    <div><span class="font-medium">Input tokens:</span> {(selected.data?.inputTokens || 0).toLocaleString()}</div>
+                    <div><span class="font-medium">Output tokens:</span> {(selected.data?.outputTokens || 0).toLocaleString()}</div>
+                    <div><span class="font-medium">Cache creation:</span> {(selected.data?.cacheCreationTokens || 0).toLocaleString()}</div>
+                    <div><span class="font-medium">Cache read:</span> {(selected.data?.cacheReadTokens || 0).toLocaleString()}</div>
+                    <div><span class="font-medium">Total input:</span> {totalInput.toLocaleString()}</div>
+                    <div><span class="font-medium">Cache hit ratio:</span> {cacheHitRatio}%</div>
+                  </div>
                 {/if}
               </div>
             </div>

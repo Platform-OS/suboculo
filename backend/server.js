@@ -181,6 +181,24 @@ function decodeBase64Fields(event) {
   }
 }
 
+// Generate SSE key — must match generateCEPKey logic for consistent dedup
+function sseKey(event) {
+  if (event.traceId && event.event) {
+    return `${event.traceId}::${event.event}::${event.ts}`;
+  }
+  // Usage events: unique by session + model + agent + timestamp
+  if (event.event === 'usage' && event.sessionId) {
+    const agent = event.data?.agentId || 'lead';
+    const model = event.data?.model || 'unknown';
+    return `usage::${event.sessionId}::${model}::${agent}::${event.ts}`;
+  }
+  const agentId = event.data?.agentId;
+  if (agentId && event.sessionId && event.event) {
+    return `${event.sessionId}::${event.event}::${agentId}::${event.ts}`;
+  }
+  return `${event.sessionId || 'unknown'}::${event.event}::${event.ts}`;
+}
+
 // API: Ingest single CEP event (real-time)
 // Notify endpoint - for hooks that already wrote to DB, just emit SSE
 app.post('/api/notify', (req, res) => {
@@ -213,15 +231,34 @@ app.post('/api/notify', (req, res) => {
     decodeBase64Fields(event);
 
     // Emit to SSE clients
-    const key = `${event.traceId || 'unknown'}::${event.event}::${event.ts}`;
     sseEmitter.emit('event', {
-      __key: key,
+      __key: sseKey(event),
       ...event
     });
 
     res.json({ success: true });
   } catch (error) {
     console.error('Notify error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Batch notify endpoint — for subagent extraction (events already in DB, just emit SSE)
+app.post('/api/notify/batch', (req, res) => {
+  try {
+    const events = req.body;
+    if (!Array.isArray(events)) {
+      return res.status(400).json({ error: 'Expected array of events' });
+    }
+
+    for (const event of events) {
+      decodeBase64Fields(event);
+      sseEmitter.emit('event', { __key: sseKey(event), ...event });
+    }
+
+    res.json({ success: true, count: events.length });
+  } catch (error) {
+    console.error('Batch notify error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -319,10 +356,9 @@ app.post('/api/ingest/batch', (req, res) => {
     const count = insertCEPEventsBatch(db, events);
 
     // Emit events for SSE clients (after transaction commits)
-    events.forEach((event, idx) => {
-      const key = `${event.traceId || event.sessionId}::${event.event}::${event.ts}`;
+    events.forEach((event) => {
       sseEmitter.emit('event', {
-        __key: key,
+        __key: sseKey(event),
         ...event
       });
     });
