@@ -1,6 +1,5 @@
 const express = require('express');
 const Database = require('better-sqlite3');
-const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 const { insertCEPEvent, insertCEPEventsBatch, validateCEPEvent } = require('./cep-processor');
@@ -14,7 +13,6 @@ const sseEmitter = new EventEmitter();
 sseEmitter.setMaxListeners(100); // Support up to 100 concurrent SSE connections
 
 // Middleware
-app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
 // Serve static frontend files
@@ -660,8 +658,7 @@ app.get('/api/events/stream', (req, res) => {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive',
-    'Access-Control-Allow-Origin': '*'
+    'Connection': 'keep-alive'
   });
 
   // Send initial connection message
