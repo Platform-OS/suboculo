@@ -1249,8 +1249,9 @@ ${analysisResult.analysis}
 
         <!-- Analysis Detail View -->
         {#if selectedAnalysis}
-          <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" on:click={() => selectedAnalysis = null}>
-            <div on:click|stopPropagation>
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" on:click={() => selectedAnalysis = null} on:keydown={(e) => e.key === 'Escape' && (selectedAnalysis = null)}>
+            <div role="dialog" aria-modal="true" aria-label="Analysis Details" tabindex="-1" on:click|stopPropagation on:keydown|stopPropagation>
               <Card class="w-full max-w-3xl max-h-[90vh] overflow-hidden">
                 <CardContent class="p-6 space-y-4 overflow-y-auto max-h-[90vh]">
                   <div class="flex items-start justify-between gap-4">
@@ -1314,8 +1315,9 @@ ${analysisResult.analysis}
 
     <!-- LLM Analysis Dialog -->
     {#if showAnalysisDialog}
-      <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" on:click={closeAnalysisDialog}>
-        <div on:click|stopPropagation>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" on:click={closeAnalysisDialog} on:keydown={(e) => e.key === 'Escape' && closeAnalysisDialog()}>
+        <div role="dialog" aria-modal="true" aria-label="Analyze Events" tabindex="-1" on:click|stopPropagation on:keydown|stopPropagation>
           <Card class="w-full max-w-3xl max-h-[90vh] overflow-hidden">
             <CardContent class="p-6 space-y-4 overflow-y-auto max-h-[90vh]">
             <div class="flex items-center justify-between">
