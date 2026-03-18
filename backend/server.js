@@ -561,7 +561,7 @@ app.get('/api/stats', (req, res) => {
     const avgDur = db.prepare(`
       SELECT AVG(durationMs) as avg
       FROM entries
-      WHERE kind = 'tool.after' AND durationMs IS NOT NULL
+      WHERE event = 'tool.end' AND durationMs IS NOT NULL
     `).get();
 
     res.json({

@@ -21,13 +21,10 @@
   marked.setOptions({ breaks: true });
 
   // State
-  let fileInput;
-  let rawName = "(no file)";
   let pageItems = [];
   let totalEntries = 0;
   let totalPages = 1;
   let isLoading = false;
-  let parseErrors = 0;
 
   let tagsByKey = {};
   let notesByKey = {};
@@ -272,32 +269,6 @@
       page = result.page;
     } catch (err) {
       console.error('Failed to fetch entries:', err);
-    } finally {
-      isLoading = false;
-    }
-  }
-
-  async function onUploadFile(event) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    isLoading = true;
-    rawName = file.name;
-
-    try {
-      const result = await api.uploadFile(file);
-      parseErrors = result.errors;
-
-      // Reload everything
-      await loadData();
-      await fetchEntries();
-
-      selectedKey = null;
-      selected = null;
-      page = 1;
-    } catch (err) {
-      console.error('Upload failed:', err);
-      alert('Upload failed: ' + err.message);
     } finally {
       isLoading = false;
     }
@@ -652,22 +623,11 @@ ${analysisResult.analysis}
           {/if}
         </div>
         <div class="text-sm text-muted-foreground">
-          Real-time monitoring for AI coding agents. Connect via Claude Code plugin or upload event logs.
+          Real-time monitoring for AI coding agents.
         </div>
       </div>
 
       <div class="flex flex-wrap gap-2 items-center">
-        <input
-          bind:this={fileInput}
-          type="file"
-          accept=".jsonl,.txt,application/json"
-          class="hidden"
-          on:change={onUploadFile}
-        />
-        <Button on:click={() => fileInput?.click()} class="gap-2" disabled={isLoading}>
-          <Upload class="w-4 h-4" /> {isLoading ? 'Uploading...' : 'Upload JSONL'}
-        </Button>
-
         <Button variant="secondary" on:click={exportTagsData} class="gap-2">
           <Download class="w-4 h-4" /> Export tags
         </Button>
@@ -708,21 +668,12 @@ ${analysisResult.analysis}
     <!-- Filters Card -->
     <Card class="rounded-2xl shadow-sm">
       <CardContent class="p-4 md:p-5 space-y-4">
-        <div class="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-          <div class="space-y-1">
-            <div class="text-sm font-medium">Loaded file</div>
-            <div class="text-sm text-muted-foreground">{rawName}</div>
-          </div>
-          <div class="flex flex-wrap gap-2">
-            <Badge variant="secondary">Total: {stats.total}</Badge>
-            <Badge variant="secondary">Filtered: {totalEntries}</Badge>
-            {#if parseErrors}
-              <Badge variant="destructive">Parse errors: {parseErrors}</Badge>
-            {/if}
-            {#if stats.avgDur != null}
-              <Badge variant="secondary">Avg duration: {stats.avgDur}ms</Badge>
-            {/if}
-          </div>
+        <div class="flex flex-wrap gap-2">
+          <Badge variant="secondary">Total: {stats.total}</Badge>
+          <Badge variant="secondary">Filtered: {totalEntries}</Badge>
+          {#if stats.avgDur != null}
+            <Badge variant="secondary">Avg duration: {stats.avgDur}ms</Badge>
+          {/if}
         </div>
 
         <Separator />
@@ -1228,7 +1179,7 @@ ${analysisResult.analysis}
             </Tabs>
           {:else}
             <div class="text-sm text-muted-foreground">
-              Upload a JSONL file and click an entry to see details.
+              Click an entry to see details.
             </div>
           {/if}
         </CardContent>
