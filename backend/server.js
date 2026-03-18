@@ -214,6 +214,9 @@ function sseKey(event) {
 // Notify endpoint - for hooks that already wrote to DB, just emit SSE
 app.post('/api/notify', (req, res) => {
   try {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Request body must be a JSON object' });
+    }
     const event = req.body;
 
     // Calculate duration for tool.end events
@@ -262,12 +265,15 @@ app.post('/api/notify/batch', (req, res) => {
       return res.status(400).json({ error: 'Expected array of events' });
     }
 
+    let emitted = 0;
     for (const event of events) {
+      if (!event || typeof event !== 'object' || Array.isArray(event)) continue;
       decodeBase64Fields(event);
       sseEmitter.emit('event', { __key: sseKey(event), ...event });
+      emitted++;
     }
 
-    res.json({ success: true, count: events.length });
+    res.json({ success: true, received: events.length, emitted });
   } catch (error) {
     console.error('Batch notify error:', error);
     res.status(500).json({ error: error.message });

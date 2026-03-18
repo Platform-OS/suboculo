@@ -153,6 +153,10 @@ function insertCEPEventsBatch(db, events) {
 function validateCEPEvent(event) {
   const errors = [];
 
+  if (!event || typeof event !== 'object' || Array.isArray(event)) {
+    return { valid: false, errors: ['Event must be a JSON object'] };
+  }
+
   // Required fields
   if (!event.ts) errors.push('Missing required field: ts');
   if (!event.event) errors.push('Missing required field: event');
