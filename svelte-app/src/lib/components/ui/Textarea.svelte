@@ -17,4 +17,4 @@
   on:input
   on:change
   {...$$restProps}
-/>
+></textarea>

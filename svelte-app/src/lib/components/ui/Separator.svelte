@@ -8,4 +8,4 @@
 <div
   class={cn("shrink-0 bg-border h-[1px] w-full", className)}
   {...$$restProps}
-/>
+></div>
