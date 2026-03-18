@@ -93,6 +93,17 @@ export const SuboculoPlugin = async ({ project, client, directory, worktree }) =
     if (event.traceId && event.event) {
       return `${event.traceId}::${event.event}::${event.ts}`;
     }
+    // Usage events: unique by session + model + agent + timestamp
+    if (event.event === 'usage' && event.sessionId) {
+      const agent = event.data?.agentId || 'lead';
+      const model = event.data?.model || 'unknown';
+      return `usage::${event.sessionId}::${model}::${agent}::${event.ts}`;
+    }
+    // Subagent lifecycle events: use agentId to prevent key collisions
+    const agentId = event.data?.agentId;
+    if (agentId && event.sessionId && event.event) {
+      return `${event.sessionId}::${event.event}::${agentId}::${event.ts}`;
+    }
     if (event.sessionId && event.event && event.ts) {
       return `${event.sessionId}::${event.event}::${event.ts}`;
     }
@@ -144,7 +155,7 @@ export const SuboculoPlugin = async ({ project, client, directory, worktree }) =
     `);
 
     stmt.run(
-      key, ts, cepEvent, tool, sessionId, sessionId, parentSessionID, durationMs, args, eventData,
+      key, ts, cepEvent, tool, sessionId, parentSessionID || sessionId, parentSessionID, durationMs, args, eventData,
       runner, cepEvent, traceId, status, agentId
     );
 
