@@ -39,6 +39,17 @@ mkdir -p "$SUBOCULO_DIR/integrations/claude-code"
 mkdir -p "$SUBOCULO_DIR/backend"
 mkdir -p "$SUBOCULO_DIR/frontend"
 
+# Build frontend
+echo "🔨 Building frontend..."
+cd "$SCRIPT_DIR/svelte-app"
+npm install --silent 2>/dev/null
+if ! npm run build >/dev/null 2>&1; then
+  echo "❌ Frontend build failed. Running again with output:"
+  npm run build
+  exit 1
+fi
+cd "$TARGET_DIR"
+
 # Copy files from monorepo structure
 echo "📋 Copying files..."
 cp "$SCRIPT_DIR/integrations/claude-code/hooks/event-writer.mjs" "$SUBOCULO_DIR/integrations/claude-code/"
@@ -47,7 +58,7 @@ cp "$SCRIPT_DIR/backend/mcp-analytics-server.mjs" "$SUBOCULO_DIR/backend/"
 cp "$SCRIPT_DIR/backend/server.js" "$SUBOCULO_DIR/backend/"
 sed -i "s/process.env.SUBOCULO_PORT || 3000/process.env.SUBOCULO_PORT || $PORT/" "$SUBOCULO_DIR/backend/server.js"
 cp "$SCRIPT_DIR/backend/cep-processor.js" "$SUBOCULO_DIR/backend/"
-cp -r "$SCRIPT_DIR/svelte-app/dist/"* "$SUBOCULO_DIR/frontend/" 2>/dev/null || echo "⚠️  Frontend not built yet (run 'cd svelte-app && npm run build')"
+cp -r "$SCRIPT_DIR/svelte-app/dist/"* "$SUBOCULO_DIR/frontend/"
 cp "$SCRIPT_DIR/integrations/claude-code/hooks/package.json" "$SUBOCULO_DIR/"
 
 # Install dependencies
