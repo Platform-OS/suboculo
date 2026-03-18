@@ -65,6 +65,7 @@ function insertCEPEvent(db, event, idx = 0) {
   const title = data.title || null;
   const subagentType = data.subagentType || null;
   const childSessionId = data.childSessionId || null;
+  const agentId = data.agentId || null;
   const args = data.args ? JSON.stringify(data.args) : null;
 
   // Store complete event as JSON
@@ -75,8 +76,8 @@ function insertCEPEvent(db, event, idx = 0) {
     (key, ts, kind, type, tool, sessionID, rootSessionID, subagentType,
      callID, durationMs, outputLen, outputPreview, title,
      parentSessionID, childSessionID, args, data,
-     runner, event, traceId, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     runner, event, traceId, status, agentId)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   // Map CEP fields to database schema
@@ -114,7 +115,8 @@ function insertCEPEvent(db, event, idx = 0) {
     runner,             // NEW: CEP runner field
     cepEvent,           // NEW: CEP event field
     traceId,            // NEW: CEP traceId field
-    status              // NEW: CEP status field (from tool.end events)
+    status,             // NEW: CEP status field (from tool.end events)
+    agentId             // NEW: agent/subagent attribution
   );
 
   return key;
