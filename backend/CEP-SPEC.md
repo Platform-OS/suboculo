@@ -117,8 +117,25 @@ Emitted when an error occurs.
 Emitted when a subagent is created.
 
 **Required data fields:**
-- `childSessionId` (string): ID of the spawned subagent session
-- `subagentType` (string): Type of subagent (e.g., "librarian", "explorer")
+- `agentId` (string): ID of the spawned agent
+- `agentType` (string): Type of subagent (e.g., "Explore", "Plan")
+- `childSessionId` (string, optional): ID of the spawned subagent session
+
+### `subagent.stop`
+Emitted when a subagent finishes.
+
+**Required data fields:**
+- `agentId` (string): ID of the stopped agent
+- `agentType` (string): Type of subagent
+
+### `usage`
+Emitted to report token consumption.
+
+**Required data fields:**
+- `model` (string): Model used
+- `agentId` (string, optional): Agent that consumed the tokens
+- `inputTokens` (number): Input token count
+- `outputTokens` (number): Output token count
 
 ### `custom`
 Catch-all for runner-specific events that don't fit standard types.
@@ -187,19 +204,9 @@ Content-Type: application/json
 ]
 ```
 
-### File Upload (Offline)
+### Direct SQLite (Hooks/Plugins)
 
-Upload a JSONL file where each line is a CEP-formatted JSON object:
-
-```
-{"ts":"2026-03-05T12:00:00.000Z","event":"session.start",...}
-{"ts":"2026-03-05T12:00:01.000Z","event":"tool.start",...}
-{"ts":"2026-03-05T12:00:01.042Z","event":"tool.end",...}
-```
-
-## Examples
-
-See `examples/` directory for complete event sequences from different runners.
+Integration writers (e.g., `event-writer.mjs`, OpenCode plugin) write CEP events directly to the per-project SQLite database at `.suboculo/events.db`. This is the primary ingestion path and works even when the backend server is not running.
 
 ## Version History
 

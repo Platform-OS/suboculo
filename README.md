@@ -162,16 +162,14 @@ OpenCode executes tool
         ↓
 Plugin hook fires (tool.execute.before/after)
         ↓
-suboculo.js plugin → SQLite (.suboculo/events.db)
+suboculo.js plugin
+  ├─> SQLite (.suboculo/events.db)  [always works]
+  └─> POST /api/notify → SSE       [if server running]
 ```
 
-**Dual-Write Architecture (Claude Code):**
+**Dual-Write Architecture (both runners):**
 1. **Primary:** Direct write to SQLite (always works)
 2. **Secondary:** HTTP POST to `/api/notify` (triggers SSE if server running)
-
-**Single-Write Architecture (OpenCode):**
-1. Plugin writes directly to SQLite (synchronous, always succeeds)
-2. Optional: Future enhancement to add SSE notifications
 
 This ensures events are never lost while enabling real-time updates when monitoring.
 

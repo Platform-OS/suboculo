@@ -1,43 +1,35 @@
 # Agent Integrations
 
-Client-side integrations that send events to the Agent Actions Viewer backend.
+Client-side integrations that capture events and write them to the per-project Suboculo database.
 
 ## Available Integrations
 
 ### [Claude Code](./claude-code/)
 
-**Status:** ✅ Available
-**Type:** Claude Code plugin with hooks
-**Installation:** `/plugin install github:your-org/suboculo/integrations/claude-code`
+**Status:** Available
+**Type:** Hooks + standalone event writer
+**Installation:** `./install-suboculo.sh /path/to/project`
 
-Captures all tool usage, agent spawns, and session events from Claude Code sessions via hooks.
+Captures tool usage, agent spawns, and session events from Claude Code via hooks. Events are written directly to SQLite and optionally pushed to SSE via HTTP notify.
 
-**Features:**
-- Real-time event capture
-- Session tracking
-- Tool timing analysis
-- Automatic backend sync
-
-[→ Installation Guide](./claude-code/INSTALL.md)
 [→ Documentation](./claude-code/README.md)
 
 ---
 
-### OpenCode
+### [OpenCode](./opencode/)
 
-**Status:** 🚧 Planned
-**Type:** TBD (hooks, wrapper script, or API integration)
+**Status:** Available
+**Type:** Bun plugin + bun:sqlite
+**Installation:** `./install-suboculo-opencode.sh /path/to/project`
 
-Support for OpenCode sessions.
+Captures tool usage and session events from OpenCode via a Bun plugin. Uses bun:sqlite for direct database writes.
 
 ---
 
 ### Codex CLI
 
-**Status:** 🚧 Planned
+**Status:** Planned
 **Type:** TBD
-
-Support for Codex CLI sessions.
 
 ---
 
@@ -46,28 +38,29 @@ Support for Codex CLI sessions.
 ```
 ┌─────────────────┐
 │  Claude Code    │──┐
-│  (with plugin)  │  │
-└─────────────────┘  │
-                     │
-┌─────────────────┐  │    ┌──────────────┐    ┌──────────────┐
-│    OpenCode     │──┼───→│   Backend    │───→│   Viewer     │
-│  (with script)  │  │    │ (localhost   │    │ (localhost   │
-└─────────────────┘  │    │    :3000)    │    │    :5173)    │
-                     │    └──────────────┘    └──────────────┘
-┌─────────────────┐  │
-│   Codex CLI     │──┘
-│  (with hooks)   │
-└─────────────────┘
+│  (hooks)        │  │    ┌──────────────┐
+└─────────────────┘  │    │              │
+                     ├───→│  .suboculo/  │
+┌─────────────────┐  │    │  events.db   │
+│    OpenCode     │──┘    │              │
+│  (Bun plugin)   │      └──────┬───────┘
+└─────────────────┘             │
+                                ▼
+                    ┌──────────────────────┐
+                    │  Backend (server.js) │
+                    │  serves UI + SSE     │
+                    │  + MCP analytics     │
+                    └──────────────────────┘
 ```
 
-All integrations send events to the same backend using the [Common Event Protocol (CEP)](../backend/CEP-SPEC.md).
+All integrations write events using the [Common Event Protocol (CEP)](../backend/CEP-SPEC.md). Each project has its own `.suboculo/` directory with an independent database and backend.
 
 ## Creating a New Integration
 
 1. **Create directory**: `integrations/your-agent/`
-2. **Implement event capture**: Send events to `POST /api/ingest`
+2. **Implement event capture**: Write to SQLite directly and/or send events to `POST /api/ingest`
 3. **Follow CEP format**: See [CEP-SPEC.md](../backend/CEP-SPEC.md)
-4. **Document installation**: Add README.md with setup instructions
+4. **Create install script**: Copy files to target project's `.suboculo/` directory
 
 ### Minimum Event Format
 
@@ -84,16 +77,3 @@ All integrations send events to the same backend using the [Common Event Protoco
   }
 }
 ```
-
-See [backend adapters](../backend/adapters/README.md) for data format processing.
-
-## Backend Support
-
-The backend already supports multiple runners via adapters in `backend/adapters/`:
-- ✅ `claude-code.js` - Claude Code event processor
-- ✅ `opencode.js` - OpenCode event processor
-- 🔧 Add more as needed for new event formats
-
-## Contributing
-
-See the main [CONTRIBUTING.md](../CONTRIBUTING.md) for guidelines on adding new integrations.
