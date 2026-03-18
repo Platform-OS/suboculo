@@ -1,6 +1,7 @@
 <script>
   import { onMount } from "svelte";
   import { marked } from "marked";
+  import DOMPurify from "dompurify";
   import * as api from "$lib/api.js";
   import Card from "./ui/Card.svelte";
   import CardContent from "./ui/CardContent.svelte";
@@ -1288,7 +1289,7 @@ ${analysisResult.analysis}
                     <div>
                       <div class="text-sm text-muted-foreground mb-2">Analysis</div>
                       <div class="prose prose-sm max-w-none bg-muted p-4 rounded">
-                        {@html marked(selectedAnalysis.analysis)}
+                        {@html DOMPurify.sanitize(marked(selectedAnalysis.analysis))}
                       </div>
                     </div>
                   </div>
@@ -1408,7 +1409,7 @@ ${analysisResult.analysis}
                 <Separator />
 
                 <div class="prose prose-sm max-w-none bg-muted/30 rounded-lg p-4 text-sm leading-relaxed">
-                  {@html marked(analysisResult.analysis)}
+                  {@html DOMPurify.sanitize(marked(analysisResult.analysis))}
                 </div>
 
                 <div class="flex gap-2">
