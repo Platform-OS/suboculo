@@ -9,7 +9,7 @@ Real-time monitoring and analytics platform for AI coding agents.
 **Per-Project Installation** - Self-contained monitoring for each project
 **Frontend:** Svelte + Vite + Tailwind CSS + shadcn-svelte
 **Backend:** Node.js + Express + SQLite (better-sqlite3)
-**Integration:** Claude Code hooks + MCP analytics server
+**Integration:** Claude Code hooks + OpenCode plugins + MCP analytics server
 
 ## Why Per-Project?
 
@@ -21,7 +21,7 @@ Real-time monitoring and analytics platform for AI coding agents.
 
 ## Quick Start
 
-### Installation
+### Installation for Claude Code
 
 From this repository:
 
@@ -40,7 +40,25 @@ This installs Suboculo into `your-project/.suboculo/` with:
 - Web backend + frontend (visual monitoring)
 - All dependencies
 
-### Usage
+### Installation for OpenCode
+
+From this repository:
+
+```bash
+./install-suboculo-opencode.sh /path/to/your/project
+```
+
+Custom port (for multiple instances):
+```bash
+./install-suboculo-opencode.sh /path/to/your/project --port 3001
+```
+
+This installs Suboculo into:
+- `your-project/.suboculo/` - Shared backend, database, and web UI
+- `your-project/.opencode/plugins/` - OpenCode event capture plugin
+- All dependencies for both OpenCode plugin and backend
+
+### Usage (Claude Code)
 
 **1. Restart Claude Code** (to load hooks)
 
@@ -59,6 +77,30 @@ cd your-project
 node .suboculo/backend/server.js
 ```
 Then open http://localhost:3000 (port is set during installation)
+
+### Usage (OpenCode)
+
+**1. Restart OpenCode** (to load plugin)
+
+**2. Events are captured automatically** as you work
+   - Plugin captures tool execution, session lifecycle, and permission requests
+   - Events written to `.suboculo/events.db` (same database as Claude Code)
+
+**3. Query via MCP tools:**
+```
+What tools have I used most?
+Show me events from the last hour
+Compare OpenCode vs Claude Code tool usage
+```
+
+**4. Visual monitoring (optional):**
+```bash
+cd your-project
+node .suboculo/backend/server.js
+```
+Then open http://localhost:3000 (port is set during installation)
+
+**Multi-Runner Analysis:** The shared database enables comparing behavior across different AI coding agents (Claude Code and OpenCode) using the same CEP event format with `runner` field differentiation.
 
 ## What It Does
 
@@ -79,12 +121,14 @@ Monitor and analyze AI agent activity in real-time:
 ## Features
 
 ### Event Capture
-- Automatic hooks for Claude Code (PreToolUse, PostToolUse, PostToolUseFailure, SessionStart)
+- **Claude Code:** Automatic hooks (PreToolUse, PostToolUse, PostToolUseFailure, SessionStart)
+- **OpenCode:** Event-driven plugin (tool.execute.before/after, session.created/deleted, etc.)
 - Agent/subagent identification (agent type and ID for each tool call)
 - Direct SQLite writes (resilient, works offline)
 - Optional SSE notifications (real-time when server running)
 - Handles all tool types (different response structures)
 - Error capture with status and interrupt detection
+- Multi-runner support (Claude Code and OpenCode share same database)
 
 ### Analysis & Querying
 - **MCP tools** for CLI queries via Claude (7 tools)
@@ -102,7 +146,7 @@ Monitor and analyze AI agent activity in real-time:
 
 ## How It Works
 
-**Event Flow:**
+**Event Flow (Claude Code):**
 ```
 Claude (lead or subagent) executes tool
         ↓
@@ -112,13 +156,28 @@ event-writer.mjs → SQLite (.suboculo/events.db)
   ↘ (if server running) → POST /api/notify → SSE → frontend
 ```
 
-**Dual-Write Architecture:**
+**Event Flow (OpenCode):**
+```
+OpenCode executes tool
+        ↓
+Plugin hook fires (tool.execute.before/after)
+        ↓
+suboculo.js plugin → SQLite (.suboculo/events.db)
+```
+
+**Dual-Write Architecture (Claude Code):**
 1. **Primary:** Direct write to SQLite (always works)
 2. **Secondary:** HTTP POST to `/api/notify` (triggers SSE if server running)
+
+**Single-Write Architecture (OpenCode):**
+1. Plugin writes directly to SQLite (synchronous, always succeeds)
+2. Optional: Future enhancement to add SSE notifications
 
 This ensures events are never lost while enabling real-time updates when monitoring.
 
 ## Installation Details
+
+### Claude Code Installation
 
 When you run `install-suboculo.sh`, it creates:
 
@@ -139,6 +198,31 @@ your-project/
     settings.local.json     # Hooks configuration
   .mcp.json                 # MCP server configuration
 ```
+
+### OpenCode Installation
+
+When you run `install-suboculo-opencode.sh`, it creates:
+
+```
+your-project/
+  .suboculo/
+    backend/
+      server.js              # Web server (API + static files)
+      cep-processor.js       # Event validation
+      mcp-analytics-server.mjs  # MCP query server
+    frontend/                # Built web UI
+    package.json
+    node_modules/
+    events.db               # SQLite database (created on first event)
+  .opencode/
+    plugins/
+      suboculo.js           # OpenCode event capture plugin
+    package.json
+    node_modules/
+  opencode.json             # OpenCode configuration (MCP server)
+```
+
+**Note:** Both installations can coexist in the same project, sharing the `.suboculo/events.db` database for unified monitoring across both AI coding agents. Claude Code uses `.mcp.json` while OpenCode uses `opencode.json`.
 
 See [INSTALL.md](./INSTALL.md) for detailed installation instructions and troubleshooting.
 
@@ -183,12 +267,18 @@ agent-actions-viewer/
 ├── svelte-app/                # Frontend
 │   ├── src/
 │   └── dist/                  # Built files (copied on install)
-├── integrations/claude-code/  # Claude Code integration
-│   └── hooks/
-│       ├── event-writer.mjs   # Direct SQLite writer
-│       ├── hooks.json         # Hook definitions (source)
-│       └── package.json       # Dependencies
-├── install-suboculo.sh        # Installation script
+├── integrations/
+│   ├── claude-code/           # Claude Code integration
+│   │   └── hooks/
+│   │       ├── event-writer.mjs   # Direct SQLite writer
+│   │       ├── hooks.json         # Hook definitions (source)
+│   │       └── package.json       # Dependencies
+│   └── opencode/              # OpenCode integration
+│       ├── plugins/
+│       │   └── suboculo.js    # Event capture plugin
+│       └── package.json       # Plugin dependencies
+├── install-suboculo.sh        # Claude Code installation script
+├── install-suboculo-opencode.sh  # OpenCode installation script
 ├── INSTALL.md                 # Installation guide
 └── README.md                  # This file
 ```
@@ -219,6 +309,7 @@ npm run build  # Creates dist/ directory
 
 ### Testing in a project
 
+**Claude Code:**
 ```bash
 # Install in test project (default port 3000)
 ./install-suboculo.sh /path/to/test/project
@@ -229,6 +320,28 @@ npm run build  # Creates dist/ directory
 # Restart Claude Code in that project
 cd /path/to/test/project
 claude  # (with Suboculo hooks loaded)
+```
+
+**OpenCode:**
+```bash
+# Install in test project (default port 3000)
+./install-suboculo-opencode.sh /path/to/test/project
+
+# Or with a custom port
+./install-suboculo-opencode.sh /path/to/test/project --port 3001
+
+# Restart OpenCode in that project
+cd /path/to/test/project
+opencode  # (with Suboculo plugin loaded)
+```
+
+**Both in same project:**
+```bash
+# Install both integrations (they share the same database)
+./install-suboculo.sh /path/to/test/project
+./install-suboculo-opencode.sh /path/to/test/project
+
+# Use either agent - events are captured in shared .suboculo/events.db
 ```
 
 ## Security

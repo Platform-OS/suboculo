@@ -2,6 +2,8 @@
 
 ## Quick Install
 
+### For Claude Code
+
 From this repository:
 
 ```bash
@@ -14,18 +16,43 @@ Or from within the project you want to monitor:
 /path/to/agent-actions-viewer/install-suboculo.sh .
 ```
 
+### For OpenCode
+
+From this repository:
+
+```bash
+./install-suboculo-opencode.sh /path/to/target/project
+```
+
+Or from within the project you want to monitor:
+
+```bash
+/path/to/agent-actions-viewer/install-suboculo-opencode.sh .
+```
+
+### Both in Same Project
+
+You can install both integrations in the same project to monitor both Claude Code and OpenCode. They will share the same `.suboculo/events.db` database:
+
+```bash
+./install-suboculo.sh /path/to/project
+./install-suboculo-opencode.sh /path/to/project
+```
+
 ### Custom Port
 
 To run multiple Suboculo instances (one per project), assign each a unique port:
 
 ```bash
 ./install-suboculo.sh /path/to/project-a --port 3000
-./install-suboculo.sh /path/to/project-b --port 3001
+./install-suboculo-opencode.sh /path/to/project-b --port 3001
 ```
 
-The port is baked into hooks and MCP config at install time. Default is 3000.
+The port is baked into hooks/MCP config at install time. Default is 3000.
 
 ## What Gets Installed
+
+### Claude Code Installation
 
 ```
 your-project/
@@ -47,7 +74,32 @@ your-project/
 
 The install script merges into existing `.claude/settings.local.json` and `.mcp.json` files if they exist, preserving your other settings.
 
+### OpenCode Installation
+
+```
+your-project/
+  .suboculo/
+    backend/
+      server.js                  # Web server (API + static files)
+      cep-processor.js           # Event validation
+      mcp-analytics-server.mjs   # MCP server for querying/analyzing
+    frontend/                    # Built web UI
+    package.json                 # Backend dependencies
+    node_modules/                # Installed automatically
+    events.db                    # SQLite database (created on first event)
+  .opencode/
+    plugins/
+      suboculo.js                # Event capture plugin
+    package.json                 # Plugin dependencies (better-sqlite3)
+    node_modules/                # Plugin dependencies
+  opencode.json                  # MCP server configuration (created/merged)
+```
+
+The install script merges into existing `opencode.json` if it exists. OpenCode automatically loads plugins from `.opencode/plugins/` directory.
+
 ## Verify Installation
+
+### Claude Code
 
 1. Restart Claude Code
 2. Run any tool (e.g., read a file)
@@ -57,6 +109,24 @@ The install script merges into existing `.claude/settings.local.json` and `.mcp.
    sqlite3 .suboculo/events.db "SELECT COUNT(*) FROM entries"
    ```
 4. Ask Claude to analyze your usage:
+   ```
+   What tools have I used most?
+   ```
+
+### OpenCode
+
+1. Restart OpenCode
+2. Run any tool (e.g., read a file)
+3. Check the database was created:
+   ```bash
+   ls -la .suboculo/events.db
+   sqlite3 .suboculo/events.db "SELECT COUNT(*) FROM entries WHERE runner='opencode'"
+   ```
+4. Check plugin is loaded:
+   ```bash
+   ls -la .opencode/plugins/suboculo.js
+   ```
+5. Query via MCP (if configured):
    ```
    What tools have I used most?
    ```

@@ -630,7 +630,7 @@ ${analysisResult.analysis}
   let activeTab = "tags";
 
   function subagentLabel(e) {
-    return e?.data?.agentType || e?.subagentType || "lead";
+    return e?.data?.agentType || e?.data?.agentId || e?.subagentType || "lead";
   }
 </script>
 
@@ -915,9 +915,10 @@ ${analysisResult.analysis}
                   {@const tool = e.data?.tool || ""}
                   {@const isUsageEvent = cepEvent === "usage"}
                   {@const embeddedUsage = e.data?.response?.usage}
-                  {@const hasUsage = isUsageEvent || embeddedUsage}
+                  {@const hasFlatTokens = e.data?.inputTokens != null || e.data?.outputTokens != null}
+                  {@const hasUsage = isUsageEvent || hasFlatTokens || embeddedUsage}
                   {@const usageModel = isUsageEvent ? e.data?.model : null}
-                  {@const usageTokens = isUsageEvent ? {
+                  {@const usageTokens = (isUsageEvent || hasFlatTokens) ? {
                     input: e.data?.inputTokens || 0,
                     output: e.data?.outputTokens || 0,
                     cacheCreate: e.data?.cacheCreationTokens || 0,
@@ -962,9 +963,9 @@ ${analysisResult.analysis}
                       {/if}
                     </td>
                     <td class="px-4 py-3 text-xs" on:click={() => selectEntry(key)}>
-                      {#if e.data?.agentType}
+                      {#if e.data?.agentType || e.data?.agentId}
                         <Badge variant="outline" class="rounded-full text-xs" title={e.data?.agentId || ''}>
-                          {e.data.agentType}
+                          {e.data.agentType || e.data.agentId}
                         </Badge>
                       {:else}
                         <span class="text-muted-foreground">lead</span>
@@ -1119,13 +1120,13 @@ ${analysisResult.analysis}
               </div>
 
 
-              {#if selected.event === "usage" || selected.data?.response?.usage}
+              {#if selected.event === "usage" || selected.data?.inputTokens != null || selected.data?.outputTokens != null || selected.data?.response?.usage}
                 {@const detailEmbeddedUsage = selected.data?.response?.usage}
-                {@const detailIsUsageEvent = selected.event === "usage"}
-                {@const detailInputTokens = detailIsUsageEvent ? (selected.data?.inputTokens || 0) : (detailEmbeddedUsage?.input_tokens || 0)}
-                {@const detailOutputTokens = detailIsUsageEvent ? (selected.data?.outputTokens || 0) : (detailEmbeddedUsage?.output_tokens || 0)}
-                {@const detailCacheCreate = detailIsUsageEvent ? (selected.data?.cacheCreationTokens || 0) : (detailEmbeddedUsage?.cache_creation_input_tokens || 0)}
-                {@const detailCacheRead = detailIsUsageEvent ? (selected.data?.cacheReadTokens || 0) : (detailEmbeddedUsage?.cache_read_input_tokens || 0)}
+                {@const detailUseFlatTokens = selected.event === "usage" || selected.data?.inputTokens != null || selected.data?.outputTokens != null}
+                {@const detailInputTokens = detailUseFlatTokens ? (selected.data?.inputTokens || 0) : (detailEmbeddedUsage?.input_tokens || 0)}
+                {@const detailOutputTokens = detailUseFlatTokens ? (selected.data?.outputTokens || 0) : (detailEmbeddedUsage?.output_tokens || 0)}
+                {@const detailCacheCreate = detailUseFlatTokens ? (selected.data?.cacheCreationTokens || 0) : (detailEmbeddedUsage?.cache_creation_input_tokens || 0)}
+                {@const detailCacheRead = detailUseFlatTokens ? (selected.data?.cacheReadTokens || 0) : (detailEmbeddedUsage?.cache_read_input_tokens || 0)}
                 {@const totalInput = detailInputTokens + detailCacheCreate + detailCacheRead}
                 {@const cacheHitRatio = totalInput > 0 ? (detailCacheRead / totalInput * 100).toFixed(1) : '0.0'}
                 <div class="text-xs text-muted-foreground mt-3 pt-3 border-t border-border space-y-1">

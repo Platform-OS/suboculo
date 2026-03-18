@@ -22,7 +22,20 @@ const frontendPath = path.join(__dirname, '../frontend');
 console.log('[suboculo] Checking frontend path:', frontendPath);
 console.log('[suboculo] Frontend exists?', fs.existsSync(frontendPath));
 if (fs.existsSync(frontendPath)) {
-  app.use(express.static(frontendPath));
+  app.use(express.static(frontendPath, {
+    etag: true,
+    lastModified: true,
+    setHeaders: (res, filePath) => {
+      // HTML: always revalidate (picks up new hashed asset references)
+      if (filePath.endsWith('.html')) {
+        res.setHeader('Cache-Control', 'no-cache');
+      }
+      // Hashed assets (Vite adds content hash): cache long-term
+      else if (filePath.match(/\.[a-f0-9]{8,}\./)) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      }
+    }
+  }));
   console.log('[suboculo] Static files enabled from:', frontendPath);
 } else {
   console.log('[suboculo] Frontend not found - web UI unavailable');
