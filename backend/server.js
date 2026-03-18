@@ -967,6 +967,10 @@ app.get('/api/export', (req, res) => {
 // API: Import tags and notes
 app.post('/api/import', (req, res) => {
   try {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Request body must be a JSON object' });
+    }
+
     const { tagsByKey, notesByKey } = req.body;
 
     // Validate structure before touching the database
