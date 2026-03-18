@@ -613,6 +613,9 @@ app.get('/api/analyses-history/:id', (req, res) => {
 // API: Save externally-generated analysis (e.g. from CLI via MCP)
 app.post('/api/analyses', (req, res) => {
   try {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Request body must be a JSON object' });
+    }
     const { model, event_count, event_keys, analysis, prompt } = req.body;
 
     if (!analysis || typeof analysis !== 'string') {
@@ -693,6 +696,9 @@ app.get('/api/events/stream', (req, res) => {
 // API: Analyze selected events with LLM
 app.post('/api/analyze', async (req, res) => {
   try {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Request body must be a JSON object' });
+    }
     const { keys, model, apiKey, prompt } = req.body;
 
     if (!keys || !Array.isArray(keys) || keys.length === 0) {
@@ -775,6 +781,9 @@ Be concise and actionable.`;
 // API: Save selected events for MCP bridge (CLI analysis)
 app.post('/api/selection', (req, res) => {
   try {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Request body must be a JSON object' });
+    }
     const { keys } = req.body;
 
     if (!keys || !Array.isArray(keys) || keys.length === 0) {
@@ -884,6 +893,9 @@ app.get('/api/tags', (req, res) => {
 // API: Add/remove tag
 app.post('/api/tags', (req, res) => {
   try {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Request body must be a JSON object' });
+    }
     const { entryKey, tag, action } = req.body;
 
     if (action === 'add') {
@@ -919,6 +931,9 @@ app.get('/api/notes', (req, res) => {
 // API: Set note
 app.post('/api/notes', (req, res) => {
   try {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Request body must be a JSON object' });
+    }
     const { entryKey, note } = req.body;
 
     if (note && note.trim()) {
