@@ -423,11 +423,6 @@ npm rebuild better-sqlite3
 ```
 
 See [INSTALL.md](./INSTALL.md) for detailed troubleshooting.
-
-## License
-
-MIT
-
 ---
 
 **Note:** This is v0.1 - per-project architecture. The original centralized design (all projects → one backend) is deprecated in favor of project-specific isolation, especially for sandboxed environments.

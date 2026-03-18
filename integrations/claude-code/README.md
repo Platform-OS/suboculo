@@ -280,11 +280,6 @@ See the main repository for contribution guidelines.
 - **CEP Specification**: [CEP-SPEC.md](../backend/CEP-SPEC.md)
 - **Frontend**: http://localhost:5173
 - **Backend API**: http://localhost:3000/api
-
-## License
-
-MIT License - see LICENSE file in the main repository
-
 ## Support
 
 - **Issues**: https://github.com/your-org/suboculo/issues
