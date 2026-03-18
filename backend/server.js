@@ -969,35 +969,57 @@ app.post('/api/import', (req, res) => {
   try {
     const { tagsByKey, notesByKey } = req.body;
 
-    // Clear existing
-    db.exec('DELETE FROM tags');
-    db.exec('DELETE FROM notes');
-
-    // Insert tags
-    const insertTag = db.prepare('INSERT OR IGNORE INTO tags (entry_key, tag) VALUES (?, ?)');
-    const insertTags = db.transaction((entries) => {
-      for (const [key, tags] of entries) {
+    // Validate structure before touching the database
+    if (tagsByKey != null) {
+      if (typeof tagsByKey !== 'object' || Array.isArray(tagsByKey)) {
+        return res.status(400).json({ error: 'tagsByKey must be an object' });
+      }
+      for (const [key, tags] of Object.entries(tagsByKey)) {
+        if (!Array.isArray(tags)) {
+          return res.status(400).json({ error: `tagsByKey["${key}"] must be an array` });
+        }
         for (const tag of tags) {
-          insertTag.run(key, tag);
+          if (typeof tag !== 'string') {
+            return res.status(400).json({ error: `tagsByKey["${key}"] contains a non-string value` });
+          }
+        }
+      }
+    }
+    if (notesByKey != null) {
+      if (typeof notesByKey !== 'object' || Array.isArray(notesByKey)) {
+        return res.status(400).json({ error: 'notesByKey must be an object' });
+      }
+      for (const [key, note] of Object.entries(notesByKey)) {
+        if (typeof note !== 'string') {
+          return res.status(400).json({ error: `notesByKey["${key}"] must be a string` });
+        }
+      }
+    }
+
+    // Atomic replace: delete + insert in a single transaction
+    const insertTag = db.prepare('INSERT OR IGNORE INTO tags (entry_key, tag) VALUES (?, ?)');
+    const insertNote = db.prepare('INSERT OR REPLACE INTO notes (entry_key, note) VALUES (?, ?)');
+
+    const importAll = db.transaction(() => {
+      db.exec('DELETE FROM tags');
+      db.exec('DELETE FROM notes');
+
+      if (tagsByKey) {
+        for (const [key, tags] of Object.entries(tagsByKey)) {
+          for (const tag of tags) {
+            insertTag.run(key, tag);
+          }
+        }
+      }
+
+      if (notesByKey) {
+        for (const [key, note] of Object.entries(notesByKey)) {
+          insertNote.run(key, note);
         }
       }
     });
 
-    if (tagsByKey) {
-      insertTags(Object.entries(tagsByKey));
-    }
-
-    // Insert notes
-    const insertNote = db.prepare('INSERT OR REPLACE INTO notes (entry_key, note) VALUES (?, ?)');
-    const insertNotes = db.transaction((entries) => {
-      for (const [key, note] of entries) {
-        insertNote.run(key, note);
-      }
-    });
-
-    if (notesByKey) {
-      insertNotes(Object.entries(notesByKey));
-    }
+    importAll();
 
     res.json({ success: true });
   } catch (error) {
