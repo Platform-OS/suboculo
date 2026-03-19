@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { insertCEPEvent, insertCEPEventsBatch, validateCEPEvent } = require('./cep-processor');
 const EventEmitter = require('events');
+const logger = require('./logger');
 
 const app = express();
 const PORT = process.env.SUBOCULO_PORT || 3000;
@@ -17,8 +18,8 @@ app.use(express.json({ limit: '10mb' }));
 
 // Serve static frontend files
 const frontendPath = path.join(__dirname, '../frontend');
-console.log('[suboculo] Checking frontend path:', frontendPath);
-console.log('[suboculo] Frontend exists?', fs.existsSync(frontendPath));
+logger.debug('[suboculo] Checking frontend path:', frontendPath);
+logger.debug('[suboculo] Frontend exists?', fs.existsSync(frontendPath));
 if (fs.existsSync(frontendPath)) {
   app.use(express.static(frontendPath, {
     etag: true,
@@ -34,9 +35,9 @@ if (fs.existsSync(frontendPath)) {
       }
     }
   }));
-  console.log('[suboculo] Static files enabled from:', frontendPath);
+  logger.info('[suboculo] Static files enabled from:', frontendPath);
 } else {
-  console.log('[suboculo] Frontend not found - web UI unavailable');
+  logger.warn('[suboculo] Frontend not found - web UI unavailable');
 }
 
 // Database setup
@@ -91,35 +92,35 @@ function initDatabase() {
   // Add runner and event columns if they don't exist (migration)
   try {
     db.exec(`ALTER TABLE entries ADD COLUMN runner TEXT`);
-    console.log('Added column: runner');
+    logger.debug('Added column: runner');
   } catch (e) {
     // Column already exists
   }
 
   try {
     db.exec(`ALTER TABLE entries ADD COLUMN event TEXT`);
-    console.log('Added column: event');
+    logger.debug('Added column: event');
   } catch (e) {
     // Column already exists
   }
 
   try {
     db.exec(`ALTER TABLE entries ADD COLUMN traceId TEXT`);
-    console.log('Added column: traceId');
+    logger.debug('Added column: traceId');
   } catch (e) {
     // Column already exists
   }
 
   try {
     db.exec(`ALTER TABLE entries ADD COLUMN status TEXT`);
-    console.log('Added column: status');
+    logger.debug('Added column: status');
   } catch (e) {
     // Column already exists
   }
 
   try {
     db.exec(`ALTER TABLE entries ADD COLUMN agentId TEXT`);
-    console.log('Added column: agentId');
+    logger.debug('Added column: agentId');
   } catch (e) {
     // Column already exists
   }
@@ -158,7 +159,7 @@ function initDatabase() {
     );
   `);
 
-  console.log('Database initialized');
+  logger.info('Database initialized');
 }
 
 // Initialize DB on startup
@@ -237,7 +238,7 @@ app.post('/api/notify', (req, res) => {
           event.data.durationMs = durationMs;
         }
       } catch (err) {
-        console.warn('Failed to calculate duration:', err.message);
+        logger.warn('Failed to calculate duration:', err.message);
       }
     }
 
@@ -252,7 +253,7 @@ app.post('/api/notify', (req, res) => {
 
     res.json({ success: true });
   } catch (error) {
-    console.error('Notify error:', error);
+    logger.error('Notify error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -275,7 +276,7 @@ app.post('/api/notify/batch', (req, res) => {
 
     res.json({ success: true, received: events.length, emitted });
   } catch (error) {
-    console.error('Batch notify error:', error);
+    logger.error('Batch notify error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -314,7 +315,7 @@ app.post('/api/ingest', (req, res) => {
           event.data.durationMs = durationMs;
         }
       } catch (err) {
-        console.warn('Failed to calculate duration:', err.message);
+        logger.warn('Failed to calculate duration:', err.message);
         // Continue without duration - don't fail the ingestion
       }
     }
@@ -334,7 +335,7 @@ app.post('/api/ingest', (req, res) => {
       event: event.event
     });
   } catch (error) {
-    console.error('Ingest error:', error);
+    logger.error('Ingest error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -386,7 +387,7 @@ app.post('/api/ingest/batch', (req, res) => {
       total: events.length
     });
   } catch (error) {
-    console.error('Batch ingest error:', error);
+    logger.error('Batch ingest error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -525,7 +526,7 @@ app.get('/api/entries', (req, res) => {
       totalPages: Math.ceil(total / limit)
     });
   } catch (error) {
-    console.error('Query error:', error);
+    logger.error('Query error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -555,7 +556,7 @@ app.get('/api/facets', (req, res) => {
       events: events.map(r => r.event)
     });
   } catch (error) {
-    console.error('Facets error:', error);
+    logger.error('Facets error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -575,7 +576,7 @@ app.get('/api/stats', (req, res) => {
       avgDur: avgDur.avg ? Math.round(avgDur.avg) : null
     });
   } catch (error) {
-    console.error('Stats error:', error);
+    logger.error('Stats error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -591,7 +592,7 @@ app.get('/api/analyses-history', (req, res) => {
 
     res.json(analyses);
   } catch (error) {
-    console.error('Get analyses error:', error);
+    logger.error('Get analyses error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -611,7 +612,7 @@ app.get('/api/analyses-history/:id', (req, res) => {
     analysis.event_keys = JSON.parse(analysis.event_keys);
     res.json(analysis);
   } catch (error) {
-    console.error('Get analysis error:', error);
+    logger.error('Get analysis error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -642,7 +643,7 @@ app.post('/api/analyses', (req, res) => {
 
     res.json({ success: true, analysisId });
   } catch (error) {
-    console.error('Save analysis error:', error);
+    logger.error('Save analysis error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -654,15 +655,15 @@ app.delete('/api/analyses-history/:id', (req, res) => {
     db.prepare('DELETE FROM analyses WHERE id = ?').run(id);
     res.json({ success: true });
   } catch (error) {
-    console.error('Delete analysis error:', error);
+    logger.error('Delete analysis error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
 // API: SSE stream for real-time events
-console.log('[INIT] Registering SSE endpoint at /api/events/stream');
+logger.debug('[INIT] Registering SSE endpoint at /api/events/stream');
 app.get('/api/events/stream', (req, res) => {
-  console.log('[SSE] Client connecting to stream');
+  logger.debug('[SSE] Client connecting to stream');
   // Set SSE headers
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -683,7 +684,7 @@ app.get('/api/events/stream', (req, res) => {
     try {
       res.write(`data: ${JSON.stringify(event)}\n\n`);
     } catch (err) {
-      console.error('SSE write error:', err.message);
+      logger.error('SSE write error:', err.message);
     }
   };
 
@@ -693,10 +694,10 @@ app.get('/api/events/stream', (req, res) => {
   req.on('close', () => {
     clearInterval(heartbeat);
     sseEmitter.off('event', listener);
-    console.log('SSE client disconnected');
+    logger.debug('SSE client disconnected');
   });
 
-  console.log('SSE client connected');
+  logger.debug('SSE client connected');
 });
 
 // API: Analyze selected events with LLM
@@ -779,7 +780,7 @@ Be concise and actionable.`;
     });
 
   } catch (error) {
-    console.error('Analysis error:', error);
+    logger.error('Analysis error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -826,7 +827,7 @@ app.post('/api/selection', (req, res) => {
 
     res.json({ success: true, count: events.length });
   } catch (error) {
-    console.error('Save selection error:', error);
+    logger.error('Save selection error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -843,7 +844,7 @@ app.get('/api/selection', (req, res) => {
     const data = JSON.parse(fs.readFileSync(selectionPath, 'utf-8'));
     res.json(data);
   } catch (error) {
-    console.error('Get selection error:', error);
+    logger.error('Get selection error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -891,7 +892,7 @@ app.get('/api/tags', (req, res) => {
 
     res.json(tagsByKey);
   } catch (error) {
-    console.error('Get tags error:', error);
+    logger.error('Get tags error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -912,7 +913,7 @@ app.post('/api/tags', (req, res) => {
 
     res.json({ success: true });
   } catch (error) {
-    console.error('Tag operation error:', error);
+    logger.error('Tag operation error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -929,7 +930,7 @@ app.get('/api/notes', (req, res) => {
 
     res.json(notesByKey);
   } catch (error) {
-    console.error('Get notes error:', error);
+    logger.error('Get notes error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -950,7 +951,7 @@ app.post('/api/notes', (req, res) => {
 
     res.json({ success: true });
   } catch (error) {
-    console.error('Note operation error:', error);
+    logger.error('Note operation error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -980,7 +981,7 @@ app.get('/api/export', (req, res) => {
       notesByKey
     });
   } catch (error) {
-    console.error('Export error:', error);
+    logger.error('Export error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1048,20 +1049,20 @@ app.post('/api/import', (req, res) => {
 
     res.json({ success: true });
   } catch (error) {
-    console.error('Import error:', error);
+    logger.error('Import error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-  console.log(`Database: ${dbPath}`);
+  logger.info(`Server running on http://localhost:${PORT}`);
+  logger.info(`Database: ${dbPath}`);
 });
 
 // Graceful shutdown
 process.on('SIGINT', () => {
-  console.log('\nClosing database...');
+  logger.info('\nClosing database...');
   db.close();
   process.exit(0);
 });

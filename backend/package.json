@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "smoke": "node tests/smoke-suite.js"
   },
   "keywords": ["suboculo", "ai-agents", "monitoring"],
   "author": "",

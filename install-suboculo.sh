@@ -7,6 +7,31 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET_DIR=""
 PORT=3000
+MANUAL_MERGE=false
+
+require_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "❌ Error: Required command not found: $1"
+    exit 1
+  fi
+}
+
+patch_port_in_file() {
+  local file="$1"
+  local pattern="$2"
+  local replacement="$3"
+  node -e '
+    const fs = require("fs");
+    const [file, pattern, replacement] = process.argv.slice(1);
+    const input = fs.readFileSync(file, "utf8");
+    const output = input.split(pattern).join(replacement);
+    if (input === output) {
+      console.error(`❌ Error: Failed to patch ${file}; pattern not found: ${pattern}`);
+      process.exit(1);
+    }
+    fs.writeFileSync(file, output);
+  ' "$file" "$pattern" "$replacement"
+}
 
 # Parse arguments
 while [ $# -gt 0 ]; do
@@ -33,6 +58,12 @@ if [ ! -d "$TARGET_DIR" ]; then
   exit 1
 fi
 
+# Preflight checks before mutating target project
+require_cmd node
+require_cmd npm
+require_cmd jq
+require_cmd mktemp
+
 # Create .suboculo directory with mirrored structure
 SUBOCULO_DIR="$TARGET_DIR/.suboculo"
 mkdir -p "$SUBOCULO_DIR/integrations/claude-code"
@@ -53,10 +84,11 @@ cd "$TARGET_DIR"
 # Copy files from monorepo structure
 echo "📋 Copying files..."
 cp "$SCRIPT_DIR/integrations/claude-code/hooks/event-writer.mjs" "$SUBOCULO_DIR/integrations/claude-code/"
-sed -i "s/const NOTIFY_PORT = 3000/const NOTIFY_PORT = $PORT/" "$SUBOCULO_DIR/integrations/claude-code/event-writer.mjs"
+patch_port_in_file "$SUBOCULO_DIR/integrations/claude-code/event-writer.mjs" "const NOTIFY_PORT = 3000" "const NOTIFY_PORT = $PORT"
 cp "$SCRIPT_DIR/backend/mcp-analytics-server.mjs" "$SUBOCULO_DIR/backend/"
 cp "$SCRIPT_DIR/backend/server.js" "$SUBOCULO_DIR/backend/"
-sed -i "s/process.env.SUBOCULO_PORT || 3000/process.env.SUBOCULO_PORT || $PORT/" "$SUBOCULO_DIR/backend/server.js"
+cp "$SCRIPT_DIR/backend/logger.js" "$SUBOCULO_DIR/backend/"
+patch_port_in_file "$SUBOCULO_DIR/backend/server.js" "process.env.SUBOCULO_PORT || 3000" "process.env.SUBOCULO_PORT || $PORT"
 cp "$SCRIPT_DIR/backend/cep-processor.js" "$SUBOCULO_DIR/backend/"
 cp -r "$SCRIPT_DIR/svelte-app/dist/"* "$SUBOCULO_DIR/frontend/"
 cp "$SCRIPT_DIR/integrations/claude-code/hooks/package.json" "$SUBOCULO_DIR/"
@@ -96,24 +128,38 @@ SETTINGS_FILE="$CLAUDE_DIR/settings.local.json"
 mkdir -p "$CLAUDE_DIR"
 
 # Load hooks from source file, replacing default port with configured port
-HOOKS_JSON=$(jq '.hooks' "$SCRIPT_DIR/integrations/claude-code/hooks/hooks.json" | sed "s|localhost:3000|localhost:$PORT|g")
+HOOKS_JSON=$(jq --arg port "$PORT" '
+  .hooks
+  | walk(if type == "string" then gsub("localhost:3000"; "localhost:" + $port) else . end)
+' "$SCRIPT_DIR/integrations/claude-code/hooks/hooks.json")
 
 # Check if settings file exists
 if [ -f "$SETTINGS_FILE" ] && [ -s "$SETTINGS_FILE" ]; then
-  # File exists - merge using jq
-  if command -v jq &> /dev/null; then
-    echo "📝 Merging hooks into existing settings..."
-    TEMP_FILE=$(mktemp)
-    jq --argjson hooks "$HOOKS_JSON" '.hooks = $hooks' "$SETTINGS_FILE" > "$TEMP_FILE"
-    mv "$TEMP_FILE" "$SETTINGS_FILE"
-    echo "✅ Hooks merged into $SETTINGS_FILE"
-  else
-    echo "⚠️  Warning: jq not found - cannot auto-merge hooks"
-    echo "   $SETTINGS_FILE already exists"
-    echo "   Please manually add the hooks configuration shown below."
-    echo ""
-    MANUAL_MERGE=true
-  fi
+  echo "📝 Merging hooks into existing settings..."
+  TEMP_FILE=$(mktemp)
+  jq --argjson hooks "$HOOKS_JSON" '
+    .hooks = (
+      (.hooks // {}) as $existing
+      | reduce ($hooks | keys[]) as $event ({};
+          .[$event] = (
+            (
+              ($existing[$event] // [])
+              | map(
+                  if (
+                    ([.hooks[]?.command? // empty] | any(contains(".suboculo/integrations/claude-code/event-writer.mjs")))
+                  )
+                  then empty
+                  else .
+                  end
+                )
+            ) + ($hooks[$event] // [])
+          )
+        )
+      | $existing + .
+    )
+  ' "$SETTINGS_FILE" > "$TEMP_FILE"
+  mv "$TEMP_FILE" "$SETTINGS_FILE"
+  echo "✅ Hooks merged into $SETTINGS_FILE"
 else
   # Create new settings file using jq to properly construct JSON
   jq -n --argjson hooks "$HOOKS_JSON" '{hooks: $hooks}' > "$SETTINGS_FILE"

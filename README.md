@@ -187,6 +187,7 @@ your-project/
     backend/
       server.js              # Web server (API + static files)
       cep-processor.js       # Event validation
+      logger.js              # Shared logging helper
       mcp-analytics-server.mjs  # MCP query server
     frontend/                # Built web UI
     package.json
@@ -207,6 +208,7 @@ your-project/
     backend/
       server.js              # Web server (API + static files)
       cep-processor.js       # Event validation
+      logger.js              # Shared logging helper
       mcp-analytics-server.mjs  # MCP query server
     frontend/                # Built web UI
     package.json

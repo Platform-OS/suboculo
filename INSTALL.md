@@ -62,6 +62,7 @@ your-project/
     backend/
       server.js                  # Web server (API + static files)
       cep-processor.js           # Event validation
+      logger.js                  # Shared logging helper
       mcp-analytics-server.mjs   # MCP server for querying/analyzing
     frontend/                    # Built web UI
     package.json                 # Dependencies
@@ -82,6 +83,7 @@ your-project/
     backend/
       server.js                  # Web server (API + static files)
       cep-processor.js           # Event validation
+      logger.js                  # Shared logging helper
       mcp-analytics-server.mjs   # MCP server for querying/analyzing
     frontend/                    # Built web UI
     package.json                 # Backend dependencies
@@ -192,7 +194,7 @@ If you prefer to install manually:
 mkdir -p your-project/.suboculo/{integrations/claude-code,backend,frontend}
 
 # Copy backend
-cp backend/server.js backend/cep-processor.js backend/mcp-analytics-server.mjs your-project/.suboculo/backend/
+cp backend/server.js backend/cep-processor.js backend/logger.js backend/mcp-analytics-server.mjs your-project/.suboculo/backend/
 
 # Copy event writer
 cp integrations/claude-code/hooks/event-writer.mjs your-project/.suboculo/integrations/claude-code/

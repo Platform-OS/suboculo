@@ -92,6 +92,9 @@
   let analyses = [];
   let selectedAnalysis = null;
   let loadingAnalyses = false;
+  let notice = null;
+  let noticeTimer;
+  let confirmDialog = null;
 
   // Load initial data
   onMount(async () => {
@@ -162,23 +165,23 @@
       selectedAnalysis = await api.getAnalysis(id);
     } catch (err) {
       console.error('Failed to load analysis:', err);
-      alert('Failed to load analysis');
+      showNotice('Failed to load analysis', 'error');
     }
   }
 
   async function deleteAnalysisById(id) {
-    if (!confirm('Are you sure you want to delete this analysis?')) return;
-
-    try {
-      await api.deleteAnalysis(id);
-      await loadAnalyses();
-      if (selectedAnalysis?.id === id) {
-        selectedAnalysis = null;
+    openConfirmDialog('Delete this saved analysis? This cannot be undone.', async () => {
+      try {
+        await api.deleteAnalysis(id);
+        await loadAnalyses();
+        if (selectedAnalysis?.id === id) {
+          selectedAnalysis = null;
+        }
+      } catch (err) {
+        console.error('Failed to delete analysis:', err);
+        showNotice('Failed to delete analysis', 'error');
       }
-    } catch (err) {
-      console.error('Failed to delete analysis:', err);
-      alert('Failed to delete analysis');
-    }
+    });
   }
 
   function exportAnalysisAsMarkdown(analysis) {
@@ -329,16 +332,18 @@
   }
 
   async function clearAllTags() {
-    if (!confirm('Clear all tags and notes? This cannot be undone.')) return;
-
-    try {
-      await api.importTags({ tagsByKey: {}, notesByKey: {} });
-      tagsByKey = {};
-      notesByKey = {};
-      facets = await api.getFacets();
-    } catch (err) {
-      console.error('Failed to clear tags:', err);
-    }
+    openConfirmDialog('Clear all tags and notes? This cannot be undone.', async () => {
+      try {
+        await api.importTags({ tagsByKey: {}, notesByKey: {} });
+        tagsByKey = {};
+        notesByKey = {};
+        facets = await api.getFacets();
+        showNotice('All tags and notes cleared', 'success');
+      } catch (err) {
+        console.error('Failed to clear tags:', err);
+        showNotice('Failed to clear tags and notes', 'error');
+      }
+    });
   }
 
   async function exportTagsData() {
@@ -375,10 +380,33 @@
         facets = await api.getFacets();
       } catch (err) {
         console.error('Failed to import:', err);
-        alert('Import failed: ' + err.message);
+        showNotice('Import failed: ' + err.message, 'error');
       }
     };
     reader.readAsText(file);
+  }
+
+  function showNotice(message, tone = 'info') {
+    clearTimeout(noticeTimer);
+    notice = { message, tone };
+    noticeTimer = setTimeout(() => {
+      notice = null;
+    }, 5000);
+  }
+
+  function openConfirmDialog(message, onConfirm) {
+    confirmDialog = { message, onConfirm };
+  }
+
+  async function confirmDialogAccept() {
+    if (!confirmDialog) return;
+    const action = confirmDialog.onConfirm;
+    confirmDialog = null;
+    await action();
+  }
+
+  function closeConfirmDialog() {
+    confirmDialog = null;
   }
 
   function formatTs(ts) {
@@ -608,6 +636,12 @@ ${analysisResult.analysis}
 
 <div class="min-h-screen bg-background text-foreground p-4 md:p-6">
   <div class="max-w-[1800px] mx-auto space-y-4">
+    {#if notice}
+      <div class="rounded-xl border px-4 py-3 text-sm {notice.tone === 'error' ? 'border-red-300 bg-red-50 text-red-800' : notice.tone === 'success' ? 'border-green-300 bg-green-50 text-green-800' : 'border-blue-300 bg-blue-50 text-blue-800'}">
+        {notice.message}
+      </div>
+    {/if}
+
     <!-- Header -->
     <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
       <div>
@@ -1432,6 +1466,24 @@ ${analysisResult.analysis}
             {/if}
           </CardContent>
         </Card>
+        </div>
+      </div>
+    {/if}
+
+    {#if confirmDialog}
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" on:click={closeConfirmDialog} on:keydown={(e) => e.key === 'Escape' && closeConfirmDialog()}>
+        <div role="dialog" aria-modal="true" aria-label="Confirm Action" tabindex="-1" on:click|stopPropagation on:keydown|stopPropagation>
+          <Card class="w-full max-w-md">
+            <CardContent class="p-6 space-y-4">
+              <div class="text-lg font-semibold">Confirm Action</div>
+              <div class="text-sm text-muted-foreground">{confirmDialog.message}</div>
+              <div class="flex justify-end gap-2">
+                <Button variant="outline" on:click={closeConfirmDialog}>Cancel</Button>
+                <Button variant="destructive" on:click={confirmDialogAccept}>Confirm</Button>
+              </div>
+            </CardContent>
+          </Card>
         </div>
       </div>
     {/if}
