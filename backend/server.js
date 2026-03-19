@@ -8,6 +8,7 @@ const logger = require('./logger');
 
 const app = express();
 const PORT = process.env.SUBOCULO_PORT || 3000;
+const HOST = process.env.SUBOCULO_HOST || '127.0.0.1';
 
 // SSE Event Emitter for real-time updates
 const sseEmitter = new EventEmitter();
@@ -193,6 +194,14 @@ function decodeBase64Fields(event) {
   }
 }
 
+function tryParseJson(value) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
 // Generate SSE key — must match generateCEPKey logic for consistent dedup
 function sseKey(event) {
   if (event.traceId && event.event) {
@@ -230,12 +239,14 @@ app.post('/api/notify', (req, res) => {
         `).get(event.traceId);
 
         if (startEvent) {
-          const startData = JSON.parse(startEvent.data);
-          const startTime = new Date(startData.ts);
-          const endTime = new Date(event.ts);
-          const durationMs = endTime - startTime;
-          if (!event.data) event.data = {};
-          event.data.durationMs = durationMs;
+          const startData = tryParseJson(startEvent.data);
+          if (startData?.ts) {
+            const startTime = new Date(startData.ts);
+            const endTime = new Date(event.ts);
+            const durationMs = endTime - startTime;
+            if (!event.data) event.data = {};
+            event.data.durationMs = durationMs;
+          }
         }
       } catch (err) {
         logger.warn('Failed to calculate duration:', err.message);
@@ -305,14 +316,16 @@ app.post('/api/ingest', (req, res) => {
         `).get(event.traceId);
 
         if (startEvent) {
-          const startData = JSON.parse(startEvent.data);
-          const startTime = new Date(startData.ts);
-          const endTime = new Date(event.ts);
-          const durationMs = endTime - startTime;
+          const startData = tryParseJson(startEvent.data);
+          if (startData?.ts) {
+            const startTime = new Date(startData.ts);
+            const endTime = new Date(event.ts);
+            const durationMs = endTime - startTime;
 
-          // Add duration to event data
-          if (!event.data) event.data = {};
-          event.data.durationMs = durationMs;
+            // Add duration to event data
+            if (!event.data) event.data = {};
+            event.data.durationMs = durationMs;
+          }
         }
       } catch (err) {
         logger.warn('Failed to calculate duration:', err.message);
@@ -496,7 +509,8 @@ app.get('/api/entries', (req, res) => {
 
     // Return clean CEP events, supplementing with DB column values
     const parsedEntries = entries.map(row => {
-      const cepEvent = JSON.parse(row.data);
+      const cepEvent = tryParseJson(row.data);
+      if (!cepEvent) return null;
 
       // Supplement event data with DB column values for older entries
       // where these weren't stored in the JSON blob
@@ -516,7 +530,7 @@ app.get('/api/entries', (req, res) => {
         __key: row.key,
         ...cepEvent
       };
-    });
+    }).filter(Boolean);
 
     res.json({
       entries: parsedEntries,
@@ -609,7 +623,10 @@ app.get('/api/analyses-history/:id', (req, res) => {
       return res.status(404).json({ error: 'Analysis not found' });
     }
 
-    analysis.event_keys = JSON.parse(analysis.event_keys);
+    analysis.event_keys = tryParseJson(analysis.event_keys);
+    if (!analysis.event_keys) {
+      return res.status(500).json({ error: 'Failed to parse saved analysis event keys' });
+    }
     res.json(analysis);
   } catch (error) {
     logger.error('Get analysis error:', error);
@@ -729,7 +746,13 @@ app.post('/api/analyze', async (req, res) => {
     }
 
     // Parse events
-    const parsedEvents = events.map(row => JSON.parse(row.data));
+    const parsedEvents = events
+      .map(row => tryParseJson(row.data))
+      .filter(Boolean);
+
+    if (parsedEvents.length === 0) {
+      return res.status(500).json({ error: 'Failed to parse selected events' });
+    }
 
     // Format events for LLM
     const eventsText = parsedEvents.map((e, i) => {
@@ -810,10 +833,15 @@ app.post('/api/selection', (req, res) => {
     }
 
     const events = rows.map(row => {
-      const cepEvent = JSON.parse(row.data);
+      const cepEvent = tryParseJson(row.data);
+      if (!cepEvent) return null;
       decodeBase64Fields(cepEvent);
       return { __key: row.key, ...cepEvent };
-    });
+    }).filter(Boolean);
+
+    if (events.length === 0) {
+      return res.status(500).json({ error: 'Failed to parse selected event data' });
+    }
 
     const selection = {
       timestamp: new Date().toISOString(),
@@ -841,7 +869,10 @@ app.get('/api/selection', (req, res) => {
       return res.json({ timestamp: null, count: 0, events: [] });
     }
 
-    const data = JSON.parse(fs.readFileSync(selectionPath, 'utf-8'));
+    const data = tryParseJson(fs.readFileSync(selectionPath, 'utf-8'));
+    if (!data) {
+      return res.status(500).json({ error: 'Failed to parse selection file' });
+    }
     res.json(data);
   } catch (error) {
     logger.error('Get selection error:', error);
@@ -1055,8 +1086,8 @@ app.post('/api/import', (req, res) => {
 });
 
 // Start server
-app.listen(PORT, () => {
-  logger.info(`Server running on http://localhost:${PORT}`);
+app.listen(PORT, HOST, () => {
+  logger.info(`Server running on http://${HOST}:${PORT}`);
   logger.info(`Database: ${dbPath}`);
 });
 

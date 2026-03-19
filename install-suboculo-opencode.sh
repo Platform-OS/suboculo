@@ -97,7 +97,7 @@ echo "📋 Copying OpenCode plugin..."
 cp "$SCRIPT_DIR/integrations/opencode/plugins/suboculo.js" "$OPENCODE_DIR/plugins/"
 patch_port_in_file "$OPENCODE_DIR/plugins/suboculo.js" "const NOTIFY_PORT = 3000" "const NOTIFY_PORT = $PORT"
 
-# Note: OpenCode uses Bun, and the plugin uses built-in bun:sqlite (no dependencies needed)
+# Note: OpenCode uses Bun, and the plugin uses built-in bun:sqlite (no plugin dependencies needed)
 
 # Copy backend package.json
 cp "$SCRIPT_DIR/integrations/claude-code/hooks/package.json" "$SUBOCULO_DIR/"

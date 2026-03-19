@@ -217,8 +217,6 @@ your-project/
   .opencode/
     plugins/
       suboculo.js           # OpenCode event capture plugin
-    package.json
-    node_modules/
   opencode.json             # OpenCode configuration (MCP server)
 ```
 
@@ -276,7 +274,6 @@ agent-actions-viewer/
 │   └── opencode/              # OpenCode integration
 │       ├── plugins/
 │       │   └── suboculo.js    # Event capture plugin
-│       └── package.json       # Plugin dependencies
 ├── install-suboculo.sh        # Claude Code installation script
 ├── install-suboculo-opencode.sh  # OpenCode installation script
 ├── INSTALL.md                 # Installation guide

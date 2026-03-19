@@ -92,8 +92,6 @@ your-project/
   .opencode/
     plugins/
       suboculo.js                # Event capture plugin
-    package.json                 # Plugin dependencies (better-sqlite3)
-    node_modules/                # Plugin dependencies
   opencode.json                  # MCP server configuration (created/merged)
 ```
 

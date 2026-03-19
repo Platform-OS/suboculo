@@ -8,15 +8,17 @@
     "dev": "node server.js",
     "smoke": "node tests/smoke-suite.js"
   },
-  "keywords": ["suboculo", "ai-agents", "monitoring"],
+  "keywords": [
+    "suboculo",
+    "ai-agents",
+    "monitoring"
+  ],
   "author": "",
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
     "better-sqlite3": "^12.6.2",
-    "cors": "^2.8.6",
     "express": "^5.2.1",
-    "multer": "^2.1.1",
     "zod": "^3.24.4"
   }
 }

@@ -310,40 +310,45 @@ function findOffsetByTimestamp(filePath, targetTs) {
   const { size: fileSize } = statSync(filePath);
   if (fileSize === 0) return 0;
 
-  const fd = openSync(filePath, 'r');
+  let fd;
   const buf = Buffer.alloc(8192);
   // 2s buffer for clock precision
   const target = new Date(new Date(targetTs).getTime() - 2000).toISOString();
 
-  let lo = 0, hi = fileSize;
-  let bestOffset = fileSize;
+  try {
+    fd = openSync(filePath, 'r');
 
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    const lineStart = mid === 0 ? 0 : seekPastNewline(fd, mid, fileSize, buf);
+    let lo = 0, hi = fileSize;
+    let bestOffset = fileSize;
 
-    if (lineStart >= fileSize) {
-      hi = mid;
-      continue;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      const lineStart = mid === 0 ? 0 : seekPastNewline(fd, mid, fileSize, buf);
+
+      if (lineStart >= fileSize) {
+        hi = mid;
+        continue;
+      }
+
+      const { line, nextOffset } = readLineAt(fd, lineStart, fileSize, buf);
+      if (!line) {
+        hi = mid;
+        continue;
+      }
+
+      const ts = extractTimestamp(line);
+      if (!ts || ts < target) {
+        lo = nextOffset;
+      } else {
+        hi = mid;
+        bestOffset = lineStart;
+      }
     }
 
-    const { line, nextOffset } = readLineAt(fd, lineStart, fileSize, buf);
-    if (!line) {
-      hi = mid;
-      continue;
-    }
-
-    const ts = extractTimestamp(line);
-    if (!ts || ts < target) {
-      lo = nextOffset;
-    } else {
-      hi = mid;
-      bestOffset = lineStart;
-    }
+    return bestOffset;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
-
-  closeSync(fd);
-  return bestOffset;
 }
 
 // Parse transcript from offset, extract subagent tool calls as CEP events
@@ -353,87 +358,92 @@ function extractSubagentToolCalls(transcriptPath, taskTraceId, sessionId, startT
 
   if (offset >= fileSize) return [];
 
-  const fd = openSync(transcriptPath, 'r');
+  let fd;
   const buf = Buffer.alloc(64 * 1024); // 64KB read buffer
 
-  const events = [];
-  const toolNames = new Map(); // tool_use_id → tool name
-  let pos = offset;
+  try {
+    fd = openSync(transcriptPath, 'r');
 
-  // Upper bound: stop scanning past endTs + 2s buffer
-  const upperTs = new Date(new Date(endTs).getTime() + 2000).toISOString();
+    const events = [];
+    const toolNames = new Map(); // tool_use_id → tool name
+    let pos = offset;
 
-  while (pos < fileSize) {
-    const { line, nextOffset } = readLineAt(fd, pos, fileSize, buf);
-    if (!line) break;
-    pos = nextOffset;
+    // Upper bound: stop scanning past endTs + 2s buffer
+    const upperTs = new Date(new Date(endTs).getTime() + 2000).toISOString();
 
-    // Quick reject: must reference parent Task's traceId
-    if (!line.includes(taskTraceId)) {
-      const ts = extractTimestamp(line);
-      if (ts && ts > upperTs) break;
-      continue;
-    }
-    if (!line.includes('"progress"')) continue;
+    while (pos < fileSize) {
+      const { line, nextOffset } = readLineAt(fd, pos, fileSize, buf);
+      if (!line) break;
+      pos = nextOffset;
 
-    let entry;
-    try { entry = JSON.parse(line); } catch { continue; }
+      // Quick reject: must reference parent Task's traceId
+      if (!line.includes(taskTraceId)) {
+        const ts = extractTimestamp(line);
+        if (ts && ts > upperTs) break;
+        continue;
+      }
+      if (!line.includes('"progress"')) continue;
 
-    if (entry.type !== 'progress') continue;
-    if (entry.parentToolUseID !== taskTraceId) continue;
+      let entry;
+      try { entry = JSON.parse(line); } catch { continue; }
 
-    const msg = entry.data?.message;
-    if (!msg?.message?.content) continue;
+      if (entry.type !== 'progress') continue;
+      if (entry.parentToolUseID !== taskTraceId) continue;
 
-    const agentId = entry.data?.agentId;
-    const agentType = entry.data?.agentType || fallbackAgentType || null;
-    const ts = msg.timestamp || entry.timestamp;
-    const content = msg.message.content;
+      const msg = entry.data?.message;
+      if (!msg?.message?.content) continue;
 
-    if (!Array.isArray(content)) continue;
+      const agentId = entry.data?.agentId;
+      const agentType = entry.data?.agentType || fallbackAgentType || null;
+      const ts = msg.timestamp || entry.timestamp;
+      const content = msg.message.content;
 
-    for (const block of content) {
-      if (block.type === 'tool_use') {
-        toolNames.set(block.id, block.name);
-        events.push({
-          ts,
-          event: 'tool.start',
-          runner: 'claude-code',
-          sessionId,
-          traceId: block.id,
-          data: {
-            tool: block.name,
-            agentId,
-            agentType,
-            parentTraceId: taskTraceId,
-            args: block.input
-          }
-        });
-      } else if (block.type === 'tool_result') {
-        const toolName = toolNames.get(block.tool_use_id) || 'unknown';
-        events.push({
-          ts,
-          event: 'tool.end',
-          runner: 'claude-code',
-          sessionId,
-          traceId: block.tool_use_id,
-          data: {
-            tool: toolName,
-            agentId,
-            agentType,
-            parentTraceId: taskTraceId,
-            status: block.is_error ? 'error' : 'success',
-            response: typeof block.content === 'string'
-              ? block.content
-              : JSON.stringify(block.content)
-          }
-        });
+      if (!Array.isArray(content)) continue;
+
+      for (const block of content) {
+        if (block.type === 'tool_use') {
+          toolNames.set(block.id, block.name);
+          events.push({
+            ts,
+            event: 'tool.start',
+            runner: 'claude-code',
+            sessionId,
+            traceId: block.id,
+            data: {
+              tool: block.name,
+              agentId,
+              agentType,
+              parentTraceId: taskTraceId,
+              args: block.input
+            }
+          });
+        } else if (block.type === 'tool_result') {
+          const toolName = toolNames.get(block.tool_use_id) || 'unknown';
+          events.push({
+            ts,
+            event: 'tool.end',
+            runner: 'claude-code',
+            sessionId,
+            traceId: block.tool_use_id,
+            data: {
+              tool: toolName,
+              agentId,
+              agentType,
+              parentTraceId: taskTraceId,
+              status: block.is_error ? 'error' : 'success',
+              response: typeof block.content === 'string'
+                ? block.content
+                : JSON.stringify(block.content)
+            }
+          });
+        }
       }
     }
-  }
 
-  closeSync(fd);
-  return events;
+    return events;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 // Extract all token usage entries from transcript as CEP events
@@ -441,106 +451,110 @@ function extractUsageFromTranscript(transcriptPath, sessionId) {
   const { size: fileSize } = statSync(transcriptPath);
   if (fileSize === 0) return [];
 
-  const fd = openSync(transcriptPath, 'r');
+  let fd;
   const buf = Buffer.alloc(64 * 1024);
 
-  const events = [];
-  const agentTypesById = new Map();
-  let pos = 0;
+  try {
+    fd = openSync(transcriptPath, 'r');
 
-  while (pos < fileSize) {
-    const { line, nextOffset } = readLineAt(fd, pos, fileSize, buf);
-    if (!line) break;
-    pos = nextOffset;
+    const events = [];
+    const agentTypesById = new Map();
+    let pos = 0;
 
-    if (line.includes('"agentId"') && line.includes('"agentType"')) {
-      let maybeAgentEntry;
-      try { maybeAgentEntry = JSON.parse(line); } catch { maybeAgentEntry = null; }
+    while (pos < fileSize) {
+      const { line, nextOffset } = readLineAt(fd, pos, fileSize, buf);
+      if (!line) break;
+      pos = nextOffset;
 
-      const mappedAgentId = maybeAgentEntry?.data?.agentId || maybeAgentEntry?.agentId || null;
-      const mappedAgentType = maybeAgentEntry?.data?.agentType || maybeAgentEntry?.agentType || null;
-      if (mappedAgentId && mappedAgentType && !agentTypesById.has(mappedAgentId)) {
-        agentTypesById.set(mappedAgentId, mappedAgentType);
+      if (line.includes('"agentId"') && line.includes('"agentType"')) {
+        let maybeAgentEntry;
+        try { maybeAgentEntry = JSON.parse(line); } catch { maybeAgentEntry = null; }
+
+        const mappedAgentId = maybeAgentEntry?.data?.agentId || maybeAgentEntry?.agentId || null;
+        const mappedAgentType = maybeAgentEntry?.data?.agentType || maybeAgentEntry?.agentType || null;
+        if (mappedAgentId && mappedAgentType && !agentTypesById.has(mappedAgentId)) {
+          agentTypesById.set(mappedAgentId, mappedAgentType);
+        }
+      }
+
+      // Quick reject: must contain usage data
+      if (!line.includes('"usage"')) continue;
+      // Skip non-message progress entries
+      if (line.includes('"hook_progress"') || line.includes('"mcp_progress"')) continue;
+
+      let entry;
+      try { entry = JSON.parse(line); } catch { continue; }
+
+      let usage, model, agentId, agentType, ts;
+
+      if (entry.type === 'assistant' && entry.message?.usage) {
+        // Main agent API response
+        usage = entry.message.usage;
+        model = entry.message?.model || entry.model || 'unknown';
+        ts = entry.timestamp;
+        agentId = null;
+        agentType = 'lead';
+      } else if (entry.type === 'progress') {
+        if (entry.data?.type !== 'agent_progress') continue;
+        const innerMsg = entry.data?.message;
+        if (!innerMsg?.message?.usage) continue;
+
+        usage = innerMsg.message.usage;
+        model = innerMsg.message?.model || innerMsg.model || entry.model || 'unknown';
+        agentId = entry.data?.agentId || entry.agentId || null;
+        agentType = entry.data?.agentType || innerMsg.agentType || null;
+        ts = innerMsg.timestamp || entry.timestamp;
+      } else {
+        continue;
+      }
+
+      if (!usage || !ts) continue;
+
+      // Skip synthetic/zero entries
+      if (model === '<synthetic>') continue;
+      const inp = usage.input_tokens || 0;
+      const out = usage.output_tokens || 0;
+      const cacheCreate = usage.cache_creation_input_tokens || 0;
+      const cacheRead = usage.cache_read_input_tokens || 0;
+      if (inp === 0 && out === 0 && cacheCreate === 0 && cacheRead === 0) continue;
+
+      const evt = {
+        ts,
+        event: 'usage',
+        runner: 'claude-code',
+        sessionId,
+        data: {
+          model,
+          inputTokens: inp,
+          outputTokens: out,
+          cacheCreationTokens: cacheCreate,
+          cacheReadTokens: cacheRead,
+        }
+      };
+      if (agentId) evt.data.agentId = agentId;
+      if (agentType) evt.data.agentType = agentType;
+
+      events.push(evt);
+    }
+
+    for (const evt of events) {
+      if (evt.data?.agentId && !evt.data?.agentType) {
+        evt.data.agentType = agentTypesById.get(evt.data.agentId)
+          || db.prepare(
+            `SELECT subagentType
+             FROM entries
+             WHERE sessionID = ? AND agentId = ? AND subagentType IS NOT NULL
+             ORDER BY ts DESC
+             LIMIT 1`
+          ).get(sessionId, evt.data.agentId)?.subagentType
+          || null;
       }
     }
 
-    // Quick reject: must contain usage data
-    if (!line.includes('"usage"')) continue;
-    // Skip non-message progress entries
-    if (line.includes('"hook_progress"') || line.includes('"mcp_progress"')) continue;
-
-    let entry;
-    try { entry = JSON.parse(line); } catch { continue; }
-
-    let usage, model, agentId, agentType, ts;
-
-    if (entry.type === 'assistant' && entry.message?.usage) {
-      // Main agent API response
-      usage = entry.message.usage;
-      model = entry.message?.model || entry.model || 'unknown';
-      ts = entry.timestamp;
-      agentId = null;
-      agentType = 'lead';
-    } else if (entry.type === 'progress') {
-      if (entry.data?.type !== 'agent_progress') continue;
-      const innerMsg = entry.data?.message;
-      if (!innerMsg?.message?.usage) continue;
-
-      usage = innerMsg.message.usage;
-      model = innerMsg.message?.model || innerMsg.model || entry.model || 'unknown';
-      agentId = entry.data?.agentId || entry.agentId || null;
-      agentType = entry.data?.agentType || innerMsg.agentType || null;
-      ts = innerMsg.timestamp || entry.timestamp;
-    } else {
-      continue;
-    }
-
-    if (!usage || !ts) continue;
-
-    // Skip synthetic/zero entries
-    if (model === '<synthetic>') continue;
-    const inp = usage.input_tokens || 0;
-    const out = usage.output_tokens || 0;
-    const cacheCreate = usage.cache_creation_input_tokens || 0;
-    const cacheRead = usage.cache_read_input_tokens || 0;
-    if (inp === 0 && out === 0 && cacheCreate === 0 && cacheRead === 0) continue;
-
-    const evt = {
-      ts,
-      event: 'usage',
-      runner: 'claude-code',
-      sessionId,
-      data: {
-        model,
-        inputTokens: inp,
-        outputTokens: out,
-        cacheCreationTokens: cacheCreate,
-        cacheReadTokens: cacheRead,
-      }
-    };
-    if (agentId) evt.data.agentId = agentId;
-    if (agentType) evt.data.agentType = agentType;
-
-    events.push(evt);
+    return events;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
-
-  closeSync(fd);
-
-  for (const evt of events) {
-    if (evt.data?.agentId && !evt.data?.agentType) {
-      evt.data.agentType = agentTypesById.get(evt.data.agentId)
-        || db.prepare(
-          `SELECT subagentType
-           FROM entries
-           WHERE sessionID = ? AND agentId = ? AND subagentType IS NOT NULL
-           ORDER BY ts DESC
-           LIMIT 1`
-        ).get(sessionId, evt.data.agentId)?.subagentType
-        || null;
-    }
-  }
-
-  return events;
 }
 
 // Fire-and-forget batch SSE notification
