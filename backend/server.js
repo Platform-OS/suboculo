@@ -158,6 +158,156 @@ function initDatabase() {
     );
   `);
 
+  // Phase 2: task-centric reliability model
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS task_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_key TEXT UNIQUE NOT NULL,
+      title TEXT,
+      description TEXT,
+      source TEXT NOT NULL DEFAULT 'derived_session',
+      runner TEXT,
+      model TEXT,
+      agent_system_version TEXT,
+      prompt_version TEXT,
+      toolchain_version TEXT,
+      environment_fingerprint TEXT,
+      git_revision TEXT,
+      status TEXT NOT NULL DEFAULT 'completed',
+      root_session_id TEXT NOT NULL,
+      started_at TEXT,
+      ended_at TEXT,
+      total_events INTEGER NOT NULL DEFAULT 0,
+      total_tool_calls INTEGER NOT NULL DEFAULT 0,
+      distinct_tools INTEGER NOT NULL DEFAULT 0,
+      total_duration_ms INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      subagent_count INTEGER NOT NULL DEFAULT 0,
+      interrupt_count INTEGER NOT NULL DEFAULT 0,
+      token_input INTEGER NOT NULL DEFAULT 0,
+      token_output INTEGER NOT NULL DEFAULT 0,
+      token_cache_creation INTEGER NOT NULL DEFAULT 0,
+      token_cache_read INTEGER NOT NULL DEFAULT 0,
+      estimated_cost REAL NOT NULL DEFAULT 0,
+      metadata TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_task_runs_root_session ON task_runs(root_session_id);
+    CREATE INDEX IF NOT EXISTS idx_task_runs_runner ON task_runs(runner);
+    CREATE INDEX IF NOT EXISTS idx_task_runs_status ON task_runs(status);
+    CREATE INDEX IF NOT EXISTS idx_task_runs_started_at ON task_runs(started_at);
+
+    CREATE TABLE IF NOT EXISTS task_run_events (
+      task_run_id INTEGER NOT NULL,
+      entry_key TEXT NOT NULL,
+      PRIMARY KEY (task_run_id, entry_key),
+      FOREIGN KEY (task_run_id) REFERENCES task_runs(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_task_run_events_entry_key ON task_run_events(entry_key);
+
+    CREATE TABLE IF NOT EXISTS outcomes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_run_id INTEGER NOT NULL,
+      evaluation_type TEXT NOT NULL,
+      outcome_label TEXT NOT NULL,
+      correctness_score REAL,
+      safety_score REAL,
+      efficiency_score REAL,
+      reproducibility_score REAL,
+      requires_human_intervention INTEGER NOT NULL DEFAULT 0,
+      failure_mode TEXT,
+      failure_subtype TEXT,
+      notes TEXT,
+      evaluator TEXT,
+      evidence TEXT,
+      is_canonical INTEGER NOT NULL DEFAULT 0,
+      evaluated_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (task_run_id) REFERENCES task_runs(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_outcomes_task_run_id ON outcomes(task_run_id);
+    CREATE INDEX IF NOT EXISTS idx_outcomes_label ON outcomes(outcome_label);
+    CREATE INDEX IF NOT EXISTS idx_outcomes_canonical ON outcomes(is_canonical);
+
+    CREATE TABLE IF NOT EXISTS benchmarks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      description TEXT,
+      version TEXT NOT NULL DEFAULT '1.0.0',
+      status TEXT NOT NULL DEFAULT 'draft',
+      task_definition_source TEXT,
+      scoring_spec TEXT,
+      policy_spec TEXT,
+      owner TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(name, version)
+    );
+
+    CREATE TABLE IF NOT EXISTS benchmark_cases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      benchmark_id INTEGER NOT NULL,
+      case_key TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT,
+      prompt TEXT,
+      fixture_ref TEXT,
+      timeout_seconds INTEGER,
+      allowed_tools TEXT,
+      expected_outputs TEXT,
+      forbidden_actions TEXT,
+      scoring_rules TEXT,
+      metadata TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (benchmark_id) REFERENCES benchmarks(id) ON DELETE CASCADE,
+      UNIQUE(benchmark_id, case_key)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_benchmark_cases_benchmark_id ON benchmark_cases(benchmark_id);
+
+    CREATE TABLE IF NOT EXISTS benchmark_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      benchmark_id INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'planned',
+      agent_config TEXT,
+      environment_fingerprint TEXT,
+      git_revision TEXT,
+      started_at TEXT,
+      ended_at TEXT,
+      summary_json TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (benchmark_id) REFERENCES benchmarks(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_benchmark_runs_benchmark_id ON benchmark_runs(benchmark_id);
+
+    CREATE TABLE IF NOT EXISTS benchmark_run_cases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      benchmark_run_id INTEGER NOT NULL,
+      benchmark_case_id INTEGER NOT NULL,
+      task_run_id INTEGER,
+      outcome_id INTEGER,
+      status TEXT NOT NULL DEFAULT 'planned',
+      score REAL,
+      notes TEXT,
+      metadata TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (benchmark_run_id) REFERENCES benchmark_runs(id) ON DELETE CASCADE,
+      FOREIGN KEY (benchmark_case_id) REFERENCES benchmark_cases(id) ON DELETE CASCADE,
+      FOREIGN KEY (task_run_id) REFERENCES task_runs(id) ON DELETE SET NULL,
+      FOREIGN KEY (outcome_id) REFERENCES outcomes(id) ON DELETE SET NULL,
+      UNIQUE(benchmark_run_id, benchmark_case_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_benchmark_run_cases_run_id ON benchmark_run_cases(benchmark_run_id);
+    CREATE INDEX IF NOT EXISTS idx_benchmark_run_cases_task_run_id ON benchmark_run_cases(task_run_id);
+  `);
+
   console.log('Database initialized');
 }
 
@@ -191,6 +341,215 @@ function decodeBase64Fields(event) {
     }
   }
 }
+
+function parseJSONSafe(value, fallback = null) {
+  if (!value) return fallback;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function deriveTaskRunStatus(rows) {
+  const events = rows.map(row => row.event);
+  if (events.includes('error')) return 'failed';
+
+  const endRows = rows.filter(row => row.event === 'session.end');
+  if (endRows.length > 0) {
+    const lastEnd = parseJSONSafe(endRows[endRows.length - 1].data, {});
+    const reason = lastEnd?.data?.reason;
+    if (reason === 'cancelled' || reason === 'user_cancelled') return 'cancelled';
+    if (reason === 'timeout' || reason === 'timed_out') return 'timed_out';
+  }
+
+  if (events.includes('session.end')) return 'completed';
+  return 'running';
+}
+
+function summarizeTaskRunRows(rows) {
+  const parsed = rows.map(row => parseJSONSafe(row.data, {}));
+  const first = parsed[0] || {};
+  const last = parsed[parsed.length - 1] || {};
+  const toolEndRows = parsed.filter(event => event.event === 'tool.end');
+  const distinctTools = new Set(parsed.map(event => event?.data?.tool).filter(Boolean));
+  const usageRows = parsed.filter(event => event.event === 'usage');
+  const subagentIds = new Set(parsed.map(event => event?.data?.agentId).filter(Boolean));
+
+  let tokenInput = 0;
+  let tokenOutput = 0;
+  let tokenCacheCreation = 0;
+  let tokenCacheRead = 0;
+  let estimatedCost = 0;
+  let interruptCount = 0;
+
+  for (const event of usageRows) {
+    const data = event.data || {};
+    tokenInput += data.inputTokens || 0;
+    tokenOutput += data.outputTokens || 0;
+    tokenCacheCreation += data.cacheCreationTokens || 0;
+    tokenCacheRead += data.cacheReadTokens || 0;
+    estimatedCost += data.cost || 0;
+  }
+
+  for (const event of parsed) {
+    if (event?.data?.isInterrupt) interruptCount++;
+  }
+
+  const sessionStart = parsed.find(event => event.event === 'session.start');
+  const title = sessionStart?.data?.title || first?.data?.title || null;
+  const description = sessionStart?.data?.directory || null;
+  const model = usageRows.find(event => event?.data?.model)?.data?.model || null;
+
+  return {
+    title,
+    description,
+    runner: first.runner || null,
+    model,
+    startedAt: first.ts || null,
+    endedAt: last.ts || null,
+    status: deriveTaskRunStatus(rows),
+    totalEvents: rows.length,
+    totalToolCalls: toolEndRows.length,
+    distinctTools: distinctTools.size,
+    totalDurationMs: toolEndRows.reduce((sum, event) => sum + (event.data?.durationMs || 0), 0),
+    errorCount: parsed.filter(event =>
+      event.event === 'error' || (event.event === 'tool.end' && event.data?.status === 'error')
+    ).length,
+    retryCount: Math.max(toolEndRows.length - distinctTools.size, 0),
+    subagentCount: subagentIds.size,
+    interruptCount,
+    tokenInput,
+    tokenOutput,
+    tokenCacheCreation,
+    tokenCacheRead,
+    estimatedCost: +estimatedCost.toFixed(6),
+    metadata: JSON.stringify({
+      sessionIds: [...new Set(rows.map(row => row.sessionID).filter(Boolean))],
+      tools: [...distinctTools]
+    })
+  };
+}
+
+function upsertTaskRunForRootSession(rootSessionId) {
+  if (!rootSessionId) return null;
+
+  const rows = db.prepare(`
+    SELECT key, ts, sessionID, rootSessionID, runner, event, data
+    FROM entries
+    WHERE rootSessionID = ? OR sessionID = ?
+    ORDER BY ts ASC, id ASC
+  `).all(rootSessionId, rootSessionId);
+
+  if (rows.length === 0) return null;
+
+  const summary = summarizeTaskRunRows(rows);
+  const taskKey = `root:${rootSessionId}`;
+
+  const upsert = db.prepare(`
+    INSERT INTO task_runs (
+      task_key, title, description, source, runner, model, status, root_session_id,
+      started_at, ended_at, total_events, total_tool_calls, distinct_tools,
+      total_duration_ms, error_count, retry_count, subagent_count, interrupt_count,
+      token_input, token_output, token_cache_creation, token_cache_read,
+      estimated_cost, metadata, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(task_key) DO UPDATE SET
+      title = excluded.title,
+      description = excluded.description,
+      source = excluded.source,
+      runner = excluded.runner,
+      model = excluded.model,
+      status = excluded.status,
+      root_session_id = excluded.root_session_id,
+      started_at = excluded.started_at,
+      ended_at = excluded.ended_at,
+      total_events = excluded.total_events,
+      total_tool_calls = excluded.total_tool_calls,
+      distinct_tools = excluded.distinct_tools,
+      total_duration_ms = excluded.total_duration_ms,
+      error_count = excluded.error_count,
+      retry_count = excluded.retry_count,
+      subagent_count = excluded.subagent_count,
+      interrupt_count = excluded.interrupt_count,
+      token_input = excluded.token_input,
+      token_output = excluded.token_output,
+      token_cache_creation = excluded.token_cache_creation,
+      token_cache_read = excluded.token_cache_read,
+      estimated_cost = excluded.estimated_cost,
+      metadata = excluded.metadata,
+      updated_at = excluded.updated_at
+  `);
+
+  upsert.run(
+    taskKey,
+    summary.title,
+    summary.description,
+    'derived_session',
+    summary.runner,
+    summary.model,
+    summary.status,
+    rootSessionId,
+    summary.startedAt,
+    summary.endedAt,
+    summary.totalEvents,
+    summary.totalToolCalls,
+    summary.distinctTools,
+    summary.totalDurationMs,
+    summary.errorCount,
+    summary.retryCount,
+    summary.subagentCount,
+    summary.interruptCount,
+    summary.tokenInput,
+    summary.tokenOutput,
+    summary.tokenCacheCreation,
+    summary.tokenCacheRead,
+    summary.estimatedCost,
+    summary.metadata,
+    new Date().toISOString()
+  );
+
+  const taskRun = db.prepare('SELECT id, task_key FROM task_runs WHERE task_key = ?').get(taskKey);
+  const replaceLinks = db.transaction((taskRunId, eventRows) => {
+    db.prepare('DELETE FROM task_run_events WHERE task_run_id = ?').run(taskRunId);
+    const insertLink = db.prepare(`
+      INSERT OR IGNORE INTO task_run_events (task_run_id, entry_key)
+      VALUES (?, ?)
+    `);
+    for (const row of eventRows) {
+      insertLink.run(taskRunId, row.key);
+    }
+  });
+  replaceLinks(taskRun.id, rows);
+  return taskRun.id;
+}
+
+function getTaskRunById(taskRunId) {
+  return db.prepare(`
+    SELECT *
+    FROM task_runs
+    WHERE id = ?
+  `).get(taskRunId);
+}
+
+function backfillAllTaskRuns() {
+  const rows = db.prepare(`
+    SELECT DISTINCT COALESCE(rootSessionID, sessionID) AS rootSessionId
+    FROM entries
+    WHERE COALESCE(rootSessionID, sessionID) IS NOT NULL
+    ORDER BY rootSessionId
+  `).all();
+
+  let derived = 0;
+  for (const row of rows) {
+    const taskRunId = upsertTaskRunForRootSession(row.rootSessionId);
+    if (taskRunId) derived++;
+  }
+  return derived;
+}
+
+const initialDerivedTaskRuns = backfillAllTaskRuns();
+console.log(`[suboculo] Derived task runs on startup: ${initialDerivedTaskRuns}`);
 
 // Generate SSE key — must match generateCEPKey logic for consistent dedup
 function sseKey(event) {
@@ -321,6 +680,7 @@ app.post('/api/ingest', (req, res) => {
 
     // Insert event
     const key = insertCEPEvent(db, event);
+    upsertTaskRunForRootSession(event.parentSessionId || event.sessionId);
 
     // Emit event for SSE clients (real-time updates)
     sseEmitter.emit('event', {
@@ -371,6 +731,10 @@ app.post('/api/ingest/batch', (req, res) => {
 
     // Insert all events in transaction
     const count = insertCEPEventsBatch(db, events);
+    const rootSessions = [...new Set(events.map(event => event.parentSessionId || event.sessionId).filter(Boolean))];
+    for (const rootSessionId of rootSessions) {
+      upsertTaskRunForRootSession(rootSessionId);
+    }
 
     // Emit events for SSE clients (after transaction commits)
     events.forEach((event) => {
@@ -387,6 +751,523 @@ app.post('/api/ingest/batch', (req, res) => {
     });
   } catch (error) {
     console.error('Batch ingest error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/task-runs/derive', (req, res) => {
+  try {
+    const derived = backfillAllTaskRuns();
+    res.json({ success: true, derived });
+  } catch (error) {
+    console.error('Derive task runs error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/task-runs', (req, res) => {
+  try {
+    const {
+      page = 1,
+      pageSize = 50,
+      runner,
+      status,
+      source,
+      query,
+      sortKey = 'started_at',
+      sortDir = 'desc'
+    } = req.query;
+
+    let sql = 'SELECT * FROM task_runs WHERE 1=1';
+    const params = [];
+
+    if (runner && runner !== 'all') {
+      sql += ' AND runner = ?';
+      params.push(runner);
+    }
+    if (status && status !== 'all') {
+      sql += ' AND status = ?';
+      params.push(status);
+    }
+    if (source && source !== 'all') {
+      sql += ' AND source = ?';
+      params.push(source);
+    }
+    if (query) {
+      sql += ' AND (task_key LIKE ? OR title LIKE ? OR description LIKE ? OR root_session_id LIKE ?)';
+      const like = `%${query}%`;
+      params.push(like, like, like, like);
+    }
+
+    const countSql = sql.replace('SELECT *', 'SELECT COUNT(*) as count');
+    const total = db.prepare(countSql).get(...params).count;
+
+    const allowedSortKeys = ['started_at', 'ended_at', 'updated_at', 'total_events', 'total_duration_ms', 'estimated_cost'];
+    const safeSortKey = allowedSortKeys.includes(sortKey) ? sortKey : 'started_at';
+    const safeSortDir = sortDir === 'asc' ? 'ASC' : 'DESC';
+    sql += ` ORDER BY ${safeSortKey} ${safeSortDir} LIMIT ? OFFSET ?`;
+
+    const limit = parseInt(pageSize, 10);
+    const offset = (parseInt(page, 10) - 1) * limit;
+    params.push(limit, offset);
+
+    const taskRuns = db.prepare(sql).all(...params).map(row => ({
+      ...row,
+      metadata: parseJSONSafe(row.metadata, null)
+    }));
+
+    res.json({
+      taskRuns,
+      total,
+      page: parseInt(page, 10),
+      pageSize: limit,
+      totalPages: Math.ceil(total / limit)
+    });
+  } catch (error) {
+    console.error('List task runs error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/task-runs/:id', (req, res) => {
+  try {
+    const taskRun = getTaskRunById(req.params.id);
+    if (!taskRun) {
+      return res.status(404).json({ error: 'Task run not found' });
+    }
+
+    const eventRows = db.prepare(`
+      SELECT e.key, e.data
+      FROM task_run_events tre
+      JOIN entries e ON e.key = tre.entry_key
+      WHERE tre.task_run_id = ?
+      ORDER BY e.ts ASC, e.id ASC
+    `).all(req.params.id);
+
+    const events = eventRows.map(row => ({ __key: row.key, ...parseJSONSafe(row.data, {}) }));
+    const outcomes = db.prepare(`
+      SELECT *
+      FROM outcomes
+      WHERE task_run_id = ?
+      ORDER BY is_canonical DESC, evaluated_at DESC, id DESC
+    `).all(req.params.id).map(row => ({
+      ...row,
+      requires_human_intervention: !!row.requires_human_intervention,
+      is_canonical: !!row.is_canonical,
+      evidence: parseJSONSafe(row.evidence, null)
+    }));
+
+    res.json({
+      ...taskRun,
+      metadata: parseJSONSafe(taskRun.metadata, null),
+      events,
+      outcomes
+    });
+  } catch (error) {
+    console.error('Get task run error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/task-runs/:id/outcomes', (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Request body must be a JSON object' });
+    }
+
+    const taskRun = getTaskRunById(req.params.id);
+    if (!taskRun) {
+      return res.status(404).json({ error: 'Task run not found' });
+    }
+
+    const {
+      evaluation_type,
+      outcome_label,
+      correctness_score,
+      safety_score,
+      efficiency_score,
+      reproducibility_score,
+      requires_human_intervention,
+      failure_mode,
+      failure_subtype,
+      notes,
+      evaluator,
+      evidence,
+      is_canonical
+    } = req.body;
+
+    if (!evaluation_type || !outcome_label) {
+      return res.status(400).json({ error: 'evaluation_type and outcome_label are required' });
+    }
+
+    const insertOutcome = db.transaction(() => {
+      if (is_canonical) {
+        db.prepare('UPDATE outcomes SET is_canonical = 0 WHERE task_run_id = ?').run(req.params.id);
+      }
+
+      return db.prepare(`
+        INSERT INTO outcomes (
+          task_run_id, evaluation_type, outcome_label, correctness_score, safety_score,
+          efficiency_score, reproducibility_score, requires_human_intervention,
+          failure_mode, failure_subtype, notes, evaluator, evidence, is_canonical, evaluated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        req.params.id,
+        evaluation_type,
+        outcome_label,
+        correctness_score ?? null,
+        safety_score ?? null,
+        efficiency_score ?? null,
+        reproducibility_score ?? null,
+        requires_human_intervention ? 1 : 0,
+        failure_mode || null,
+        failure_subtype || null,
+        notes || null,
+        evaluator || null,
+        evidence ? JSON.stringify(evidence) : null,
+        is_canonical ? 1 : 0,
+        new Date().toISOString()
+      );
+    });
+
+    const result = insertOutcome();
+    res.json({ success: true, outcomeId: result.lastInsertRowid });
+  } catch (error) {
+    console.error('Create outcome error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/benchmarks', (req, res) => {
+  try {
+    const benchmarks = db.prepare(`
+      SELECT
+        b.*,
+        COUNT(DISTINCT bc.id) AS case_count,
+        COUNT(DISTINCT br.id) AS run_count
+      FROM benchmarks b
+      LEFT JOIN benchmark_cases bc ON bc.benchmark_id = b.id
+      LEFT JOIN benchmark_runs br ON br.benchmark_id = b.id
+      GROUP BY b.id
+      ORDER BY b.created_at DESC, b.id DESC
+    `).all().map(row => ({
+      ...row,
+      scoring_spec: parseJSONSafe(row.scoring_spec, null),
+      policy_spec: parseJSONSafe(row.policy_spec, null)
+    }));
+
+    res.json(benchmarks);
+  } catch (error) {
+    console.error('List benchmarks error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/benchmarks', (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Request body must be a JSON object' });
+    }
+
+    const { name, description, version, status, task_definition_source, scoring_spec, policy_spec, owner } = req.body;
+    if (!name) {
+      return res.status(400).json({ error: 'name is required' });
+    }
+
+    const result = db.prepare(`
+      INSERT INTO benchmarks (
+        name, description, version, status, task_definition_source, scoring_spec, policy_spec, owner, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      name,
+      description || null,
+      version || '1.0.0',
+      status || 'draft',
+      task_definition_source || null,
+      scoring_spec ? JSON.stringify(scoring_spec) : null,
+      policy_spec ? JSON.stringify(policy_spec) : null,
+      owner || null,
+      new Date().toISOString()
+    );
+
+    res.json({ success: true, benchmarkId: result.lastInsertRowid });
+  } catch (error) {
+    console.error('Create benchmark error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/benchmarks/:id', (req, res) => {
+  try {
+    const benchmark = db.prepare('SELECT * FROM benchmarks WHERE id = ?').get(req.params.id);
+    if (!benchmark) {
+      return res.status(404).json({ error: 'Benchmark not found' });
+    }
+
+    const cases = db.prepare(`
+      SELECT *
+      FROM benchmark_cases
+      WHERE benchmark_id = ?
+      ORDER BY case_key ASC, id ASC
+    `).all(req.params.id).map(row => ({
+      ...row,
+      allowed_tools: parseJSONSafe(row.allowed_tools, null),
+      expected_outputs: parseJSONSafe(row.expected_outputs, null),
+      forbidden_actions: parseJSONSafe(row.forbidden_actions, null),
+      scoring_rules: parseJSONSafe(row.scoring_rules, null),
+      metadata: parseJSONSafe(row.metadata, null)
+    }));
+
+    const runs = db.prepare(`
+      SELECT *
+      FROM benchmark_runs
+      WHERE benchmark_id = ?
+      ORDER BY created_at DESC, id DESC
+    `).all(req.params.id).map(row => ({
+      ...row,
+      agent_config: parseJSONSafe(row.agent_config, null),
+      summary_json: parseJSONSafe(row.summary_json, null)
+    }));
+
+    res.json({
+      ...benchmark,
+      scoring_spec: parseJSONSafe(benchmark.scoring_spec, null),
+      policy_spec: parseJSONSafe(benchmark.policy_spec, null),
+      cases,
+      runs
+    });
+  } catch (error) {
+    console.error('Get benchmark error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/benchmarks/:id/cases', (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Request body must be a JSON object' });
+    }
+
+    const benchmark = db.prepare('SELECT id FROM benchmarks WHERE id = ?').get(req.params.id);
+    if (!benchmark) {
+      return res.status(404).json({ error: 'Benchmark not found' });
+    }
+
+    const {
+      case_key,
+      title,
+      description,
+      prompt,
+      fixture_ref,
+      timeout_seconds,
+      allowed_tools,
+      expected_outputs,
+      forbidden_actions,
+      scoring_rules,
+      metadata
+    } = req.body;
+
+    if (!case_key || !title) {
+      return res.status(400).json({ error: 'case_key and title are required' });
+    }
+
+    const result = db.prepare(`
+      INSERT INTO benchmark_cases (
+        benchmark_id, case_key, title, description, prompt, fixture_ref,
+        timeout_seconds, allowed_tools, expected_outputs, forbidden_actions,
+        scoring_rules, metadata
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      req.params.id,
+      case_key,
+      title,
+      description || null,
+      prompt || null,
+      fixture_ref || null,
+      timeout_seconds ?? null,
+      allowed_tools ? JSON.stringify(allowed_tools) : null,
+      expected_outputs ? JSON.stringify(expected_outputs) : null,
+      forbidden_actions ? JSON.stringify(forbidden_actions) : null,
+      scoring_rules ? JSON.stringify(scoring_rules) : null,
+      metadata ? JSON.stringify(metadata) : null
+    );
+
+    res.json({ success: true, benchmarkCaseId: result.lastInsertRowid });
+  } catch (error) {
+    console.error('Create benchmark case error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/benchmarks/:id/runs', (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Request body must be a JSON object' });
+    }
+
+    const benchmark = db.prepare('SELECT * FROM benchmarks WHERE id = ?').get(req.params.id);
+    if (!benchmark) {
+      return res.status(404).json({ error: 'Benchmark not found' });
+    }
+
+    const { status, agent_config, environment_fingerprint, git_revision, case_ids } = req.body;
+    const cases = Array.isArray(case_ids) && case_ids.length > 0
+      ? db.prepare(`
+          SELECT id
+          FROM benchmark_cases
+          WHERE benchmark_id = ? AND id IN (${case_ids.map(() => '?').join(',')})
+        `).all(req.params.id, ...case_ids)
+      : db.prepare('SELECT id FROM benchmark_cases WHERE benchmark_id = ?').all(req.params.id);
+
+    const createRun = db.transaction(() => {
+      const run = db.prepare(`
+        INSERT INTO benchmark_runs (
+          benchmark_id, status, agent_config, environment_fingerprint, git_revision, started_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        req.params.id,
+        status || 'planned',
+        agent_config ? JSON.stringify(agent_config) : null,
+        environment_fingerprint || null,
+        git_revision || null,
+        new Date().toISOString()
+      );
+
+      const runId = run.lastInsertRowid;
+      const insertCase = db.prepare(`
+        INSERT INTO benchmark_run_cases (
+          benchmark_run_id, benchmark_case_id, status, metadata
+        ) VALUES (?, ?, ?, ?)
+      `);
+
+      for (const row of cases) {
+        insertCase.run(runId, row.id, 'planned', null);
+      }
+
+      return runId;
+    });
+
+    const benchmarkRunId = createRun();
+    res.json({ success: true, benchmarkRunId, caseCount: cases.length });
+  } catch (error) {
+    console.error('Create benchmark run error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/benchmark-runs/:id', (req, res) => {
+  try {
+    const run = db.prepare(`
+      SELECT br.*, b.name AS benchmark_name, b.version AS benchmark_version
+      FROM benchmark_runs br
+      JOIN benchmarks b ON b.id = br.benchmark_id
+      WHERE br.id = ?
+    `).get(req.params.id);
+
+    if (!run) {
+      return res.status(404).json({ error: 'Benchmark run not found' });
+    }
+
+    const cases = db.prepare(`
+      SELECT
+        brc.*,
+        bc.case_key,
+        bc.title AS case_title,
+        tr.task_key,
+        tr.title AS task_run_title,
+        o.outcome_label
+      FROM benchmark_run_cases brc
+      JOIN benchmark_cases bc ON bc.id = brc.benchmark_case_id
+      LEFT JOIN task_runs tr ON tr.id = brc.task_run_id
+      LEFT JOIN outcomes o ON o.id = brc.outcome_id
+      WHERE brc.benchmark_run_id = ?
+      ORDER BY bc.case_key ASC, brc.id ASC
+    `).all(req.params.id).map(row => ({
+      ...row,
+      metadata: parseJSONSafe(row.metadata, null)
+    }));
+
+    res.json({
+      ...run,
+      agent_config: parseJSONSafe(run.agent_config, null),
+      summary_json: parseJSONSafe(run.summary_json, null),
+      cases
+    });
+  } catch (error) {
+    console.error('Get benchmark run error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/benchmark-runs/:id/cases/:caseId/result', (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Request body must be a JSON object' });
+    }
+
+    const runCase = db.prepare(`
+      SELECT brc.*
+      FROM benchmark_run_cases brc
+      WHERE brc.benchmark_run_id = ? AND brc.benchmark_case_id = ?
+    `).get(req.params.id, req.params.caseId);
+
+    if (!runCase) {
+      return res.status(404).json({ error: 'Benchmark run case not found' });
+    }
+
+    const { task_run_id, outcome_id, status, score, notes, metadata } = req.body;
+
+    db.prepare(`
+      UPDATE benchmark_run_cases
+      SET task_run_id = ?, outcome_id = ?, status = ?, score = ?, notes = ?, metadata = ?
+      WHERE benchmark_run_id = ? AND benchmark_case_id = ?
+    `).run(
+      task_run_id || null,
+      outcome_id || null,
+      status || runCase.status,
+      score ?? null,
+      notes || null,
+      metadata ? JSON.stringify(metadata) : null,
+      req.params.id,
+      req.params.caseId
+    );
+
+    const summary = db.prepare(`
+      SELECT
+        COUNT(*) AS total_cases,
+        SUM(CASE WHEN status = 'passed' THEN 1 ELSE 0 END) AS passed_cases,
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_cases,
+        SUM(CASE WHEN status IN ('passed', 'failed', 'skipped') THEN 1 ELSE 0 END) AS completed_cases,
+        AVG(score) AS avg_score
+      FROM benchmark_run_cases
+      WHERE benchmark_run_id = ?
+    `).get(req.params.id);
+
+    db.prepare(`
+      UPDATE benchmark_runs
+      SET
+        summary_json = ?,
+        status = CASE
+          WHEN ? >= ? THEN 'completed'
+          ELSE status
+        END,
+        ended_at = CASE
+          WHEN ? >= ? THEN CURRENT_TIMESTAMP
+          ELSE ended_at
+        END
+      WHERE id = ?
+    `).run(
+      JSON.stringify(summary),
+      summary.completed_cases || 0,
+      summary.total_cases || 0,
+      summary.completed_cases || 0,
+      summary.total_cases || 0,
+      req.params.id
+    );
+
+    res.json({ success: true, summary });
+  } catch (error) {
+    console.error('Update benchmark run case result error:', error);
     res.status(500).json({ error: error.message });
   }
 });

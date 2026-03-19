@@ -93,10 +93,34 @@
   let selectedAnalysis = null;
   let loadingAnalyses = false;
 
+  // Task Runs state
+  let taskRuns = [];
+  let selectedTaskRun = null;
+  let loadingTaskRuns = false;
+  let taskRunsTotal = 0;
+  let taskRunStatusFilter = "all";
+  let taskRunRunnerFilter = "all";
+  let taskRunQuery = "";
+  let taskRunOutcome = {
+    evaluation_type: "human",
+    outcome_label: "success",
+    correctness_score: "",
+    safety_score: "",
+    efficiency_score: "",
+    reproducibility_score: "",
+    requires_human_intervention: false,
+    failure_mode: "",
+    failure_subtype: "",
+    notes: "",
+    evaluator: "web-ui",
+    is_canonical: true
+  };
+
   // Load initial data
   onMount(async () => {
     await loadData();
     await loadAnalyses();
+    await loadTaskRuns();
 
     // Subscribe to real-time events
     const unsubscribe = api.subscribeToEvents(
@@ -154,6 +178,98 @@
       console.error('Failed to load analyses:', err);
     } finally {
       loadingAnalyses = false;
+    }
+  }
+
+  async function loadTaskRuns() {
+    try {
+      loadingTaskRuns = true;
+      const result = await api.getTaskRuns({
+        pageSize: 100,
+        status: taskRunStatusFilter !== "all" ? taskRunStatusFilter : undefined,
+        runner: taskRunRunnerFilter !== "all" ? taskRunRunnerFilter : undefined,
+        query: taskRunQuery || undefined
+      });
+      taskRuns = result.taskRuns;
+      taskRunsTotal = result.total;
+
+      if (selectedTaskRun?.id) {
+        const updated = result.taskRuns.find(run => run.id === selectedTaskRun.id);
+        if (updated) {
+          selectedTaskRun = await api.getTaskRun(updated.id);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load task runs:', err);
+    } finally {
+      loadingTaskRuns = false;
+    }
+  }
+
+  async function deriveTaskRunsNow() {
+    try {
+      loadingTaskRuns = true;
+      await api.deriveTaskRuns();
+      await loadTaskRuns();
+    } catch (err) {
+      console.error('Failed to derive task runs:', err);
+      alert('Failed to derive task runs');
+    } finally {
+      loadingTaskRuns = false;
+    }
+  }
+
+  async function viewTaskRun(id) {
+    try {
+      selectedTaskRun = await api.getTaskRun(id);
+    } catch (err) {
+      console.error('Failed to load task run:', err);
+      alert('Failed to load task run');
+    }
+  }
+
+  function resetOutcomeForm() {
+    taskRunOutcome = {
+      evaluation_type: "human",
+      outcome_label: "success",
+      correctness_score: "",
+      safety_score: "",
+      efficiency_score: "",
+      reproducibility_score: "",
+      requires_human_intervention: false,
+      failure_mode: "",
+      failure_subtype: "",
+      notes: "",
+      evaluator: "web-ui",
+      is_canonical: true
+    };
+  }
+
+  async function saveTaskRunOutcome() {
+    if (!selectedTaskRun) return;
+
+    try {
+      await api.createOutcome(selectedTaskRun.id, {
+        evaluation_type: taskRunOutcome.evaluation_type,
+        outcome_label: taskRunOutcome.outcome_label,
+        correctness_score: taskRunOutcome.correctness_score === "" ? null : Number(taskRunOutcome.correctness_score),
+        safety_score: taskRunOutcome.safety_score === "" ? null : Number(taskRunOutcome.safety_score),
+        efficiency_score: taskRunOutcome.efficiency_score === "" ? null : Number(taskRunOutcome.efficiency_score),
+        reproducibility_score: taskRunOutcome.reproducibility_score === "" ? null : Number(taskRunOutcome.reproducibility_score),
+        requires_human_intervention: taskRunOutcome.requires_human_intervention,
+        failure_mode: taskRunOutcome.failure_mode || undefined,
+        failure_subtype: taskRunOutcome.failure_subtype || undefined,
+        notes: taskRunOutcome.notes || undefined,
+        evaluator: taskRunOutcome.evaluator || undefined,
+        is_canonical: taskRunOutcome.is_canonical
+      });
+
+      selectedTaskRun = await api.getTaskRun(selectedTaskRun.id);
+      await loadTaskRuns();
+      resetOutcomeForm();
+    } catch (err) {
+      console.error('Failed to save outcome:', err);
+      alert(err.message);
     }
   }
 
@@ -604,6 +720,39 @@ ${analysisResult.analysis}
   function subagentLabel(e) {
     return e?.data?.agentType || e?.data?.agentId || e?.subagentType || "lead";
   }
+
+  $: taskRunStatusOptions = [
+    { value: "all", label: "All statuses" },
+    { value: "running", label: "Running" },
+    { value: "completed", label: "Completed" },
+    { value: "failed", label: "Failed" },
+    { value: "cancelled", label: "Cancelled" },
+    { value: "timed_out", label: "Timed out" },
+  ];
+
+  $: taskRunRunnerOptions = [
+    { value: "all", label: "All runners" },
+    ...facets.runners.map((r) => ({ value: r, label: r })),
+  ];
+
+  $: outcomeLabelOptions = [
+    { value: "success", label: "Success" },
+    { value: "partial_success", label: "Partial success" },
+    { value: "failure", label: "Failure" },
+    { value: "unsafe_success", label: "Unsafe success" },
+    { value: "unknown", label: "Unknown" },
+  ];
+
+  $: evaluationTypeOptions = [
+    { value: "human", label: "Human" },
+    { value: "rule_based", label: "Rule based" },
+    { value: "llm_judge", label: "LLM judge" },
+    { value: "benchmark_checker", label: "Benchmark checker" },
+  ];
+
+  $: if (taskRunStatusFilter || taskRunRunnerFilter || taskRunQuery !== undefined) {
+    loadTaskRuns();
+  }
 </script>
 
 <div class="min-h-screen bg-background text-foreground p-4 md:p-6">
@@ -655,6 +804,12 @@ ${analysisResult.analysis}
       <TabsList class="w-full md:w-auto">
         <TabsTrigger value="events" class="gap-2">
           <Search class="w-4 h-4" /> Events
+        </TabsTrigger>
+        <TabsTrigger value="task-runs" class="gap-2">
+          <FileText class="w-4 h-4" /> Task Runs
+          {#if taskRunsTotal > 0}
+            <Badge variant="secondary" class="ml-1 text-xs">{taskRunsTotal}</Badge>
+          {/if}
         </TabsTrigger>
         <TabsTrigger value="analyses" class="gap-2">
           <Sparkles class="w-4 h-4" /> Analyses
@@ -1186,6 +1341,279 @@ ${analysisResult.analysis}
         </CardContent>
       </Card>
     </div>
+      </TabsContent>
+
+      <TabsContent value="task-runs">
+        <Card class="rounded-2xl shadow-sm">
+          <CardContent class="p-4 md:p-5 space-y-4">
+            <div class="flex items-center justify-between gap-4 flex-wrap">
+              <div>
+                <h2 class="text-lg font-semibold">Task Runs</h2>
+                <div class="text-sm text-muted-foreground">
+                  Derived from root sessions and used as the base unit for outcomes and benchmarks.
+                </div>
+              </div>
+              <div class="flex gap-2">
+                <Button variant="outline" size="sm" on:click={loadTaskRuns} disabled={loadingTaskRuns}>
+                  {loadingTaskRuns ? 'Loading...' : 'Refresh'}
+                </Button>
+                <Button variant="secondary" size="sm" on:click={deriveTaskRunsNow} disabled={loadingTaskRuns}>
+                  Derive from events
+                </Button>
+              </div>
+            </div>
+
+            <Separator />
+
+            <div class="grid grid-cols-1 md:grid-cols-12 gap-3">
+              <div class="md:col-span-5 space-y-1">
+                <Label>Search</Label>
+                <Input bind:value={taskRunQuery} placeholder="Search task key, title, description, root session..." />
+              </div>
+              <div class="md:col-span-3 space-y-1">
+                <Label>Status</Label>
+                <Select bind:value={taskRunStatusFilter} options={taskRunStatusOptions} />
+              </div>
+              <div class="md:col-span-4 space-y-1">
+                <Label>Runner</Label>
+                <Select bind:value={taskRunRunnerFilter} options={taskRunRunnerOptions} />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <div class="grid grid-cols-1 xl:grid-cols-[1fr_520px] gap-4">
+          <Card class="rounded-2xl shadow-sm">
+            <CardContent class="p-0">
+              <div class="flex items-center justify-between p-4 bg-muted/5">
+                <div class="text-base font-semibold">Runs</div>
+                <div class="text-sm text-muted-foreground">{taskRunsTotal} total</div>
+              </div>
+              <Separator />
+
+              {#if loadingTaskRuns}
+                <div class="p-6 text-sm text-muted-foreground">Loading task runs...</div>
+              {:else if taskRuns.length === 0}
+                <div class="p-6 text-sm text-muted-foreground">
+                  No task runs yet. Click "Derive from events" to backfill them from existing sessions.
+                </div>
+              {:else}
+                <div class="divide-y">
+                  {#each taskRuns as run (run.id)}
+                    <button
+                      type="button"
+                      class="w-full text-left p-4 hover:bg-muted/20 transition-colors {selectedTaskRun?.id === run.id ? 'bg-blue-50' : ''}"
+                      on:click={() => viewTaskRun(run.id)}
+                    >
+                      <div class="flex items-start justify-between gap-4">
+                        <div class="space-y-2 min-w-0">
+                          <div class="font-medium truncate">{run.title || run.task_key}</div>
+                          <div class="text-xs text-muted-foreground font-mono break-all">{run.task_key}</div>
+                          <div class="flex flex-wrap gap-2">
+                            <Badge variant="outline">{run.runner || 'unknown'}</Badge>
+                            <Badge variant="secondary">{run.status}</Badge>
+                            <Badge variant="outline">{run.total_events} events</Badge>
+                            <Badge variant="outline">{run.total_tool_calls} tools</Badge>
+                          </div>
+                        </div>
+                        <div class="text-right text-xs text-muted-foreground space-y-1 flex-shrink-0">
+                          <div>{formatTs(run.started_at)}</div>
+                          <div>{run.total_duration_ms || 0}ms tool time</div>
+                          {#if run.estimated_cost}
+                            <div>${run.estimated_cost.toFixed(4)}</div>
+                          {/if}
+                        </div>
+                      </div>
+                    </button>
+                  {/each}
+                </div>
+              {/if}
+            </CardContent>
+          </Card>
+
+          <Card class="rounded-2xl shadow-sm">
+            <CardContent class="p-4 space-y-4">
+              <div class="flex items-start justify-between gap-2">
+                <div>
+                  <div class="text-base font-semibold">Task Run Detail</div>
+                  <div class="text-xs text-muted-foreground break-all font-mono mt-1">
+                    {selectedTaskRun ? selectedTaskRun.task_key : "Select a task run"}
+                  </div>
+                </div>
+                {#if selectedTaskRun}
+                  <Button variant="ghost" on:click={() => selectedTaskRun = null} class="h-8 w-8 p-0">
+                    <X class="w-4 h-4" />
+                  </Button>
+                {/if}
+              </div>
+
+              {#if selectedTaskRun}
+                <div class="space-y-3">
+                  <div class="flex flex-wrap gap-2">
+                    <Badge variant="outline">{selectedTaskRun.runner || 'unknown'}</Badge>
+                    <Badge variant="secondary">{selectedTaskRun.status}</Badge>
+                    <Badge variant="outline">{selectedTaskRun.total_events} events</Badge>
+                    <Badge variant="outline">{selectedTaskRun.total_tool_calls} tools</Badge>
+                    <Badge variant="outline">{selectedTaskRun.distinct_tools} distinct tools</Badge>
+                  </div>
+
+                  <div class="grid grid-cols-2 gap-3 text-sm">
+                    <div>
+                      <div class="text-muted-foreground">Started</div>
+                      <div class="font-medium">{formatTs(selectedTaskRun.started_at)}</div>
+                    </div>
+                    <div>
+                      <div class="text-muted-foreground">Ended</div>
+                      <div class="font-medium">{formatTs(selectedTaskRun.ended_at)}</div>
+                    </div>
+                    <div>
+                      <div class="text-muted-foreground">Errors</div>
+                      <div class="font-medium">{selectedTaskRun.error_count}</div>
+                    </div>
+                    <div>
+                      <div class="text-muted-foreground">Interrupts</div>
+                      <div class="font-medium">{selectedTaskRun.interrupt_count}</div>
+                    </div>
+                    <div>
+                      <div class="text-muted-foreground">Input tokens</div>
+                      <div class="font-medium">{selectedTaskRun.token_input.toLocaleString()}</div>
+                    </div>
+                    <div>
+                      <div class="text-muted-foreground">Output tokens</div>
+                      <div class="font-medium">{selectedTaskRun.token_output.toLocaleString()}</div>
+                    </div>
+                  </div>
+
+                  {#if selectedTaskRun.metadata?.tools?.length}
+                    <div>
+                      <div class="text-sm text-muted-foreground mb-2">Tools</div>
+                      <div class="flex flex-wrap gap-2">
+                        {#each selectedTaskRun.metadata.tools as toolName}
+                          <Badge variant="outline" class="font-mono text-xs">{toolName}</Badge>
+                        {/each}
+                      </div>
+                    </div>
+                  {/if}
+                </div>
+
+                <Separator />
+
+                <div class="space-y-3">
+                  <div class="flex items-center justify-between">
+                    <div class="font-medium">Outcomes</div>
+                    <Badge variant="secondary">{selectedTaskRun.outcomes?.length || 0}</Badge>
+                  </div>
+
+                  {#if selectedTaskRun.outcomes?.length}
+                    <div class="space-y-2">
+                      {#each selectedTaskRun.outcomes as outcome (outcome.id)}
+                        <div class="rounded-xl border p-3 space-y-2 bg-muted/10">
+                          <div class="flex flex-wrap gap-2 items-center">
+                            <Badge variant="secondary">{outcome.outcome_label}</Badge>
+                            <Badge variant="outline">{outcome.evaluation_type}</Badge>
+                            {#if outcome.is_canonical}
+                              <Badge variant="outline">canonical</Badge>
+                            {/if}
+                            {#if outcome.requires_human_intervention}
+                              <Badge variant="outline">human intervention</Badge>
+                            {/if}
+                          </div>
+                          <div class="text-xs text-muted-foreground">
+                            {formatTs(outcome.evaluated_at)}{#if outcome.evaluator} by {outcome.evaluator}{/if}
+                          </div>
+                          {#if outcome.failure_mode}
+                            <div class="text-sm"><span class="font-medium">Failure mode:</span> {outcome.failure_mode}</div>
+                          {/if}
+                          {#if outcome.notes}
+                            <div class="text-sm whitespace-pre-wrap">{outcome.notes}</div>
+                          {/if}
+                        </div>
+                      {/each}
+                    </div>
+                  {:else}
+                    <div class="text-sm text-muted-foreground">No outcomes recorded yet.</div>
+                  {/if}
+                </div>
+
+                <Separator />
+
+                <div class="space-y-3">
+                  <div class="font-medium">Add Outcome</div>
+
+                  <div class="grid grid-cols-2 gap-3">
+                    <div class="space-y-1">
+                      <Label>Evaluation type</Label>
+                      <Select bind:value={taskRunOutcome.evaluation_type} options={evaluationTypeOptions} />
+                    </div>
+                    <div class="space-y-1">
+                      <Label>Outcome</Label>
+                      <Select bind:value={taskRunOutcome.outcome_label} options={outcomeLabelOptions} />
+                    </div>
+                  </div>
+
+                  <div class="grid grid-cols-2 gap-3">
+                    <div class="space-y-1">
+                      <Label>Correctness</Label>
+                      <Input bind:value={taskRunOutcome.correctness_score} type="number" min="0" max="1" step="0.1" placeholder="0.0 - 1.0" />
+                    </div>
+                    <div class="space-y-1">
+                      <Label>Safety</Label>
+                      <Input bind:value={taskRunOutcome.safety_score} type="number" min="0" max="1" step="0.1" placeholder="0.0 - 1.0" />
+                    </div>
+                    <div class="space-y-1">
+                      <Label>Efficiency</Label>
+                      <Input bind:value={taskRunOutcome.efficiency_score} type="number" min="0" max="1" step="0.1" placeholder="0.0 - 1.0" />
+                    </div>
+                    <div class="space-y-1">
+                      <Label>Reproducibility</Label>
+                      <Input bind:value={taskRunOutcome.reproducibility_score} type="number" min="0" max="1" step="0.1" placeholder="0.0 - 1.0" />
+                    </div>
+                  </div>
+
+                  <div class="grid grid-cols-2 gap-3">
+                    <div class="space-y-1">
+                      <Label>Failure mode</Label>
+                      <Input bind:value={taskRunOutcome.failure_mode} placeholder="planning_failure, unsafe_action, ..." />
+                    </div>
+                    <div class="space-y-1">
+                      <Label>Failure subtype</Label>
+                      <Input bind:value={taskRunOutcome.failure_subtype} placeholder="Optional subtype" />
+                    </div>
+                  </div>
+
+                  <div class="space-y-1">
+                    <Label>Evaluator</Label>
+                    <Input bind:value={taskRunOutcome.evaluator} placeholder="web-ui" />
+                  </div>
+
+                  <label class="flex items-center gap-2 text-sm">
+                    <input bind:checked={taskRunOutcome.requires_human_intervention} type="checkbox" class="w-4 h-4" />
+                    Requires human intervention
+                  </label>
+
+                  <label class="flex items-center gap-2 text-sm">
+                    <input bind:checked={taskRunOutcome.is_canonical} type="checkbox" class="w-4 h-4" />
+                    Mark as canonical outcome
+                  </label>
+
+                  <div class="space-y-1">
+                    <Label>Notes</Label>
+                    <Textarea bind:value={taskRunOutcome.notes} class="min-h-[120px]" placeholder="Assessment notes, evidence summary, failure explanation..." />
+                  </div>
+
+                  <div class="flex gap-2">
+                    <Button on:click={saveTaskRunOutcome}>Save outcome</Button>
+                    <Button variant="outline" on:click={resetOutcomeForm}>Reset</Button>
+                  </div>
+                </div>
+              {:else}
+                <div class="text-sm text-muted-foreground">
+                  Select a task run to inspect its summary and add outcomes.
+                </div>
+              {/if}
+            </CardContent>
+          </Card>
+        </div>
       </TabsContent>
 
       <!-- Analyses Tab Content -->
