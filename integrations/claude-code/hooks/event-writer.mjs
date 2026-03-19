@@ -87,6 +87,13 @@ function initSchema() {
 initSchema();
 
 // Validation (from cep-processor.js)
+function normalizeTimestamp(ts) {
+  if (!ts) return ts;
+  const parsed = new Date(ts);
+  if (Number.isNaN(parsed.getTime())) return ts;
+  return parsed.toISOString();
+}
+
 function validateCEPEvent(event) {
   const errors = [];
 
@@ -134,6 +141,9 @@ function generateCEPKey(event) {
 
 // Insert event (from cep-processor.js)
 function insertCEPEvent(event) {
+  if (event && event.ts) {
+    event.ts = normalizeTimestamp(event.ts);
+  }
   const key = generateCEPKey(event);
 
   const ts = event.ts || null;
@@ -337,7 +347,7 @@ function findOffsetByTimestamp(filePath, targetTs) {
 }
 
 // Parse transcript from offset, extract subagent tool calls as CEP events
-function extractSubagentToolCalls(transcriptPath, taskTraceId, sessionId, startTs, endTs) {
+function extractSubagentToolCalls(transcriptPath, taskTraceId, sessionId, startTs, endTs, fallbackAgentType = null) {
   const offset = findOffsetByTimestamp(transcriptPath, startTs);
   const { size: fileSize } = statSync(transcriptPath);
 
@@ -376,6 +386,7 @@ function extractSubagentToolCalls(transcriptPath, taskTraceId, sessionId, startT
     if (!msg?.message?.content) continue;
 
     const agentId = entry.data?.agentId;
+    const agentType = entry.data?.agentType || fallbackAgentType || null;
     const ts = msg.timestamp || entry.timestamp;
     const content = msg.message.content;
 
@@ -393,6 +404,7 @@ function extractSubagentToolCalls(transcriptPath, taskTraceId, sessionId, startT
           data: {
             tool: block.name,
             agentId,
+            agentType,
             parentTraceId: taskTraceId,
             args: block.input
           }
@@ -408,6 +420,7 @@ function extractSubagentToolCalls(transcriptPath, taskTraceId, sessionId, startT
           data: {
             tool: toolName,
             agentId,
+            agentType,
             parentTraceId: taskTraceId,
             status: block.is_error ? 'error' : 'success',
             response: typeof block.content === 'string'
@@ -432,12 +445,24 @@ function extractUsageFromTranscript(transcriptPath, sessionId) {
   const buf = Buffer.alloc(64 * 1024);
 
   const events = [];
+  const agentTypesById = new Map();
   let pos = 0;
 
   while (pos < fileSize) {
     const { line, nextOffset } = readLineAt(fd, pos, fileSize, buf);
     if (!line) break;
     pos = nextOffset;
+
+    if (line.includes('"agentId"') && line.includes('"agentType"')) {
+      let maybeAgentEntry;
+      try { maybeAgentEntry = JSON.parse(line); } catch { maybeAgentEntry = null; }
+
+      const mappedAgentId = maybeAgentEntry?.data?.agentId || maybeAgentEntry?.agentId || null;
+      const mappedAgentType = maybeAgentEntry?.data?.agentType || maybeAgentEntry?.agentType || null;
+      if (mappedAgentId && mappedAgentType && !agentTypesById.has(mappedAgentId)) {
+        agentTypesById.set(mappedAgentId, mappedAgentType);
+      }
+    }
 
     // Quick reject: must contain usage data
     if (!line.includes('"usage"')) continue;
@@ -447,7 +472,7 @@ function extractUsageFromTranscript(transcriptPath, sessionId) {
     let entry;
     try { entry = JSON.parse(line); } catch { continue; }
 
-    let usage, model, agentId, ts;
+    let usage, model, agentId, agentType, ts;
 
     if (entry.type === 'assistant' && entry.message?.usage) {
       // Main agent API response
@@ -455,6 +480,7 @@ function extractUsageFromTranscript(transcriptPath, sessionId) {
       model = entry.message?.model || entry.model || 'unknown';
       ts = entry.timestamp;
       agentId = null;
+      agentType = 'lead';
     } else if (entry.type === 'progress') {
       if (entry.data?.type !== 'agent_progress') continue;
       const innerMsg = entry.data?.message;
@@ -463,6 +489,7 @@ function extractUsageFromTranscript(transcriptPath, sessionId) {
       usage = innerMsg.message.usage;
       model = innerMsg.message?.model || innerMsg.model || entry.model || 'unknown';
       agentId = entry.data?.agentId || entry.agentId || null;
+      agentType = entry.data?.agentType || innerMsg.agentType || null;
       ts = innerMsg.timestamp || entry.timestamp;
     } else {
       continue;
@@ -492,11 +519,27 @@ function extractUsageFromTranscript(transcriptPath, sessionId) {
       }
     };
     if (agentId) evt.data.agentId = agentId;
+    if (agentType) evt.data.agentType = agentType;
 
     events.push(evt);
   }
 
   closeSync(fd);
+
+  for (const evt of events) {
+    if (evt.data?.agentId && !evt.data?.agentType) {
+      evt.data.agentType = agentTypesById.get(evt.data.agentId)
+        || db.prepare(
+          `SELECT subagentType
+           FROM entries
+           WHERE sessionID = ? AND agentId = ? AND subagentType IS NOT NULL
+           ORDER BY ts DESC
+           LIMIT 1`
+        ).get(sessionId, evt.data.agentId)?.subagentType
+        || null;
+    }
+  }
+
   return events;
 }
 
@@ -536,7 +579,14 @@ function extractAndInsertSubagentEvents(event) {
     startTs = new Date(new Date(endTs).getTime() - 3600000).toISOString();
   }
 
-  const extracted = extractSubagentToolCalls(transcriptPath, traceId, sessionId, startTs, endTs);
+  const extracted = extractSubagentToolCalls(
+    transcriptPath,
+    traceId,
+    sessionId,
+    startTs,
+    endTs,
+    event.data?.agentType || event.data?.args?.subagent_type || null
+  );
   if (extracted.length === 0) return;
 
   // Dedup: find events already captured by hooks (same traceId + event type)
@@ -557,7 +607,7 @@ function extractAndInsertSubagentEvents(event) {
   }
 
   const updateStmt = db.prepare(
-    `UPDATE entries SET agentId = ?, data = ? WHERE key = ?`
+    `UPDATE entries SET agentId = ?, subagentType = ?, data = ? WHERE key = ?`
   );
   const newEvents = [];
   let enrichedCount = 0;
@@ -571,8 +621,16 @@ function extractAndInsertSubagentEvents(event) {
         const existingData = JSON.parse(existing.data);
         if (!existingData.data) existingData.data = {};
         existingData.data.agentId = evt.data.agentId;
+        if (evt.data.agentType) {
+          existingData.data.agentType = evt.data.agentType;
+        }
         existingData.data.parentTraceId = evt.data.parentTraceId;
-        updateStmt.run(evt.data.agentId, JSON.stringify(existingData), existing.key);
+        updateStmt.run(
+          evt.data.agentId,
+          evt.data.agentType || null,
+          JSON.stringify(existingData),
+          existing.key
+        );
         enrichedCount++;
       } else {
         // New event not captured by hooks — insert

@@ -95,6 +95,7 @@
   let notice = null;
   let noticeTimer;
   let confirmDialog = null;
+  let liveRefreshTimer;
 
   // Load initial data
   onMount(async () => {
@@ -205,12 +206,13 @@
     // Check if event matches current filters
     if (!matchesFilters(newEvent)) return;
 
-    // Add to pageItems if on first page and sorting by newest
-    if (page === 1 && sortDir === "desc") {
-      // Prepend to list
+    // For timestamp-sorted views, transcript-derived events can arrive later than
+    // their actual event time. Re-fetch the first page instead of incrementally
+    // mutating the list so backend ordering remains canonical.
+    if (page === 1 && sortKey === "ts") {
+      scheduleLiveRefresh();
+    } else if (page === 1 && sortDir === "desc") {
       pageItems = [newEvent, ...pageItems];
-
-      // Keep only pageSize items
       if (pageItems.length > pageSize) {
         pageItems = pageItems.slice(0, pageSize);
       }
@@ -218,6 +220,13 @@
 
     // Update facets
     updateFacetsForEvent(newEvent);
+  }
+
+  function scheduleLiveRefresh() {
+    clearTimeout(liveRefreshTimer);
+    liveRefreshTimer = setTimeout(() => {
+      fetchEntries();
+    }, 150);
   }
 
   function matchesFilters(newEvent) {
@@ -904,6 +913,7 @@ ${analysisResult.analysis}
                   {@const hasFlatTokens = e.data?.inputTokens != null || e.data?.outputTokens != null}
                   {@const hasUsage = isUsageEvent || hasFlatTokens || embeddedUsage}
                   {@const usageModel = isUsageEvent ? e.data?.model : null}
+                  {@const usageAgentLabel = e.data?.agentType || e.data?.agentId || "lead"}
                   {@const usageTokens = (isUsageEvent || hasFlatTokens) ? {
                     input: e.data?.inputTokens || 0,
                     output: e.data?.outputTokens || 0,
@@ -920,6 +930,8 @@ ${analysisResult.analysis}
                       ? 'bg-blue-100/50 border-l-4 border-l-blue-500'
                       : isSel
                       ? 'bg-blue-50 border-l-4 border-l-blue-300'
+                      : isUsageEvent
+                      ? 'bg-amber-50/60 hover:bg-amber-100/60 border-l-4 border-l-amber-300'
                       : idx % 2 === 0 ? 'bg-background hover:bg-muted/30' : 'bg-muted/10 hover:bg-muted/40'}"
                   >
                     <td class="px-4 py-3" on:click|stopPropagation>
@@ -937,28 +949,37 @@ ${analysisResult.analysis}
                       </Badge>
                     </td>
                     <td class="px-4 py-3" on:click={() => selectEntry(key)}>
-                      <Badge variant="secondary" class="rounded-full text-xs font-medium">
+                      <Badge variant={isUsageEvent ? "outline" : "secondary"} class="rounded-full text-xs font-medium {isUsageEvent ? 'border-amber-400 text-amber-800 bg-amber-100/70' : ''}">
                         {cepEvent}
                       </Badge>
                     </td>
                     <td class="px-4 py-3 font-mono text-xs font-semibold" on:click={() => selectEntry(key)}>
                       {#if isUsageEvent}
-                        <Badge variant="outline" class="rounded-full text-xs">{usageModel || "unknown"}</Badge>
+                        <div class="space-y-1">
+                          <Badge variant="outline" class="rounded-full text-xs border-amber-400 text-amber-900 bg-amber-100/70">{usageModel || "unknown"}</Badge>
+                          <div class="text-[10px] uppercase tracking-wide text-amber-800">token telemetry</div>
+                        </div>
                       {:else}
                         {tool || "—"}
                       {/if}
                     </td>
                     <td class="px-4 py-3 text-xs" on:click={() => selectEntry(key)}>
-                      {#if e.data?.agentType || e.data?.agentId}
-                        <Badge variant="outline" class="rounded-full text-xs" title={e.data?.agentId || ''}>
-                          {e.data.agentType || e.data.agentId}
+                      {#if e.data?.agentType || e.data?.agentId || isUsageEvent}
+                        <Badge
+                          variant="outline"
+                          class="rounded-full text-xs {isUsageEvent ? 'border-amber-300 text-amber-900 bg-amber-50' : ''}"
+                          title={e.data?.agentId || ''}
+                        >
+                          {usageAgentLabel}
                         </Badge>
                       {:else}
                         <span class="text-muted-foreground">lead</span>
                       {/if}
                     </td>
                     <td class="px-4 py-3 text-xs" on:click={() => selectEntry(key)}>
-                      {#if cepStatus === 'success'}
+                      {#if isUsageEvent}
+                        <span class="text-[10px] uppercase tracking-wide text-amber-800">metering</span>
+                      {:else if cepStatus === 'success'}
                         <Badge variant="outline" class="rounded-full text-green-600 border-green-600">✓</Badge>
                       {:else if cepStatus === 'error'}
                         <Badge variant="outline" class="rounded-full text-red-600 border-red-600">✗</Badge>
@@ -973,9 +994,11 @@ ${analysisResult.analysis}
                     </td>
                     <td class="px-4 py-3 text-xs font-medium" on:click={() => selectEntry(key)}>
                       {#if hasUsage && usageTokens}
-                        <div class="text-xs space-y-0.5">
-                          <div>out: {usageTokens.output.toLocaleString()}</div>
-                          <div class="text-muted-foreground text-[10px]">cache: {usageTokens.cacheRead.toLocaleString()}</div>
+                        <div class="text-xs space-y-0.5 {isUsageEvent ? 'text-amber-950' : ''}">
+                          <div>{isUsageEvent ? 'out' : 'out'}: {usageTokens.output.toLocaleString()}</div>
+                          <div class="text-[10px] {isUsageEvent ? 'text-amber-800' : 'text-muted-foreground'}">
+                            in: {usageTokens.input.toLocaleString()} · cache: {usageTokens.cacheRead.toLocaleString()}
+                          </div>
                         </div>
                       {:else}
                         <span class="text-muted-foreground">—</span>
@@ -1120,8 +1143,8 @@ ${analysisResult.analysis}
                   {#if selected.data?.model}
                     <div><span class="font-medium">Model:</span> {selected.data.model}</div>
                   {/if}
-                  {#if selected.data?.agentId}
-                    <div><span class="font-medium">Agent:</span> {selected.data.agentId}</div>
+                  {#if selected.data?.agentType || selected.data?.agentId}
+                    <div><span class="font-medium">Agent:</span> {selected.data.agentType || selected.data.agentId}</div>
                   {/if}
                   <div><span class="font-medium">Input tokens:</span> {detailInputTokens.toLocaleString()}</div>
                   <div><span class="font-medium">Output tokens:</span> {detailOutputTokens.toLocaleString()}</div>

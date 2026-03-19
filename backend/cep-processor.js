@@ -10,6 +10,13 @@
  * @param {number} idx - Index in batch
  * @returns {string} - Unique key
  */
+function normalizeTimestamp(ts) {
+  if (!ts) return ts;
+  const parsed = new Date(ts);
+  if (Number.isNaN(parsed.getTime())) return ts;
+  return parsed.toISOString();
+}
+
 function generateCEPKey(event, idx = 0) {
   // Use traceId if available (for tool events)
   if (event.traceId && event.event) {
@@ -46,6 +53,9 @@ function generateCEPKey(event, idx = 0) {
  * @param {number} idx - Index in batch
  */
 function insertCEPEvent(db, event, idx = 0) {
+  if (event && event.ts) {
+    event.ts = normalizeTimestamp(event.ts);
+  }
   const key = generateCEPKey(event, idx);
 
   // Extract fields from CEP event
