@@ -37,7 +37,8 @@
     roots: [],
     allTags: [],
     runners: [],
-    events: []
+    events: [],
+    attempts: []
   };
 
   // Filters
@@ -50,6 +51,7 @@
   let tagFilter = "all";
   let runner = "all";
   let event = "all";
+  let attempt = "all";
 
   // Sorting
   let sortKey = "ts";
@@ -185,7 +187,7 @@
   $: if (query !== undefined) {
     debouncedFetch();
   }
-  $: if (kind || type || tool || subagent || rootSession || tagFilter || runner || event || sortKey || sortDir || page || pageSize) {
+  $: if (kind || type || tool || subagent || rootSession || tagFilter || runner || event || attempt || sortKey || sortDir || page || pageSize) {
     fetchEntries();
   }
 
@@ -227,6 +229,7 @@
       loadingTaskRuns = true;
       const filters = {
         pageSize: 100,
+        source: "derived_attempt",
         status: taskRunStatusFilter !== "all" ? taskRunStatusFilter : undefined,
         runner: taskRunRunnerFilter !== "all" ? taskRunRunnerFilter : undefined,
         query: taskRunQuery || undefined,
@@ -430,6 +433,13 @@
     // Update stats
     stats.total++;
 
+    // Attempt-level filtering depends on derived task_run mappings from backend,
+    // so use canonical refresh instead of incremental updates.
+    if (attempt !== "all") {
+      scheduleLiveRefresh();
+      return;
+    }
+
     // Check if event matches current filters
     if (!matchesFilters(newEvent)) return;
 
@@ -498,6 +508,7 @@
         tag: tagFilter !== "all" ? tagFilter : undefined,
         runner: runner !== "all" ? runner : undefined,
         event: event !== "all" ? event : undefined,
+        attempt: attempt !== "all" ? attempt : undefined,
         query: query || undefined,
         sortKey,
         sortDir
@@ -846,6 +857,11 @@ ${analysisResult.analysis}
     ...facets.events.map((e) => ({ value: e, label: e })),
   ];
 
+  $: attemptOptions = [
+    { value: "all", label: "All attempts" },
+    ...facets.attempts.map((a) => ({ value: a, label: a })),
+  ];
+
   $: sortKeyOptions = [
     { value: "ts", label: "Timestamp" },
     { value: "durationMs", label: "Duration" },
@@ -1094,6 +1110,10 @@ ${analysisResult.analysis}
             <Label>Tag</Label>
             <Select bind:value={tagFilter} options={tagFilterOptions} />
           </div>
+          <div class="md:col-span-2 space-y-1">
+            <Label>Attempt</Label>
+            <Select bind:value={attempt} options={attemptOptions} />
+          </div>
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-12 gap-3">
@@ -1295,7 +1315,12 @@ ${analysisResult.analysis}
                           <div class="text-[10px] uppercase tracking-wide text-amber-800">token telemetry</div>
                         </div>
                       {:else}
-                        {tool || "—"}
+                        <div class="space-y-1">
+                          <div>{tool || "—"}</div>
+                          {#if e.attemptKey}
+                            <div class="text-[10px] text-muted-foreground">{e.attemptKey}</div>
+                          {/if}
+                        </div>
                       {/if}
                     </td>
                     <td class="px-4 py-3 text-xs" on:click={() => selectEntry(key)}>

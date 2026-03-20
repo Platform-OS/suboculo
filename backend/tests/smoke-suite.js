@@ -104,6 +104,41 @@ async function run() {
         runner: 'smoke-runner',
         sessionId: 'smoke-session-1',
         data: { reason: 'completed' }
+      },
+      {
+        ts: '2026-03-19T10:45:00.000Z',
+        event: 'session.start',
+        runner: 'smoke-runner',
+        sessionId: 'smoke-session-1',
+        data: {
+          title: 'Smoke test session attempt 2',
+          directory: '/tmp/project'
+        }
+      },
+      {
+        ts: '2026-03-19T10:45:01.000Z',
+        event: 'tool.start',
+        runner: 'smoke-runner',
+        sessionId: 'smoke-session-1',
+        traceId: 'trace-2',
+        data: {
+          tool: 'write',
+          args: { filePath: '/tmp/project/output.txt' }
+        }
+      },
+      {
+        ts: '2026-03-19T10:45:01.020Z',
+        event: 'tool.end',
+        runner: 'smoke-runner',
+        sessionId: 'smoke-session-1',
+        traceId: 'trace-2',
+        data: {
+          tool: 'write',
+          args: { filePath: '/tmp/project/output.txt' },
+          status: 'success',
+          durationMs: 20,
+          outputLen: 64
+        }
       }
     ];
 
@@ -121,7 +156,7 @@ async function run() {
       body: JSON.stringify(batchEvents)
     });
     assert.equal(result.response.status, 200, 'batch ingest should succeed');
-    assert.equal(result.body.count, 3);
+    assert.equal(result.body.count, 6);
 
     result = await request('/ingest', {
       method: 'POST',
@@ -132,7 +167,7 @@ async function run() {
 
     result = await request('/entries?pageSize=10&runner=smoke-runner');
     assert.equal(result.response.status, 200, 'entries fetch should succeed');
-    assert.equal(result.body.total, 4);
+    assert.equal(result.body.total, 7);
     const firstKey = result.body.entries[0].__key;
 
     result = await request('/meta/outcome-taxonomy');
@@ -150,8 +185,20 @@ async function run() {
 
     result = await request('/task-runs?pageSize=10&runner=smoke-runner');
     assert.equal(result.response.status, 200, 'task run listing should succeed');
+    assert.equal(result.body.total, 2, 'attempt-level derivation should split into two task runs');
     assert.ok(result.body.taskRuns.length >= 1, 'smoke runner should have task runs');
+    const attemptKey = result.body.taskRuns[0].task_key;
     const smokeTaskRunId = result.body.taskRuns[0].id;
+
+    result = await request('/facets');
+    assert.equal(result.response.status, 200, 'facets should include attempts');
+    assert.ok(Array.isArray(result.body.attempts), 'facets.attempts should be an array');
+    assert.ok(result.body.attempts.length >= 2, 'facets should include derived attempts');
+
+    result = await request(`/entries?pageSize=50&runner=smoke-runner&attempt=${encodeURIComponent(attemptKey)}`);
+    assert.equal(result.response.status, 200, 'entries filtered by attempt should succeed');
+    assert.ok(result.body.total >= 1, 'attempt filter should return entries');
+    assert.ok(result.body.entries.every((entry) => entry.attemptKey === attemptKey), 'all entries should match requested attempt');
 
     result = await request(`/task-runs/${smokeTaskRunId}/outcomes`, {
       method: 'POST',
@@ -220,7 +267,7 @@ async function run() {
 
     result = await request('/stats');
     assert.equal(result.response.status, 200, 'stats fetch should succeed');
-    assert.equal(result.body.total, 4);
+    assert.equal(result.body.total, 7);
 
     result = await request('/tags', {
       method: 'POST',

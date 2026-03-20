@@ -76,6 +76,7 @@ const OUTCOME_LABELS_REQUIRING_FAILURE_MODE = new Set([
   'interrupted',
   'abandoned'
 ]);
+const ATTEMPT_IDLE_GAP_MS = 45 * 60 * 1000;
 
 // SSE Event Emitter for real-time updates
 const sseEmitter = new EventEmitter();
@@ -553,33 +554,6 @@ function deriveTaskRunStatus(rows) {
   // Without an explicit session end, treat the run as still active.
   // This avoids marking long-lived/reused sessions as completed.
   return 'running';
-
-  /*
-   * Legacy heuristic kept for reference:
-   * - used pending tool traces + terminal activity to infer completion
-   * - caused false "completed" status for active sessions with no session.end
-   */
-  /*
-  const pendingTraceIds = new Set();
-  for (const row of rows) {
-    if (!row.traceId) continue;
-    if (row.event === 'tool.start') pendingTraceIds.add(row.traceId);
-    if (row.event === 'tool.end') pendingTraceIds.delete(row.traceId);
-  }
-
-  if (pendingTraceIds.size > 0) return 'running';
-
-  const hasTerminalActivity = rows.some((row) => (
-    row.event === 'tool.end' ||
-    row.event === 'subagent.stop' ||
-    row.event === 'usage' ||
-    row.event === 'message' ||
-    row.event === 'session.end'
-  ));
-
-  if (hasTerminalActivity) return 'completed';
-  return 'running';
-  */
 }
 
 function summarizeTaskRunRows(rows) {
@@ -646,8 +620,41 @@ function summarizeTaskRunRows(rows) {
   };
 }
 
+function splitRowsIntoAttemptRuns(rows) {
+  if (!rows.length) return [];
+
+  const attempts = [];
+  let current = [];
+  let prevTsMs = null;
+  let prevEvent = null;
+
+  for (const row of rows) {
+    const isSessionStart = row.event === 'session.start';
+    const rowTsMs = row.ts ? Date.parse(row.ts) : NaN;
+    const gapExceeded = Number.isFinite(prevTsMs) && Number.isFinite(rowTsMs)
+      ? (rowTsMs - prevTsMs > ATTEMPT_IDLE_GAP_MS)
+      : false;
+    const startsAfterEnd = prevEvent === 'session.end';
+
+    if (current.length > 0 && (isSessionStart || gapExceeded || startsAfterEnd)) {
+      attempts.push(current);
+      current = [];
+    }
+
+    current.push(row);
+    prevTsMs = Number.isFinite(rowTsMs) ? rowTsMs : prevTsMs;
+    prevEvent = row.event || null;
+  }
+
+  if (current.length > 0) {
+    attempts.push(current);
+  }
+
+  return attempts;
+}
+
 function upsertTaskRunForRootSession(rootSessionId) {
-  if (!rootSessionId) return null;
+  if (!rootSessionId) return [];
 
   const rows = db.prepare(`
     SELECT key, ts, sessionID, rootSessionID, runner, event, data
@@ -656,10 +663,8 @@ function upsertTaskRunForRootSession(rootSessionId) {
     ORDER BY ts ASC, id ASC
   `).all(rootSessionId, rootSessionId);
 
-  if (rows.length === 0) return null;
-
-  const summary = summarizeTaskRunRows(rows);
-  const taskKey = `root:${rootSessionId}`;
+  if (rows.length === 0) return [];
+  const attempts = splitRowsIntoAttemptRuns(rows);
 
   const upsert = db.prepare(`
     INSERT INTO task_runs (
@@ -696,35 +701,6 @@ function upsertTaskRunForRootSession(rootSessionId) {
       updated_at = excluded.updated_at
   `);
 
-  upsert.run(
-    taskKey,
-    summary.title,
-    summary.description,
-    'derived_session',
-    summary.runner,
-    summary.model,
-    summary.status,
-    rootSessionId,
-    summary.startedAt,
-    summary.endedAt,
-    summary.totalEvents,
-    summary.totalToolCalls,
-    summary.distinctTools,
-    summary.totalDurationMs,
-    summary.errorCount,
-    summary.retryCount,
-    summary.subagentCount,
-    summary.interruptCount,
-    summary.tokenInput,
-    summary.tokenOutput,
-    summary.tokenCacheCreation,
-    summary.tokenCacheRead,
-    summary.estimatedCost,
-    summary.metadata,
-    new Date().toISOString()
-  );
-
-  const taskRun = db.prepare('SELECT id, task_key FROM task_runs WHERE task_key = ?').get(taskKey);
   const replaceLinks = db.transaction((taskRunId, eventRows) => {
     db.prepare('DELETE FROM task_run_events WHERE task_run_id = ?').run(taskRunId);
     const insertLink = db.prepare(`
@@ -735,8 +711,47 @@ function upsertTaskRunForRootSession(rootSessionId) {
       insertLink.run(taskRunId, row.key);
     }
   });
-  replaceLinks(taskRun.id, rows);
-  return taskRun.id;
+
+  const taskRunIds = [];
+  attempts.forEach((attemptRows, idx) => {
+    const summary = summarizeTaskRunRows(attemptRows);
+    const taskKey = `root:${rootSessionId}::attempt:${idx + 1}`;
+
+    upsert.run(
+      taskKey,
+      summary.title,
+      summary.description,
+      'derived_attempt',
+      summary.runner,
+      summary.model,
+      summary.status,
+      rootSessionId,
+      summary.startedAt,
+      summary.endedAt,
+      summary.totalEvents,
+      summary.totalToolCalls,
+      summary.distinctTools,
+      summary.totalDurationMs,
+      summary.errorCount,
+      summary.retryCount,
+      summary.subagentCount,
+      summary.interruptCount,
+      summary.tokenInput,
+      summary.tokenOutput,
+      summary.tokenCacheCreation,
+      summary.tokenCacheRead,
+      summary.estimatedCost,
+      summary.metadata,
+      new Date().toISOString()
+    );
+
+    const taskRun = db.prepare('SELECT id FROM task_runs WHERE task_key = ?').get(taskKey);
+    if (!taskRun?.id) return;
+    replaceLinks(taskRun.id, attemptRows);
+    taskRunIds.push(taskRun.id);
+  });
+
+  return taskRunIds;
 }
 
 function getTaskRunById(taskRunId) {
@@ -757,8 +772,8 @@ function backfillAllTaskRuns() {
 
   let derived = 0;
   for (const row of rows) {
-    const taskRunId = upsertTaskRunForRootSession(row.rootSessionId);
-    if (taskRunId) derived++;
+    const taskRunIds = upsertTaskRunForRootSession(row.rootSessionId);
+    derived += taskRunIds.length;
   }
   return derived;
 }
@@ -1624,74 +1639,96 @@ app.get('/api/entries', (req, res) => {
       sortKey = 'ts',
       sortDir = 'desc',
       runner,
-      event
+      event,
+      attempt
     } = req.query;
 
-    let sql = 'SELECT * FROM entries WHERE 1=1';
+    let sql = `
+      SELECT
+        e.*,
+        tr.id AS taskRunId,
+        tr.task_key AS attemptKey
+      FROM entries e
+      LEFT JOIN task_run_events tre ON tre.entry_key = e.key
+      LEFT JOIN task_runs tr ON tr.id = tre.task_run_id
+      WHERE 1=1
+    `;
     const params = [];
 
     // Apply CEP filters
     if (runner && runner !== 'all') {
-      sql += ' AND runner = ?';
+      sql += ' AND e.runner = ?';
       params.push(runner);
     }
 
     if (event && event !== 'all') {
-      sql += ' AND event = ?';
+      sql += ' AND e.event = ?';
       params.push(event);
+    }
+
+    if (attempt && attempt !== 'all') {
+      sql += ' AND tr.task_key = ?';
+      params.push(attempt);
     }
 
     // Apply legacy filters (backward compat)
     if (kind && kind !== 'all') {
-      sql += ' AND (kind = ? OR event = ?)';
+      sql += ' AND (e.kind = ? OR e.event = ?)';
       params.push(kind, kind);
     }
 
     if (type && type !== 'all') {
-      sql += ' AND type = ?';
+      sql += ' AND e.type = ?';
       params.push(type);
     }
 
     if (tool && tool !== 'all') {
-      sql += ' AND tool = ?';
+      sql += ' AND e.tool = ?';
       params.push(tool);
     }
 
     if (subagent && subagent !== 'all') {
-      sql += ' AND subagentType = ?';
+      sql += ' AND e.subagentType = ?';
       params.push(subagent);
     }
 
     if (rootSession && rootSession !== 'all') {
-      sql += ' AND rootSessionID = ?';
+      sql += ' AND e.rootSessionID = ?';
       params.push(rootSession);
     }
 
     if (tag && tag !== 'all') {
-      sql += ' AND key IN (SELECT entry_key FROM tags WHERE tag = ?)';
+      sql += ' AND e.key IN (SELECT entry_key FROM tags WHERE tag = ?)';
       params.push(tag);
     }
 
     if (query) {
       sql += ` AND (
-        kind LIKE ? OR
-        type LIKE ? OR
-        tool LIKE ? OR
-        sessionID LIKE ? OR
-        rootSessionID LIKE ? OR
-        callID LIKE ? OR
-        title LIKE ? OR
-        outputPreview LIKE ? OR
-        args LIKE ? OR
-        key IN (SELECT entry_key FROM tags WHERE tag LIKE ?) OR
-        key IN (SELECT entry_key FROM notes WHERE note LIKE ?)
+        e.kind LIKE ? OR
+        e.type LIKE ? OR
+        e.tool LIKE ? OR
+        e.sessionID LIKE ? OR
+        e.rootSessionID LIKE ? OR
+        e.callID LIKE ? OR
+        e.title LIKE ? OR
+        e.outputPreview LIKE ? OR
+        e.args LIKE ? OR
+        tr.task_key LIKE ? OR
+        e.key IN (SELECT entry_key FROM tags WHERE tag LIKE ?) OR
+        e.key IN (SELECT entry_key FROM notes WHERE note LIKE ?)
       )`;
       const likeQuery = `%${query}%`;
-      params.push(...Array(11).fill(likeQuery));
+      params.push(...Array(12).fill(likeQuery));
     }
 
     // Count total matching
-    const countSql = sql.replace('SELECT *', 'SELECT COUNT(*) as count');
+    const countSql = sql.replace(
+      `SELECT
+        e.*,
+        tr.id AS taskRunId,
+        tr.task_key AS attemptKey`,
+      'SELECT COUNT(DISTINCT e.key) as count'
+    );
     const countResult = db.prepare(countSql).get(...params);
     const total = countResult.count;
 
@@ -1699,7 +1736,7 @@ app.get('/api/entries', (req, res) => {
     const allowedSortKeys = ['ts', 'kind', 'tool', 'durationMs'];
     const safeSortKey = allowedSortKeys.includes(sortKey) ? sortKey : 'ts';
     const safeSortDir = sortDir === 'asc' ? 'ASC' : 'DESC';
-    sql += ` ORDER BY ${safeSortKey} ${safeSortDir}`;
+    sql += ` GROUP BY e.key ORDER BY e.${safeSortKey} ${safeSortDir}`;
 
     // Add pagination
     const limit = parseInt(pageSize);
@@ -1731,6 +1768,8 @@ app.get('/api/entries', (req, res) => {
       // Add __key for Svelte's keyed each blocks
       return {
         __key: row.key,
+        taskRunId: row.taskRunId || null,
+        attemptKey: row.attemptKey || null,
         ...cepEvent
       };
     }).filter(Boolean);
@@ -1761,6 +1800,12 @@ app.get('/api/facets', (req, res) => {
     // CEP-specific facets
     const runners = db.prepare('SELECT DISTINCT runner FROM entries WHERE runner IS NOT NULL ORDER BY runner').all();
     const events = db.prepare('SELECT DISTINCT event FROM entries WHERE event IS NOT NULL ORDER BY event').all();
+    const attempts = db.prepare(`
+      SELECT DISTINCT task_key
+      FROM task_runs
+      WHERE source = 'derived_attempt'
+      ORDER BY started_at DESC, task_key DESC
+    `).all();
 
     res.json({
       kinds: kinds.map(r => r.kind),
@@ -1770,7 +1815,8 @@ app.get('/api/facets', (req, res) => {
       roots: roots.map(r => r.rootSessionID),
       allTags: allTags.map(r => r.tag),
       runners: runners.map(r => r.runner),
-      events: events.map(r => r.event)
+      events: events.map(r => r.event),
+      attempts: attempts.map(r => r.task_key)
     });
   } catch (error) {
     logger.error('Facets error:', error);
