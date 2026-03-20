@@ -135,6 +135,89 @@ async function run() {
     assert.equal(result.body.total, 4);
     const firstKey = result.body.entries[0].__key;
 
+    result = await request('/meta/outcome-taxonomy');
+    assert.equal(result.response.status, 200, 'outcome taxonomy should be available');
+    assert.ok(Array.isArray(result.body.evaluation_types), 'taxonomy should include evaluation_types');
+    assert.ok(Array.isArray(result.body.outcome_labels), 'taxonomy should include outcome_labels');
+    assert.ok(Array.isArray(result.body.failure_modes), 'taxonomy should include failure_modes');
+    assert.ok(result.body.failure_taxonomy && typeof result.body.failure_taxonomy === 'object', 'taxonomy should include failure_taxonomy');
+
+    result = await request('/task-runs/derive', {
+      method: 'POST'
+    });
+    assert.equal(result.response.status, 200, 'task run derivation should succeed');
+    assert.ok(result.body.derived >= 1, 'at least one task run should be derived');
+
+    result = await request('/task-runs?pageSize=10&runner=smoke-runner');
+    assert.equal(result.response.status, 200, 'task run listing should succeed');
+    assert.ok(result.body.taskRuns.length >= 1, 'smoke runner should have task runs');
+    const smokeTaskRunId = result.body.taskRuns[0].id;
+
+    result = await request(`/task-runs/${smokeTaskRunId}/outcomes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        evaluation_type: 'human',
+        outcome_label: 'failure',
+        failure_mode: 'execution_failure',
+        failure_subtype: 'wrong_edit',
+        evaluator: 'smoke-suite',
+        is_canonical: true
+      })
+    });
+    assert.equal(result.response.status, 200, 'valid outcome should be accepted');
+    assert.equal(result.body.success, true);
+
+    result = await request('/task-runs/outcome-summary?runner=smoke-runner');
+    assert.equal(result.response.status, 200, 'task run outcome summary should succeed');
+    assert.ok(result.body.totals.task_runs >= 1, 'summary should include task runs');
+    assert.ok(result.body.totals.with_canonical_outcome >= 1, 'summary should include canonical outcomes');
+    assert.ok(result.body.by_outcome_label.some((row) => row.value === 'failure'), 'summary should include failure outcome bucket');
+    assert.ok(result.body.by_failure_mode.some((row) => row.value === 'execution_failure'), 'summary should include failure mode bucket');
+
+    result = await request('/task-runs?pageSize=10&runner=smoke-runner&canonical_outcome_label=failure&failure_mode=execution_failure');
+    assert.equal(result.response.status, 200, 'task run filters by canonical outcome and failure mode should succeed');
+    assert.ok(result.body.total >= 1, 'filtered task runs should include the smoke run');
+
+    result = await request('/task-runs?pageSize=10&runner=smoke-runner&requires_human_intervention=true');
+    assert.equal(result.response.status, 200, 'task run requires_human_intervention filter should succeed');
+    assert.equal(result.body.total, 0, 'no task run should require human intervention in smoke dataset');
+
+    result = await request(`/task-runs/${smokeTaskRunId}/outcomes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        evaluation_type: 'human',
+        outcome_label: 'failure',
+        evaluator: 'smoke-suite'
+      })
+    });
+    assert.equal(result.response.status, 400, 'failure outcome without failure_mode should be rejected');
+
+    result = await request(`/task-runs/${smokeTaskRunId}/outcomes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        evaluation_type: 'human',
+        outcome_label: 'failure',
+        failure_mode: 'execution_failure',
+        failure_subtype: 'nonexistent_subtype',
+        evaluator: 'smoke-suite'
+      })
+    });
+    assert.equal(result.response.status, 400, 'invalid failure_subtype should be rejected');
+
+    result = await request(`/task-runs/${smokeTaskRunId}/outcomes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        evaluation_type: 'not_real',
+        outcome_label: 'success',
+        evaluator: 'smoke-suite'
+      })
+    });
+    assert.equal(result.response.status, 400, 'invalid evaluation_type should be rejected');
+
     result = await request('/stats');
     assert.equal(result.response.status, 200, 'stats fetch should succeed');
     assert.equal(result.body.total, 4);

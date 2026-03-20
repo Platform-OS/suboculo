@@ -18,6 +18,64 @@ const OUTCOME_LABELS = [
   'abandoned',
   'unknown'
 ];
+const EVALUATION_TYPES = [
+  'human',
+  'rule_based',
+  'llm_judge',
+  'benchmark_checker'
+];
+const FAILURE_TAXONOMY = {
+  planning_failure: [
+    'missing_plan',
+    'wrong_plan',
+    'incomplete_plan'
+  ],
+  execution_failure: [
+    'wrong_edit',
+    'incomplete_edit',
+    'regression_introduced'
+  ],
+  tooling_failure: [
+    'tool_error',
+    'tool_unavailable',
+    'tool_timeout'
+  ],
+  environment_failure: [
+    'dependency_missing',
+    'sandbox_restriction',
+    'external_service_unavailable'
+  ],
+  safety_violation: [
+    'policy_violation',
+    'unsafe_command',
+    'sensitive_data_exposure'
+  ],
+  validation_failure: [
+    'tests_failed',
+    'lint_failed',
+    'manual_check_failed'
+  ],
+  interruption: [
+    'user_interrupt',
+    'process_killed',
+    'context_limit'
+  ],
+  abandonment: [
+    'gave_up',
+    'no_progress',
+    'deferred_without_resolution'
+  ],
+  unknown_failure: [
+    'insufficient_evidence'
+  ]
+};
+const FAILURE_MODES = Object.keys(FAILURE_TAXONOMY);
+const OUTCOME_LABELS_REQUIRING_FAILURE_MODE = new Set([
+  'failure',
+  'unsafe_success',
+  'interrupted',
+  'abandoned'
+]);
 
 // SSE Event Emitter for real-time updates
 const sseEmitter = new EventEmitter();
@@ -366,17 +424,142 @@ function parseJSONSafe(value, fallback = null) {
   return parsed === null ? fallback : parsed;
 }
 
-function deriveTaskRunStatus(rows) {
-  const events = rows.map(row => row.event);
+function normalizeOptionalString(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
 
+function buildTaskRunsWhereClause(query = {}, taskRunsAlias = 'task_runs') {
+  const {
+    runner,
+    status,
+    source,
+    query: textQuery,
+    canonical_outcome_label,
+    failure_mode,
+    failure_subtype,
+    requires_human_intervention,
+    has_canonical_outcome
+  } = query;
+
+  const where = ['1=1'];
+  const params = [];
+
+  if (runner && runner !== 'all') {
+    where.push(`${taskRunsAlias}.runner = ?`);
+    params.push(runner);
+  }
+  if (status && status !== 'all') {
+    where.push(`${taskRunsAlias}.status = ?`);
+    params.push(status);
+  }
+  if (source && source !== 'all') {
+    where.push(`${taskRunsAlias}.source = ?`);
+    params.push(source);
+  }
+  if (textQuery) {
+    where.push(`(${taskRunsAlias}.task_key LIKE ? OR ${taskRunsAlias}.title LIKE ? OR ${taskRunsAlias}.description LIKE ? OR ${taskRunsAlias}.root_session_id LIKE ?)`);
+    const like = `%${textQuery}%`;
+    params.push(like, like, like, like);
+  }
+
+  if (has_canonical_outcome === 'true') {
+    where.push(`EXISTS (
+      SELECT 1 FROM outcomes o
+      WHERE o.task_run_id = ${taskRunsAlias}.id
+        AND o.is_canonical = 1
+    )`);
+  } else if (has_canonical_outcome === 'false') {
+    where.push(`NOT EXISTS (
+      SELECT 1 FROM outcomes o
+      WHERE o.task_run_id = ${taskRunsAlias}.id
+        AND o.is_canonical = 1
+    )`);
+  }
+
+  if (canonical_outcome_label && canonical_outcome_label !== 'all') {
+    if (canonical_outcome_label === 'none') {
+      where.push(`NOT EXISTS (
+        SELECT 1 FROM outcomes o
+        WHERE o.task_run_id = ${taskRunsAlias}.id
+          AND o.is_canonical = 1
+      )`);
+    } else {
+      where.push(`EXISTS (
+        SELECT 1 FROM outcomes o
+        WHERE o.task_run_id = ${taskRunsAlias}.id
+          AND o.is_canonical = 1
+          AND o.outcome_label = ?
+      )`);
+      params.push(canonical_outcome_label);
+    }
+  }
+
+  if (failure_mode && failure_mode !== 'all') {
+    where.push(`EXISTS (
+      SELECT 1 FROM outcomes o
+      WHERE o.task_run_id = ${taskRunsAlias}.id
+        AND o.is_canonical = 1
+        AND o.failure_mode = ?
+    )`);
+    params.push(failure_mode);
+  }
+
+  if (failure_subtype && failure_subtype !== 'all') {
+    where.push(`EXISTS (
+      SELECT 1 FROM outcomes o
+      WHERE o.task_run_id = ${taskRunsAlias}.id
+        AND o.is_canonical = 1
+        AND o.failure_subtype = ?
+    )`);
+    params.push(failure_subtype);
+  }
+
+  if (requires_human_intervention === 'true') {
+    where.push(`EXISTS (
+      SELECT 1 FROM outcomes o
+      WHERE o.task_run_id = ${taskRunsAlias}.id
+        AND o.is_canonical = 1
+        AND o.requires_human_intervention = 1
+    )`);
+  } else if (requires_human_intervention === 'false') {
+    where.push(`EXISTS (
+      SELECT 1 FROM outcomes o
+      WHERE o.task_run_id = ${taskRunsAlias}.id
+        AND o.is_canonical = 1
+        AND o.requires_human_intervention = 0
+    )`);
+  }
+
+  return {
+    whereSql: where.join(' AND '),
+    params
+  };
+}
+
+function deriveTaskRunStatus(rows) {
   const endRows = rows.filter(row => row.event === 'session.end');
   if (endRows.length > 0) {
     const lastEnd = parseJSONSafe(endRows[endRows.length - 1].data, {});
     const reason = lastEnd?.data?.reason;
     if (reason === 'cancelled' || reason === 'user_cancelled') return 'cancelled';
     if (reason === 'timeout' || reason === 'timed_out') return 'timed_out';
+    if (reason === 'error' || reason === 'failed' || reason === 'failure') return 'failed';
+    return 'completed';
   }
 
+  // Without an explicit session end, treat the run as still active.
+  // This avoids marking long-lived/reused sessions as completed.
+  return 'running';
+
+  /*
+   * Legacy heuristic kept for reference:
+   * - used pending tool traces + terminal activity to infer completion
+   * - caused false "completed" status for active sessions with no session.end
+   */
+  /*
   const pendingTraceIds = new Set();
   for (const row of rows) {
     if (!row.traceId) continue;
@@ -396,6 +579,7 @@ function deriveTaskRunStatus(rows) {
 
   if (hasTerminalActivity) return 'completed';
   return 'running';
+  */
 }
 
 function summarizeTaskRunRows(rows) {
@@ -805,34 +989,13 @@ app.get('/api/task-runs', (req, res) => {
     const {
       page = 1,
       pageSize = 50,
-      runner,
-      status,
-      source,
-      query,
       sortKey = 'started_at',
       sortDir = 'desc'
     } = req.query;
 
-    let sql = 'SELECT * FROM task_runs WHERE 1=1';
-    const params = [];
-
-    if (runner && runner !== 'all') {
-      sql += ' AND runner = ?';
-      params.push(runner);
-    }
-    if (status && status !== 'all') {
-      sql += ' AND status = ?';
-      params.push(status);
-    }
-    if (source && source !== 'all') {
-      sql += ' AND source = ?';
-      params.push(source);
-    }
-    if (query) {
-      sql += ' AND (task_key LIKE ? OR title LIKE ? OR description LIKE ? OR root_session_id LIKE ?)';
-      const like = `%${query}%`;
-      params.push(like, like, like, like);
-    }
+    const { whereSql, params: filterParams } = buildTaskRunsWhereClause(req.query, 'task_runs');
+    let sql = `SELECT * FROM task_runs WHERE ${whereSql}`;
+    const params = [...filterParams];
 
     const countSql = sql.replace('SELECT *', 'SELECT COUNT(*) as count');
     const total = db.prepare(countSql).get(...params).count;
@@ -860,6 +1023,89 @@ app.get('/api/task-runs', (req, res) => {
     });
   } catch (error) {
     console.error('List task runs error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/task-runs/outcome-summary', (req, res) => {
+  try {
+    const { whereSql, params } = buildTaskRunsWhereClause(req.query, 'tr');
+
+    const totals = db.prepare(`
+      SELECT
+        COUNT(*) AS task_runs,
+        SUM(CASE WHEN EXISTS (
+          SELECT 1 FROM outcomes o
+          WHERE o.task_run_id = tr.id
+            AND o.is_canonical = 1
+        ) THEN 1 ELSE 0 END) AS with_canonical_outcome,
+        SUM(CASE WHEN NOT EXISTS (
+          SELECT 1 FROM outcomes o
+          WHERE o.task_run_id = tr.id
+            AND o.is_canonical = 1
+        ) THEN 1 ELSE 0 END) AS no_canonical_outcome,
+        SUM(CASE WHEN EXISTS (
+          SELECT 1 FROM outcomes o
+          WHERE o.task_run_id = tr.id
+            AND o.is_canonical = 1
+            AND o.requires_human_intervention = 1
+        ) THEN 1 ELSE 0 END) AS requires_human_intervention
+      FROM task_runs tr
+      WHERE ${whereSql}
+    `).get(...params);
+
+    const byOutcomeLabel = db.prepare(`
+      SELECT o.outcome_label AS value, COUNT(*) AS count
+      FROM task_runs tr
+      JOIN outcomes o ON o.task_run_id = tr.id AND o.is_canonical = 1
+      WHERE ${whereSql}
+      GROUP BY o.outcome_label
+      ORDER BY count DESC, value ASC
+    `).all(...params);
+
+    const byFailureMode = db.prepare(`
+      SELECT o.failure_mode AS value, COUNT(*) AS count
+      FROM task_runs tr
+      JOIN outcomes o ON o.task_run_id = tr.id AND o.is_canonical = 1
+      WHERE ${whereSql}
+        AND o.failure_mode IS NOT NULL
+      GROUP BY o.failure_mode
+      ORDER BY count DESC, value ASC
+    `).all(...params);
+
+    const byFailureSubtype = db.prepare(`
+      SELECT o.failure_subtype AS value, COUNT(*) AS count
+      FROM task_runs tr
+      JOIN outcomes o ON o.task_run_id = tr.id AND o.is_canonical = 1
+      WHERE ${whereSql}
+        AND o.failure_subtype IS NOT NULL
+      GROUP BY o.failure_subtype
+      ORDER BY count DESC, value ASC
+    `).all(...params);
+
+    const byEvaluationType = db.prepare(`
+      SELECT o.evaluation_type AS value, COUNT(*) AS count
+      FROM task_runs tr
+      JOIN outcomes o ON o.task_run_id = tr.id AND o.is_canonical = 1
+      WHERE ${whereSql}
+      GROUP BY o.evaluation_type
+      ORDER BY count DESC, value ASC
+    `).all(...params);
+
+    res.json({
+      totals: {
+        task_runs: totals?.task_runs || 0,
+        with_canonical_outcome: totals?.with_canonical_outcome || 0,
+        no_canonical_outcome: totals?.no_canonical_outcome || 0,
+        requires_human_intervention: totals?.requires_human_intervention || 0
+      },
+      by_outcome_label: byOutcomeLabel,
+      by_failure_mode: byFailureMode,
+      by_failure_subtype: byFailureSubtype,
+      by_evaluation_type: byEvaluationType
+    });
+  } catch (error) {
+    console.error('Task run outcome summary error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -934,11 +1180,50 @@ app.post('/api/task-runs/:id/outcomes', (req, res) => {
     if (!evaluation_type || !outcome_label) {
       return res.status(400).json({ error: 'evaluation_type and outcome_label are required' });
     }
+    if (!EVALUATION_TYPES.includes(evaluation_type)) {
+      return res.status(400).json({
+        error: 'Invalid evaluation_type',
+        allowed: EVALUATION_TYPES
+      });
+    }
     if (!OUTCOME_LABELS.includes(outcome_label)) {
       return res.status(400).json({
         error: 'Invalid outcome_label',
         allowed: OUTCOME_LABELS
       });
+    }
+
+    const normalizedFailureMode = normalizeOptionalString(failure_mode);
+    const normalizedFailureSubtype = normalizeOptionalString(failure_subtype);
+    const requiresFailureMode = OUTCOME_LABELS_REQUIRING_FAILURE_MODE.has(outcome_label);
+
+    if (requiresFailureMode && !normalizedFailureMode) {
+      return res.status(400).json({
+        error: 'failure_mode is required for this outcome_label',
+        outcome_label,
+        required_for: [...OUTCOME_LABELS_REQUIRING_FAILURE_MODE]
+      });
+    }
+    if (normalizedFailureMode && !FAILURE_MODES.includes(normalizedFailureMode)) {
+      return res.status(400).json({
+        error: 'Invalid failure_mode',
+        allowed: FAILURE_MODES
+      });
+    }
+    if (normalizedFailureSubtype && !normalizedFailureMode) {
+      return res.status(400).json({
+        error: 'failure_subtype requires failure_mode'
+      });
+    }
+    if (normalizedFailureMode && normalizedFailureSubtype) {
+      const allowedSubtypes = FAILURE_TAXONOMY[normalizedFailureMode] || [];
+      if (!allowedSubtypes.includes(normalizedFailureSubtype)) {
+        return res.status(400).json({
+          error: 'Invalid failure_subtype for failure_mode',
+          failure_mode: normalizedFailureMode,
+          allowed: allowedSubtypes
+        });
+      }
     }
 
     const insertOutcome = db.transaction(() => {
@@ -961,8 +1246,8 @@ app.post('/api/task-runs/:id/outcomes', (req, res) => {
         efficiency_score ?? null,
         reproducibility_score ?? null,
         requires_human_intervention ? 1 : 0,
-        failure_mode || null,
-        failure_subtype || null,
+        normalizedFailureMode,
+        normalizedFailureSubtype,
         notes || null,
         evaluator || null,
         evidence ? JSON.stringify(evidence) : null,
@@ -977,6 +1262,16 @@ app.post('/api/task-runs/:id/outcomes', (req, res) => {
     console.error('Create outcome error:', error);
     res.status(500).json({ error: error.message });
   }
+});
+
+app.get('/api/meta/outcome-taxonomy', (_req, res) => {
+  res.json({
+    evaluation_types: EVALUATION_TYPES,
+    outcome_labels: OUTCOME_LABELS,
+    failure_modes: FAILURE_MODES,
+    failure_taxonomy: FAILURE_TAXONOMY,
+    requires_failure_mode_for: [...OUTCOME_LABELS_REQUIRING_FAILURE_MODE]
+  });
 });
 
 app.get('/api/benchmarks', (req, res) => {

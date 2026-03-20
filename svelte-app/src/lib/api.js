@@ -306,6 +306,24 @@ export async function getTaskRun(id) {
   return response.json();
 }
 
+export async function getTaskRunOutcomeSummary(filters = {}) {
+  const params = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== null) {
+      params.append(key, value);
+    }
+  }
+
+  const response = await fetch(`${API_BASE}/task-runs/outcome-summary?${params}`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch task run outcome summary');
+  }
+
+  return response.json();
+}
+
 export async function createOutcome(taskRunId, outcome) {
   const response = await fetch(`${API_BASE}/task-runs/${taskRunId}/outcomes`, {
     method: 'POST',
@@ -316,6 +334,16 @@ export async function createOutcome(taskRunId, outcome) {
   if (!response.ok) {
     const error = await response.json();
     throw new Error(error.error || 'Failed to create outcome');
+  }
+
+  return response.json();
+}
+
+export async function getOutcomeTaxonomy() {
+  const response = await fetch(`${API_BASE}/meta/outcome-taxonomy`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch outcome taxonomy');
   }
 
   return response.json();
