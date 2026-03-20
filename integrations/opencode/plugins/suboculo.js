@@ -174,6 +174,12 @@ export const SuboculoPlugin = async ({ project, client, directory, worktree }) =
   // Track cumulative token usage per session for delta calculation
   const lastUsageTotals = new Map();
 
+  // Track session-level agent identity for lifecycle events
+  const sessionAgentCache = new Map();
+  const lifecycleDedupe = new Map();
+  const startedSessions = new Set();
+  const spawnedSubagentSessions = new Set();
+
   // Helper: Get session context (agent, parent, messages)
   async function getSessionContext(sessionID) {
     try {
@@ -249,7 +255,257 @@ export const SuboculoPlugin = async ({ project, client, directory, worktree }) =
     return delta;
   }
 
+  function resolveSessionId(payload = {}) {
+    return (
+      payload.sessionID ||
+      payload.sessionId ||
+      payload.id ||
+      payload.session?.id ||
+      payload.properties?.id ||
+      payload.properties?.sessionID ||
+      payload.properties?.sessionId ||
+      payload.properties?.info?.id ||
+      payload.properties?.info?.sessionID ||
+      payload.properties?.info?.sessionId ||
+      payload.data?.sessionID ||
+      payload.data?.sessionId ||
+      payload.data?.id ||
+      null
+    );
+  }
+
+  function resolveSessionTitle(payload = {}) {
+    return (
+      payload.title ||
+      payload.name ||
+      payload.sessionTitle ||
+      payload.session?.title ||
+      payload.properties?.title ||
+      payload.properties?.name ||
+      payload.properties?.info?.title ||
+      payload.properties?.info?.name ||
+      payload.data?.title ||
+      payload.data?.name ||
+      null
+    );
+  }
+
+  function resolveParentSessionId(payload = {}, ctx = {}) {
+    return (
+      payload.parentID ||
+      payload.parentSessionID ||
+      payload.parentSessionId ||
+      payload.session?.parentID ||
+      payload.session?.parentSessionID ||
+      payload.properties?.parentID ||
+      payload.properties?.parentSessionID ||
+      payload.properties?.parentSessionId ||
+      payload.properties?.info?.parentID ||
+      payload.properties?.info?.parentSessionID ||
+      payload.properties?.info?.parentSessionId ||
+      payload.data?.parentID ||
+      payload.data?.parentSessionID ||
+      payload.data?.parentSessionId ||
+      ctx.parentSessionId ||
+      null
+    );
+  }
+
+  function resolveEndReason(input = {}, output = {}) {
+    return output.reason || input.reason || output.status || input.status || 'completed';
+  }
+
+  function shouldEmitLifecycle(kind, sessionId, ts) {
+    const second = String(ts || '').slice(0, 19);
+    const key = `${kind}::${sessionId}::${second}`;
+    const now = Date.now();
+
+    // Remove stale dedupe entries
+    for (const [k, createdAt] of lifecycleDedupe) {
+      if (now - createdAt > 30000) lifecycleDedupe.delete(k);
+    }
+
+    if (lifecycleDedupe.has(key)) return false;
+    lifecycleDedupe.set(key, now);
+    return true;
+  }
+
+  function maybeEmitSubagentSpawn(ts, sessionId, parentSessionId, agentId, agentType) {
+    if (!parentSessionId) return;
+    if (spawnedSubagentSessions.has(sessionId)) return;
+    spawnedSubagentSessions.add(sessionId);
+
+    insertCEPEvent({
+      ts,
+      event: 'subagent.spawn',
+      runner: 'opencode',
+      sessionId: parentSessionId,
+      data: {
+        agentId: agentId || sessionId,
+        agentType: agentType || agentId || 'subagent',
+        childSessionId: sessionId
+      }
+    });
+  }
+
+  // Fallback session-start emission for environments where lifecycle hooks are not delivered.
+  function ensureSessionStartFromToolContext(sessionId, ctx, input = {}) {
+    if (!sessionId || startedSessions.has(sessionId)) return;
+    startedSessions.add(sessionId);
+
+    const ts = new Date().toISOString();
+    const parentSessionId = input.parentID || input.parentSessionID || input.parentSessionId || ctx.parentSessionId || null;
+    const agentId = input.agent || input.agentId || input.data?.agentId || ctx.agentId || null;
+
+    insertCEPEvent({
+      ts,
+      event: 'session.start',
+      runner: 'opencode',
+      sessionId,
+      parentSessionId,
+      data: {
+        title: resolveSessionTitle(input),
+        directory
+      }
+    });
+
+    maybeEmitSubagentSpawn(ts, sessionId, parentSessionId, agentId, input.agentType || input.data?.agentType || null);
+  }
+
+  async function emitSessionCreatedLifecycle(input = {}) {
+    const ts = new Date().toISOString();
+    const sessionId = resolveSessionId(input);
+    if (!sessionId) return;
+    if (!shouldEmitLifecycle('session.created', sessionId, ts)) return;
+    startedSessions.add(sessionId);
+
+    const ctx = await getSessionContext(sessionId);
+    const parentSessionId = resolveParentSessionId(input, ctx);
+    const agentId = input.agent || input.agentId || input.data?.agentId || ctx.agentId || null;
+    if (agentId) sessionAgentCache.set(sessionId, agentId);
+
+    insertCEPEvent({
+      ts,
+      event: 'session.start',
+      runner: 'opencode',
+      sessionId,
+      parentSessionId,
+      data: {
+        title: resolveSessionTitle(input),
+        directory: input.directory || input.session?.directory || input.properties?.info?.directory || directory
+      }
+    });
+
+    maybeEmitSubagentSpawn(ts, sessionId, parentSessionId, agentId, input.agentType || input.data?.agentType || null);
+  }
+
+  async function emitSessionDeletedLifecycle(input = {}, output = {}) {
+    const ts = new Date().toISOString();
+    const sessionId = resolveSessionId(input);
+    if (!sessionId) return;
+    if (!shouldEmitLifecycle('session.deleted', sessionId, ts)) return;
+
+    const parentSessionId = resolveParentSessionId(input, { parentSessionId: parentCache.get(sessionId) || null });
+    const cachedAgentId = sessionAgentCache.get(sessionId) || null;
+    const reason = resolveEndReason(input, output || {});
+
+    insertCEPEvent({
+      ts,
+      event: 'session.end',
+      runner: 'opencode',
+      sessionId,
+      parentSessionId,
+      data: {
+        title: resolveSessionTitle(input),
+        reason
+      }
+    });
+
+    if (parentSessionId) {
+      insertCEPEvent({
+        ts,
+        event: 'subagent.stop',
+        runner: 'opencode',
+        sessionId: parentSessionId,
+        data: {
+          agentId: cachedAgentId || sessionId,
+          agentType: input.agentType || input.data?.agentType || cachedAgentId || 'subagent',
+          childSessionId: sessionId,
+          reason
+        }
+      });
+    }
+
+    parentCache.delete(sessionId);
+    lastUsageTotals.delete(sessionId);
+    sessionAgentCache.delete(sessionId);
+    startedSessions.delete(sessionId);
+    spawnedSubagentSessions.delete(sessionId);
+  }
+
   return {
+    // Capture session lifecycle start
+    "session.created": async (input, output) => {
+      try {
+        debugLog('Hook fired: session.created', { input });
+        await emitSessionCreatedLifecycle(input);
+      } catch (err) {
+        debugLog('Failed to insert session.created lifecycle events:', err.message);
+      }
+    },
+
+    // Capture session lifecycle end
+    "session.deleted": async (input, output) => {
+      try {
+        debugLog('Hook fired: session.deleted', { input, output });
+        await emitSessionDeletedLifecycle(input, output);
+      } catch (err) {
+        debugLog('Failed to insert session.deleted lifecycle events:', err.message);
+      }
+    },
+
+    // Fallback path for OpenCode versions/configurations that surface lifecycle
+    // updates through the generic event stream.
+    event: async (input, output) => {
+      try {
+        const payload =
+          input?.event ||
+          input?.data?.event ||
+          input?.payload ||
+          input;
+        const eventType = payload?.type || payload?.kind || input?.type || input?.kind;
+        if (!eventType) return;
+
+        if (typeof eventType === 'string' && eventType.startsWith('session.')) {
+          debugLog(`Hook fired: event(${eventType})`, { input, output });
+        }
+
+        if (eventType === 'session.created' || eventType === 'session.started') {
+          await emitSessionCreatedLifecycle(payload);
+        } else if (
+          eventType === 'session.deleted' ||
+          eventType === 'session.ended' ||
+          eventType === 'session.closed' ||
+          eventType === 'session.destroyed' ||
+          eventType === 'session.completed'
+        ) {
+          await emitSessionDeletedLifecycle(payload, output || payload?.output || {});
+        } else if (eventType === 'session.updated') {
+          // Intentionally ignored for now:
+          // title/status churn is noisy and not essential for current analysis workflows.
+        } else if (eventType === 'session.status') {
+          // Intentionally ignored:
+          // "busy"/"idle" are transient states and not reliable session boundaries.
+        } else if (eventType === 'session.idle') {
+          // Intentionally ignored:
+          // OpenCode reuses session IDs after idle, so treating this as end creates
+          // false session.end -> session.start pairs for the same session.
+        }
+      } catch (err) {
+        debugLog('Failed to process generic lifecycle event:', err.message);
+      }
+    },
+
     // Capture tool execution start
     "tool.execute.before": async (input, output) => {
       const ts = new Date().toISOString();
@@ -260,6 +516,8 @@ export const SuboculoPlugin = async ({ project, client, directory, worktree }) =
 
       // Get session context
       const ctx = await getSessionContext(input.sessionID);
+      if (ctx.agentId) sessionAgentCache.set(input.sessionID, ctx.agentId);
+      ensureSessionStartFromToolContext(input.sessionID, ctx, input);
 
       try {
         insertCEPEvent({
@@ -292,6 +550,8 @@ export const SuboculoPlugin = async ({ project, client, directory, worktree }) =
 
       // Get session context (includes messages for both agent detection and usage)
       const ctx = await getSessionContext(input.sessionID);
+      if (ctx.agentId) sessionAgentCache.set(input.sessionID, ctx.agentId);
+      ensureSessionStartFromToolContext(input.sessionID, ctx, input);
 
       try {
         const eventData = {
