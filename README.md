@@ -187,6 +187,7 @@ your-project/
     backend/
       server.js              # Web server (API + static files)
       cep-processor.js       # Event validation
+      logger.js              # Shared logging helper
       mcp-analytics-server.mjs  # MCP query server
     frontend/                # Built web UI
     package.json
@@ -207,6 +208,7 @@ your-project/
     backend/
       server.js              # Web server (API + static files)
       cep-processor.js       # Event validation
+      logger.js              # Shared logging helper
       mcp-analytics-server.mjs  # MCP query server
     frontend/                # Built web UI
     package.json
@@ -215,8 +217,6 @@ your-project/
   .opencode/
     plugins/
       suboculo.js           # OpenCode event capture plugin
-    package.json
-    node_modules/
   opencode.json             # OpenCode configuration (MCP server)
 ```
 
@@ -274,7 +274,6 @@ agent-actions-viewer/
 │   └── opencode/              # OpenCode integration
 │       ├── plugins/
 │       │   └── suboculo.js    # Event capture plugin
-│       └── package.json       # Plugin dependencies
 ├── install-suboculo.sh        # Claude Code installation script
 ├── install-suboculo-opencode.sh  # OpenCode installation script
 ├── INSTALL.md                 # Installation guide

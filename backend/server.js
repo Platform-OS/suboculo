@@ -4,9 +4,11 @@ const fs = require('fs');
 const path = require('path');
 const { insertCEPEvent, insertCEPEventsBatch, validateCEPEvent } = require('./cep-processor');
 const EventEmitter = require('events');
+const logger = require('./logger');
 
 const app = express();
 const PORT = process.env.SUBOCULO_PORT || 3000;
+const HOST = process.env.SUBOCULO_HOST || '127.0.0.1';
 
 // SSE Event Emitter for real-time updates
 const sseEmitter = new EventEmitter();
@@ -17,8 +19,8 @@ app.use(express.json({ limit: '10mb' }));
 
 // Serve static frontend files
 const frontendPath = path.join(__dirname, '../frontend');
-console.log('[suboculo] Checking frontend path:', frontendPath);
-console.log('[suboculo] Frontend exists?', fs.existsSync(frontendPath));
+logger.debug('[suboculo] Checking frontend path:', frontendPath);
+logger.debug('[suboculo] Frontend exists?', fs.existsSync(frontendPath));
 if (fs.existsSync(frontendPath)) {
   app.use(express.static(frontendPath, {
     etag: true,
@@ -34,9 +36,9 @@ if (fs.existsSync(frontendPath)) {
       }
     }
   }));
-  console.log('[suboculo] Static files enabled from:', frontendPath);
+  logger.info('[suboculo] Static files enabled from:', frontendPath);
 } else {
-  console.log('[suboculo] Frontend not found - web UI unavailable');
+  logger.warn('[suboculo] Frontend not found - web UI unavailable');
 }
 
 // Database setup
@@ -91,35 +93,35 @@ function initDatabase() {
   // Add runner and event columns if they don't exist (migration)
   try {
     db.exec(`ALTER TABLE entries ADD COLUMN runner TEXT`);
-    console.log('Added column: runner');
+    logger.debug('Added column: runner');
   } catch (e) {
     // Column already exists
   }
 
   try {
     db.exec(`ALTER TABLE entries ADD COLUMN event TEXT`);
-    console.log('Added column: event');
+    logger.debug('Added column: event');
   } catch (e) {
     // Column already exists
   }
 
   try {
     db.exec(`ALTER TABLE entries ADD COLUMN traceId TEXT`);
-    console.log('Added column: traceId');
+    logger.debug('Added column: traceId');
   } catch (e) {
     // Column already exists
   }
 
   try {
     db.exec(`ALTER TABLE entries ADD COLUMN status TEXT`);
-    console.log('Added column: status');
+    logger.debug('Added column: status');
   } catch (e) {
     // Column already exists
   }
 
   try {
     db.exec(`ALTER TABLE entries ADD COLUMN agentId TEXT`);
-    console.log('Added column: agentId');
+    logger.debug('Added column: agentId');
   } catch (e) {
     // Column already exists
   }
@@ -158,157 +160,7 @@ function initDatabase() {
     );
   `);
 
-  // Phase 2: task-centric reliability model
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS task_runs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      task_key TEXT UNIQUE NOT NULL,
-      title TEXT,
-      description TEXT,
-      source TEXT NOT NULL DEFAULT 'derived_session',
-      runner TEXT,
-      model TEXT,
-      agent_system_version TEXT,
-      prompt_version TEXT,
-      toolchain_version TEXT,
-      environment_fingerprint TEXT,
-      git_revision TEXT,
-      status TEXT NOT NULL DEFAULT 'completed',
-      root_session_id TEXT NOT NULL,
-      started_at TEXT,
-      ended_at TEXT,
-      total_events INTEGER NOT NULL DEFAULT 0,
-      total_tool_calls INTEGER NOT NULL DEFAULT 0,
-      distinct_tools INTEGER NOT NULL DEFAULT 0,
-      total_duration_ms INTEGER NOT NULL DEFAULT 0,
-      error_count INTEGER NOT NULL DEFAULT 0,
-      retry_count INTEGER NOT NULL DEFAULT 0,
-      subagent_count INTEGER NOT NULL DEFAULT 0,
-      interrupt_count INTEGER NOT NULL DEFAULT 0,
-      token_input INTEGER NOT NULL DEFAULT 0,
-      token_output INTEGER NOT NULL DEFAULT 0,
-      token_cache_creation INTEGER NOT NULL DEFAULT 0,
-      token_cache_read INTEGER NOT NULL DEFAULT 0,
-      estimated_cost REAL NOT NULL DEFAULT 0,
-      metadata TEXT,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_task_runs_root_session ON task_runs(root_session_id);
-    CREATE INDEX IF NOT EXISTS idx_task_runs_runner ON task_runs(runner);
-    CREATE INDEX IF NOT EXISTS idx_task_runs_status ON task_runs(status);
-    CREATE INDEX IF NOT EXISTS idx_task_runs_started_at ON task_runs(started_at);
-
-    CREATE TABLE IF NOT EXISTS task_run_events (
-      task_run_id INTEGER NOT NULL,
-      entry_key TEXT NOT NULL,
-      PRIMARY KEY (task_run_id, entry_key),
-      FOREIGN KEY (task_run_id) REFERENCES task_runs(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_task_run_events_entry_key ON task_run_events(entry_key);
-
-    CREATE TABLE IF NOT EXISTS outcomes (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      task_run_id INTEGER NOT NULL,
-      evaluation_type TEXT NOT NULL,
-      outcome_label TEXT NOT NULL,
-      correctness_score REAL,
-      safety_score REAL,
-      efficiency_score REAL,
-      reproducibility_score REAL,
-      requires_human_intervention INTEGER NOT NULL DEFAULT 0,
-      failure_mode TEXT,
-      failure_subtype TEXT,
-      notes TEXT,
-      evaluator TEXT,
-      evidence TEXT,
-      is_canonical INTEGER NOT NULL DEFAULT 0,
-      evaluated_at TEXT NOT NULL,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (task_run_id) REFERENCES task_runs(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_outcomes_task_run_id ON outcomes(task_run_id);
-    CREATE INDEX IF NOT EXISTS idx_outcomes_label ON outcomes(outcome_label);
-    CREATE INDEX IF NOT EXISTS idx_outcomes_canonical ON outcomes(is_canonical);
-
-    CREATE TABLE IF NOT EXISTS benchmarks (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      description TEXT,
-      version TEXT NOT NULL DEFAULT '1.0.0',
-      status TEXT NOT NULL DEFAULT 'draft',
-      task_definition_source TEXT,
-      scoring_spec TEXT,
-      policy_spec TEXT,
-      owner TEXT,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(name, version)
-    );
-
-    CREATE TABLE IF NOT EXISTS benchmark_cases (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      benchmark_id INTEGER NOT NULL,
-      case_key TEXT NOT NULL,
-      title TEXT NOT NULL,
-      description TEXT,
-      prompt TEXT,
-      fixture_ref TEXT,
-      timeout_seconds INTEGER,
-      allowed_tools TEXT,
-      expected_outputs TEXT,
-      forbidden_actions TEXT,
-      scoring_rules TEXT,
-      metadata TEXT,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (benchmark_id) REFERENCES benchmarks(id) ON DELETE CASCADE,
-      UNIQUE(benchmark_id, case_key)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_benchmark_cases_benchmark_id ON benchmark_cases(benchmark_id);
-
-    CREATE TABLE IF NOT EXISTS benchmark_runs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      benchmark_id INTEGER NOT NULL,
-      status TEXT NOT NULL DEFAULT 'planned',
-      agent_config TEXT,
-      environment_fingerprint TEXT,
-      git_revision TEXT,
-      started_at TEXT,
-      ended_at TEXT,
-      summary_json TEXT,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (benchmark_id) REFERENCES benchmarks(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_benchmark_runs_benchmark_id ON benchmark_runs(benchmark_id);
-
-    CREATE TABLE IF NOT EXISTS benchmark_run_cases (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      benchmark_run_id INTEGER NOT NULL,
-      benchmark_case_id INTEGER NOT NULL,
-      task_run_id INTEGER,
-      outcome_id INTEGER,
-      status TEXT NOT NULL DEFAULT 'planned',
-      score REAL,
-      notes TEXT,
-      metadata TEXT,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (benchmark_run_id) REFERENCES benchmark_runs(id) ON DELETE CASCADE,
-      FOREIGN KEY (benchmark_case_id) REFERENCES benchmark_cases(id) ON DELETE CASCADE,
-      FOREIGN KEY (task_run_id) REFERENCES task_runs(id) ON DELETE SET NULL,
-      FOREIGN KEY (outcome_id) REFERENCES outcomes(id) ON DELETE SET NULL,
-      UNIQUE(benchmark_run_id, benchmark_case_id)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_benchmark_run_cases_run_id ON benchmark_run_cases(benchmark_run_id);
-    CREATE INDEX IF NOT EXISTS idx_benchmark_run_cases_task_run_id ON benchmark_run_cases(task_run_id);
-  `);
-
-  console.log('Database initialized');
+  logger.info('Database initialized');
 }
 
 // Initialize DB on startup
@@ -342,214 +194,13 @@ function decodeBase64Fields(event) {
   }
 }
 
-function parseJSONSafe(value, fallback = null) {
-  if (!value) return fallback;
+function tryParseJson(value) {
   try {
     return JSON.parse(value);
   } catch {
-    return fallback;
+    return null;
   }
 }
-
-function deriveTaskRunStatus(rows) {
-  const events = rows.map(row => row.event);
-  if (events.includes('error')) return 'failed';
-
-  const endRows = rows.filter(row => row.event === 'session.end');
-  if (endRows.length > 0) {
-    const lastEnd = parseJSONSafe(endRows[endRows.length - 1].data, {});
-    const reason = lastEnd?.data?.reason;
-    if (reason === 'cancelled' || reason === 'user_cancelled') return 'cancelled';
-    if (reason === 'timeout' || reason === 'timed_out') return 'timed_out';
-  }
-
-  if (events.includes('session.end')) return 'completed';
-  return 'running';
-}
-
-function summarizeTaskRunRows(rows) {
-  const parsed = rows.map(row => parseJSONSafe(row.data, {}));
-  const first = parsed[0] || {};
-  const last = parsed[parsed.length - 1] || {};
-  const toolEndRows = parsed.filter(event => event.event === 'tool.end');
-  const distinctTools = new Set(parsed.map(event => event?.data?.tool).filter(Boolean));
-  const usageRows = parsed.filter(event => event.event === 'usage');
-  const subagentIds = new Set(parsed.map(event => event?.data?.agentId).filter(Boolean));
-
-  let tokenInput = 0;
-  let tokenOutput = 0;
-  let tokenCacheCreation = 0;
-  let tokenCacheRead = 0;
-  let estimatedCost = 0;
-  let interruptCount = 0;
-
-  for (const event of usageRows) {
-    const data = event.data || {};
-    tokenInput += data.inputTokens || 0;
-    tokenOutput += data.outputTokens || 0;
-    tokenCacheCreation += data.cacheCreationTokens || 0;
-    tokenCacheRead += data.cacheReadTokens || 0;
-    estimatedCost += data.cost || 0;
-  }
-
-  for (const event of parsed) {
-    if (event?.data?.isInterrupt) interruptCount++;
-  }
-
-  const sessionStart = parsed.find(event => event.event === 'session.start');
-  const title = sessionStart?.data?.title || first?.data?.title || null;
-  const description = sessionStart?.data?.directory || null;
-  const model = usageRows.find(event => event?.data?.model)?.data?.model || null;
-
-  return {
-    title,
-    description,
-    runner: first.runner || null,
-    model,
-    startedAt: first.ts || null,
-    endedAt: last.ts || null,
-    status: deriveTaskRunStatus(rows),
-    totalEvents: rows.length,
-    totalToolCalls: toolEndRows.length,
-    distinctTools: distinctTools.size,
-    totalDurationMs: toolEndRows.reduce((sum, event) => sum + (event.data?.durationMs || 0), 0),
-    errorCount: parsed.filter(event =>
-      event.event === 'error' || (event.event === 'tool.end' && event.data?.status === 'error')
-    ).length,
-    retryCount: Math.max(toolEndRows.length - distinctTools.size, 0),
-    subagentCount: subagentIds.size,
-    interruptCount,
-    tokenInput,
-    tokenOutput,
-    tokenCacheCreation,
-    tokenCacheRead,
-    estimatedCost: +estimatedCost.toFixed(6),
-    metadata: JSON.stringify({
-      sessionIds: [...new Set(rows.map(row => row.sessionID).filter(Boolean))],
-      tools: [...distinctTools]
-    })
-  };
-}
-
-function upsertTaskRunForRootSession(rootSessionId) {
-  if (!rootSessionId) return null;
-
-  const rows = db.prepare(`
-    SELECT key, ts, sessionID, rootSessionID, runner, event, data
-    FROM entries
-    WHERE rootSessionID = ? OR sessionID = ?
-    ORDER BY ts ASC, id ASC
-  `).all(rootSessionId, rootSessionId);
-
-  if (rows.length === 0) return null;
-
-  const summary = summarizeTaskRunRows(rows);
-  const taskKey = `root:${rootSessionId}`;
-
-  const upsert = db.prepare(`
-    INSERT INTO task_runs (
-      task_key, title, description, source, runner, model, status, root_session_id,
-      started_at, ended_at, total_events, total_tool_calls, distinct_tools,
-      total_duration_ms, error_count, retry_count, subagent_count, interrupt_count,
-      token_input, token_output, token_cache_creation, token_cache_read,
-      estimated_cost, metadata, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(task_key) DO UPDATE SET
-      title = excluded.title,
-      description = excluded.description,
-      source = excluded.source,
-      runner = excluded.runner,
-      model = excluded.model,
-      status = excluded.status,
-      root_session_id = excluded.root_session_id,
-      started_at = excluded.started_at,
-      ended_at = excluded.ended_at,
-      total_events = excluded.total_events,
-      total_tool_calls = excluded.total_tool_calls,
-      distinct_tools = excluded.distinct_tools,
-      total_duration_ms = excluded.total_duration_ms,
-      error_count = excluded.error_count,
-      retry_count = excluded.retry_count,
-      subagent_count = excluded.subagent_count,
-      interrupt_count = excluded.interrupt_count,
-      token_input = excluded.token_input,
-      token_output = excluded.token_output,
-      token_cache_creation = excluded.token_cache_creation,
-      token_cache_read = excluded.token_cache_read,
-      estimated_cost = excluded.estimated_cost,
-      metadata = excluded.metadata,
-      updated_at = excluded.updated_at
-  `);
-
-  upsert.run(
-    taskKey,
-    summary.title,
-    summary.description,
-    'derived_session',
-    summary.runner,
-    summary.model,
-    summary.status,
-    rootSessionId,
-    summary.startedAt,
-    summary.endedAt,
-    summary.totalEvents,
-    summary.totalToolCalls,
-    summary.distinctTools,
-    summary.totalDurationMs,
-    summary.errorCount,
-    summary.retryCount,
-    summary.subagentCount,
-    summary.interruptCount,
-    summary.tokenInput,
-    summary.tokenOutput,
-    summary.tokenCacheCreation,
-    summary.tokenCacheRead,
-    summary.estimatedCost,
-    summary.metadata,
-    new Date().toISOString()
-  );
-
-  const taskRun = db.prepare('SELECT id, task_key FROM task_runs WHERE task_key = ?').get(taskKey);
-  const replaceLinks = db.transaction((taskRunId, eventRows) => {
-    db.prepare('DELETE FROM task_run_events WHERE task_run_id = ?').run(taskRunId);
-    const insertLink = db.prepare(`
-      INSERT OR IGNORE INTO task_run_events (task_run_id, entry_key)
-      VALUES (?, ?)
-    `);
-    for (const row of eventRows) {
-      insertLink.run(taskRunId, row.key);
-    }
-  });
-  replaceLinks(taskRun.id, rows);
-  return taskRun.id;
-}
-
-function getTaskRunById(taskRunId) {
-  return db.prepare(`
-    SELECT *
-    FROM task_runs
-    WHERE id = ?
-  `).get(taskRunId);
-}
-
-function backfillAllTaskRuns() {
-  const rows = db.prepare(`
-    SELECT DISTINCT COALESCE(rootSessionID, sessionID) AS rootSessionId
-    FROM entries
-    WHERE COALESCE(rootSessionID, sessionID) IS NOT NULL
-    ORDER BY rootSessionId
-  `).all();
-
-  let derived = 0;
-  for (const row of rows) {
-    const taskRunId = upsertTaskRunForRootSession(row.rootSessionId);
-    if (taskRunId) derived++;
-  }
-  return derived;
-}
-
-const initialDerivedTaskRuns = backfillAllTaskRuns();
-console.log(`[suboculo] Derived task runs on startup: ${initialDerivedTaskRuns}`);
 
 // Generate SSE key — must match generateCEPKey logic for consistent dedup
 function sseKey(event) {
@@ -588,15 +239,17 @@ app.post('/api/notify', (req, res) => {
         `).get(event.traceId);
 
         if (startEvent) {
-          const startData = JSON.parse(startEvent.data);
-          const startTime = new Date(startData.ts);
-          const endTime = new Date(event.ts);
-          const durationMs = endTime - startTime;
-          if (!event.data) event.data = {};
-          event.data.durationMs = durationMs;
+          const startData = tryParseJson(startEvent.data);
+          if (startData?.ts) {
+            const startTime = new Date(startData.ts);
+            const endTime = new Date(event.ts);
+            const durationMs = endTime - startTime;
+            if (!event.data) event.data = {};
+            event.data.durationMs = durationMs;
+          }
         }
       } catch (err) {
-        console.warn('Failed to calculate duration:', err.message);
+        logger.warn('Failed to calculate duration:', err.message);
       }
     }
 
@@ -611,7 +264,7 @@ app.post('/api/notify', (req, res) => {
 
     res.json({ success: true });
   } catch (error) {
-    console.error('Notify error:', error);
+    logger.error('Notify error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -634,7 +287,7 @@ app.post('/api/notify/batch', (req, res) => {
 
     res.json({ success: true, received: events.length, emitted });
   } catch (error) {
-    console.error('Batch notify error:', error);
+    logger.error('Batch notify error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -663,17 +316,19 @@ app.post('/api/ingest', (req, res) => {
         `).get(event.traceId);
 
         if (startEvent) {
-          const startData = JSON.parse(startEvent.data);
-          const startTime = new Date(startData.ts);
-          const endTime = new Date(event.ts);
-          const durationMs = endTime - startTime;
+          const startData = tryParseJson(startEvent.data);
+          if (startData?.ts) {
+            const startTime = new Date(startData.ts);
+            const endTime = new Date(event.ts);
+            const durationMs = endTime - startTime;
 
-          // Add duration to event data
-          if (!event.data) event.data = {};
-          event.data.durationMs = durationMs;
+            // Add duration to event data
+            if (!event.data) event.data = {};
+            event.data.durationMs = durationMs;
+          }
         }
       } catch (err) {
-        console.warn('Failed to calculate duration:', err.message);
+        logger.warn('Failed to calculate duration:', err.message);
         // Continue without duration - don't fail the ingestion
       }
     }
@@ -694,7 +349,7 @@ app.post('/api/ingest', (req, res) => {
       event: event.event
     });
   } catch (error) {
-    console.error('Ingest error:', error);
+    logger.error('Ingest error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -750,7 +405,7 @@ app.post('/api/ingest/batch', (req, res) => {
       total: events.length
     });
   } catch (error) {
-    console.error('Batch ingest error:', error);
+    logger.error('Batch ingest error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1376,7 +1031,8 @@ app.get('/api/entries', (req, res) => {
 
     // Return clean CEP events, supplementing with DB column values
     const parsedEntries = entries.map(row => {
-      const cepEvent = JSON.parse(row.data);
+      const cepEvent = tryParseJson(row.data);
+      if (!cepEvent) return null;
 
       // Supplement event data with DB column values for older entries
       // where these weren't stored in the JSON blob
@@ -1396,7 +1052,7 @@ app.get('/api/entries', (req, res) => {
         __key: row.key,
         ...cepEvent
       };
-    });
+    }).filter(Boolean);
 
     res.json({
       entries: parsedEntries,
@@ -1406,7 +1062,7 @@ app.get('/api/entries', (req, res) => {
       totalPages: Math.ceil(total / limit)
     });
   } catch (error) {
-    console.error('Query error:', error);
+    logger.error('Query error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1436,7 +1092,7 @@ app.get('/api/facets', (req, res) => {
       events: events.map(r => r.event)
     });
   } catch (error) {
-    console.error('Facets error:', error);
+    logger.error('Facets error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1456,7 +1112,7 @@ app.get('/api/stats', (req, res) => {
       avgDur: avgDur.avg ? Math.round(avgDur.avg) : null
     });
   } catch (error) {
-    console.error('Stats error:', error);
+    logger.error('Stats error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1472,7 +1128,7 @@ app.get('/api/analyses-history', (req, res) => {
 
     res.json(analyses);
   } catch (error) {
-    console.error('Get analyses error:', error);
+    logger.error('Get analyses error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1489,10 +1145,13 @@ app.get('/api/analyses-history/:id', (req, res) => {
       return res.status(404).json({ error: 'Analysis not found' });
     }
 
-    analysis.event_keys = JSON.parse(analysis.event_keys);
+    analysis.event_keys = tryParseJson(analysis.event_keys);
+    if (!analysis.event_keys) {
+      return res.status(500).json({ error: 'Failed to parse saved analysis event keys' });
+    }
     res.json(analysis);
   } catch (error) {
-    console.error('Get analysis error:', error);
+    logger.error('Get analysis error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1523,7 +1182,7 @@ app.post('/api/analyses', (req, res) => {
 
     res.json({ success: true, analysisId });
   } catch (error) {
-    console.error('Save analysis error:', error);
+    logger.error('Save analysis error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1535,15 +1194,15 @@ app.delete('/api/analyses-history/:id', (req, res) => {
     db.prepare('DELETE FROM analyses WHERE id = ?').run(id);
     res.json({ success: true });
   } catch (error) {
-    console.error('Delete analysis error:', error);
+    logger.error('Delete analysis error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
 // API: SSE stream for real-time events
-console.log('[INIT] Registering SSE endpoint at /api/events/stream');
+logger.debug('[INIT] Registering SSE endpoint at /api/events/stream');
 app.get('/api/events/stream', (req, res) => {
-  console.log('[SSE] Client connecting to stream');
+  logger.debug('[SSE] Client connecting to stream');
   // Set SSE headers
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -1564,7 +1223,7 @@ app.get('/api/events/stream', (req, res) => {
     try {
       res.write(`data: ${JSON.stringify(event)}\n\n`);
     } catch (err) {
-      console.error('SSE write error:', err.message);
+      logger.error('SSE write error:', err.message);
     }
   };
 
@@ -1574,10 +1233,10 @@ app.get('/api/events/stream', (req, res) => {
   req.on('close', () => {
     clearInterval(heartbeat);
     sseEmitter.off('event', listener);
-    console.log('SSE client disconnected');
+    logger.debug('SSE client disconnected');
   });
 
-  console.log('SSE client connected');
+  logger.debug('SSE client connected');
 });
 
 // API: Analyze selected events with LLM
@@ -1609,7 +1268,13 @@ app.post('/api/analyze', async (req, res) => {
     }
 
     // Parse events
-    const parsedEvents = events.map(row => JSON.parse(row.data));
+    const parsedEvents = events
+      .map(row => tryParseJson(row.data))
+      .filter(Boolean);
+
+    if (parsedEvents.length === 0) {
+      return res.status(500).json({ error: 'Failed to parse selected events' });
+    }
 
     // Format events for LLM
     const eventsText = parsedEvents.map((e, i) => {
@@ -1660,7 +1325,7 @@ Be concise and actionable.`;
     });
 
   } catch (error) {
-    console.error('Analysis error:', error);
+    logger.error('Analysis error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1690,10 +1355,15 @@ app.post('/api/selection', (req, res) => {
     }
 
     const events = rows.map(row => {
-      const cepEvent = JSON.parse(row.data);
+      const cepEvent = tryParseJson(row.data);
+      if (!cepEvent) return null;
       decodeBase64Fields(cepEvent);
       return { __key: row.key, ...cepEvent };
-    });
+    }).filter(Boolean);
+
+    if (events.length === 0) {
+      return res.status(500).json({ error: 'Failed to parse selected event data' });
+    }
 
     const selection = {
       timestamp: new Date().toISOString(),
@@ -1707,7 +1377,7 @@ app.post('/api/selection', (req, res) => {
 
     res.json({ success: true, count: events.length });
   } catch (error) {
-    console.error('Save selection error:', error);
+    logger.error('Save selection error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1721,10 +1391,13 @@ app.get('/api/selection', (req, res) => {
       return res.json({ timestamp: null, count: 0, events: [] });
     }
 
-    const data = JSON.parse(fs.readFileSync(selectionPath, 'utf-8'));
+    const data = tryParseJson(fs.readFileSync(selectionPath, 'utf-8'));
+    if (!data) {
+      return res.status(500).json({ error: 'Failed to parse selection file' });
+    }
     res.json(data);
   } catch (error) {
-    console.error('Get selection error:', error);
+    logger.error('Get selection error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1772,7 +1445,7 @@ app.get('/api/tags', (req, res) => {
 
     res.json(tagsByKey);
   } catch (error) {
-    console.error('Get tags error:', error);
+    logger.error('Get tags error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1793,7 +1466,7 @@ app.post('/api/tags', (req, res) => {
 
     res.json({ success: true });
   } catch (error) {
-    console.error('Tag operation error:', error);
+    logger.error('Tag operation error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1810,7 +1483,7 @@ app.get('/api/notes', (req, res) => {
 
     res.json(notesByKey);
   } catch (error) {
-    console.error('Get notes error:', error);
+    logger.error('Get notes error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1831,7 +1504,7 @@ app.post('/api/notes', (req, res) => {
 
     res.json({ success: true });
   } catch (error) {
-    console.error('Note operation error:', error);
+    logger.error('Note operation error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1861,7 +1534,7 @@ app.get('/api/export', (req, res) => {
       notesByKey
     });
   } catch (error) {
-    console.error('Export error:', error);
+    logger.error('Export error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1929,20 +1602,20 @@ app.post('/api/import', (req, res) => {
 
     res.json({ success: true });
   } catch (error) {
-    console.error('Import error:', error);
+    logger.error('Import error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
 // Start server
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-  console.log(`Database: ${dbPath}`);
+app.listen(PORT, HOST, () => {
+  logger.info(`Server running on http://${HOST}:${PORT}`);
+  logger.info(`Database: ${dbPath}`);
 });
 
 // Graceful shutdown
 process.on('SIGINT', () => {
-  console.log('\nClosing database...');
+  logger.info('\nClosing database...');
   db.close();
   process.exit(0);
 });

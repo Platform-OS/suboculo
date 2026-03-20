@@ -8,6 +8,30 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET_DIR=""
 PORT=3000
 
+require_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "❌ Error: Required command not found: $1"
+    exit 1
+  fi
+}
+
+patch_port_in_file() {
+  local file="$1"
+  local pattern="$2"
+  local replacement="$3"
+  node -e '
+    const fs = require("fs");
+    const [file, pattern, replacement] = process.argv.slice(1);
+    const input = fs.readFileSync(file, "utf8");
+    const output = input.split(pattern).join(replacement);
+    if (input === output) {
+      console.error(`❌ Error: Failed to patch ${file}; pattern not found: ${pattern}`);
+      process.exit(1);
+    }
+    fs.writeFileSync(file, output);
+  ' "$file" "$pattern" "$replacement"
+}
+
 # Parse arguments
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -33,6 +57,12 @@ if [ ! -d "$TARGET_DIR" ]; then
   exit 1
 fi
 
+# Preflight checks before mutating target project
+require_cmd node
+require_cmd npm
+require_cmd jq
+require_cmd mktemp
+
 # Create .suboculo directory for shared backend/database
 SUBOCULO_DIR="$TARGET_DIR/.suboculo"
 mkdir -p "$SUBOCULO_DIR/backend"
@@ -57,16 +87,17 @@ cd "$TARGET_DIR"
 echo "📋 Copying backend files..."
 cp "$SCRIPT_DIR/backend/mcp-analytics-server.mjs" "$SUBOCULO_DIR/backend/"
 cp "$SCRIPT_DIR/backend/server.js" "$SUBOCULO_DIR/backend/"
-sed -i "s/process.env.SUBOCULO_PORT || 3000/process.env.SUBOCULO_PORT || $PORT/" "$SUBOCULO_DIR/backend/server.js"
+cp "$SCRIPT_DIR/backend/logger.js" "$SUBOCULO_DIR/backend/"
+patch_port_in_file "$SUBOCULO_DIR/backend/server.js" "process.env.SUBOCULO_PORT || 3000" "process.env.SUBOCULO_PORT || $PORT"
 cp "$SCRIPT_DIR/backend/cep-processor.js" "$SUBOCULO_DIR/backend/"
 cp -r "$SCRIPT_DIR/svelte-app/dist/"* "$SUBOCULO_DIR/frontend/" 2>/dev/null || echo "⚠️  Frontend not built yet (run 'cd svelte-app && npm run build')"
 
 # Copy OpenCode plugin
 echo "📋 Copying OpenCode plugin..."
 cp "$SCRIPT_DIR/integrations/opencode/plugins/suboculo.js" "$OPENCODE_DIR/plugins/"
-sed -i "s/const NOTIFY_PORT = 3000/const NOTIFY_PORT = $PORT/" "$OPENCODE_DIR/plugins/suboculo.js"
+patch_port_in_file "$OPENCODE_DIR/plugins/suboculo.js" "const NOTIFY_PORT = 3000" "const NOTIFY_PORT = $PORT"
 
-# Note: OpenCode uses Bun, and the plugin uses built-in bun:sqlite (no dependencies needed)
+# Note: OpenCode uses Bun, and the plugin uses built-in bun:sqlite (no plugin dependencies needed)
 
 # Copy backend package.json
 cp "$SCRIPT_DIR/integrations/claude-code/hooks/package.json" "$SUBOCULO_DIR/"

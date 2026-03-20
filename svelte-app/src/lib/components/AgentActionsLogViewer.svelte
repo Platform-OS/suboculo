@@ -92,6 +92,10 @@
   let analyses = [];
   let selectedAnalysis = null;
   let loadingAnalyses = false;
+  let notice = null;
+  let noticeTimer;
+  let confirmDialog = null;
+  let liveRefreshTimer;
 
   // Task Runs state
   let taskRuns = [];
@@ -278,23 +282,23 @@
       selectedAnalysis = await api.getAnalysis(id);
     } catch (err) {
       console.error('Failed to load analysis:', err);
-      alert('Failed to load analysis');
+      showNotice('Failed to load analysis', 'error');
     }
   }
 
   async function deleteAnalysisById(id) {
-    if (!confirm('Are you sure you want to delete this analysis?')) return;
-
-    try {
-      await api.deleteAnalysis(id);
-      await loadAnalyses();
-      if (selectedAnalysis?.id === id) {
-        selectedAnalysis = null;
+    openConfirmDialog('Delete this saved analysis? This cannot be undone.', async () => {
+      try {
+        await api.deleteAnalysis(id);
+        await loadAnalyses();
+        if (selectedAnalysis?.id === id) {
+          selectedAnalysis = null;
+        }
+      } catch (err) {
+        console.error('Failed to delete analysis:', err);
+        showNotice('Failed to delete analysis', 'error');
       }
-    } catch (err) {
-      console.error('Failed to delete analysis:', err);
-      alert('Failed to delete analysis');
-    }
+    });
   }
 
   function exportAnalysisAsMarkdown(analysis) {
@@ -318,12 +322,13 @@
     // Check if event matches current filters
     if (!matchesFilters(newEvent)) return;
 
-    // Add to pageItems if on first page and sorting by newest
-    if (page === 1 && sortDir === "desc") {
-      // Prepend to list
+    // For timestamp-sorted views, transcript-derived events can arrive later than
+    // their actual event time. Re-fetch the first page instead of incrementally
+    // mutating the list so backend ordering remains canonical.
+    if (page === 1 && sortKey === "ts") {
+      scheduleLiveRefresh();
+    } else if (page === 1 && sortDir === "desc") {
       pageItems = [newEvent, ...pageItems];
-
-      // Keep only pageSize items
       if (pageItems.length > pageSize) {
         pageItems = pageItems.slice(0, pageSize);
       }
@@ -331,6 +336,13 @@
 
     // Update facets
     updateFacetsForEvent(newEvent);
+  }
+
+  function scheduleLiveRefresh() {
+    clearTimeout(liveRefreshTimer);
+    liveRefreshTimer = setTimeout(() => {
+      fetchEntries();
+    }, 150);
   }
 
   function matchesFilters(newEvent) {
@@ -445,16 +457,18 @@
   }
 
   async function clearAllTags() {
-    if (!confirm('Clear all tags and notes? This cannot be undone.')) return;
-
-    try {
-      await api.importTags({ tagsByKey: {}, notesByKey: {} });
-      tagsByKey = {};
-      notesByKey = {};
-      facets = await api.getFacets();
-    } catch (err) {
-      console.error('Failed to clear tags:', err);
-    }
+    openConfirmDialog('Clear all tags and notes? This cannot be undone.', async () => {
+      try {
+        await api.importTags({ tagsByKey: {}, notesByKey: {} });
+        tagsByKey = {};
+        notesByKey = {};
+        facets = await api.getFacets();
+        showNotice('All tags and notes cleared', 'success');
+      } catch (err) {
+        console.error('Failed to clear tags:', err);
+        showNotice('Failed to clear tags and notes', 'error');
+      }
+    });
   }
 
   async function exportTagsData() {
@@ -491,10 +505,33 @@
         facets = await api.getFacets();
       } catch (err) {
         console.error('Failed to import:', err);
-        alert('Import failed: ' + err.message);
+        showNotice('Import failed: ' + err.message, 'error');
       }
     };
     reader.readAsText(file);
+  }
+
+  function showNotice(message, tone = 'info') {
+    clearTimeout(noticeTimer);
+    notice = { message, tone };
+    noticeTimer = setTimeout(() => {
+      notice = null;
+    }, 5000);
+  }
+
+  function openConfirmDialog(message, onConfirm) {
+    confirmDialog = { message, onConfirm };
+  }
+
+  async function confirmDialogAccept() {
+    if (!confirmDialog) return;
+    const action = confirmDialog.onConfirm;
+    confirmDialog = null;
+    await action();
+  }
+
+  function closeConfirmDialog() {
+    confirmDialog = null;
   }
 
   function formatTs(ts) {
@@ -757,6 +794,12 @@ ${analysisResult.analysis}
 
 <div class="min-h-screen bg-background text-foreground p-4 md:p-6">
   <div class="max-w-[1800px] mx-auto space-y-4">
+    {#if notice}
+      <div class="rounded-xl border px-4 py-3 text-sm {notice.tone === 'error' ? 'border-red-300 bg-red-50 text-red-800' : notice.tone === 'success' ? 'border-green-300 bg-green-50 text-green-800' : 'border-blue-300 bg-blue-50 text-blue-800'}">
+        {notice.message}
+      </div>
+    {/if}
+
     <!-- Header -->
     <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
       <div>
@@ -1025,6 +1068,7 @@ ${analysisResult.analysis}
                   {@const hasFlatTokens = e.data?.inputTokens != null || e.data?.outputTokens != null}
                   {@const hasUsage = isUsageEvent || hasFlatTokens || embeddedUsage}
                   {@const usageModel = isUsageEvent ? e.data?.model : null}
+                  {@const usageAgentLabel = e.data?.agentType || e.data?.agentId || "lead"}
                   {@const usageTokens = (isUsageEvent || hasFlatTokens) ? {
                     input: e.data?.inputTokens || 0,
                     output: e.data?.outputTokens || 0,
@@ -1041,6 +1085,8 @@ ${analysisResult.analysis}
                       ? 'bg-blue-100/50 border-l-4 border-l-blue-500'
                       : isSel
                       ? 'bg-blue-50 border-l-4 border-l-blue-300'
+                      : isUsageEvent
+                      ? 'bg-amber-50/60 hover:bg-amber-100/60 border-l-4 border-l-amber-300'
                       : idx % 2 === 0 ? 'bg-background hover:bg-muted/30' : 'bg-muted/10 hover:bg-muted/40'}"
                   >
                     <td class="px-4 py-3" on:click|stopPropagation>
@@ -1058,28 +1104,37 @@ ${analysisResult.analysis}
                       </Badge>
                     </td>
                     <td class="px-4 py-3" on:click={() => selectEntry(key)}>
-                      <Badge variant="secondary" class="rounded-full text-xs font-medium">
+                      <Badge variant={isUsageEvent ? "outline" : "secondary"} class="rounded-full text-xs font-medium {isUsageEvent ? 'border-amber-400 text-amber-800 bg-amber-100/70' : ''}">
                         {cepEvent}
                       </Badge>
                     </td>
                     <td class="px-4 py-3 font-mono text-xs font-semibold" on:click={() => selectEntry(key)}>
                       {#if isUsageEvent}
-                        <Badge variant="outline" class="rounded-full text-xs">{usageModel || "unknown"}</Badge>
+                        <div class="space-y-1">
+                          <Badge variant="outline" class="rounded-full text-xs border-amber-400 text-amber-900 bg-amber-100/70">{usageModel || "unknown"}</Badge>
+                          <div class="text-[10px] uppercase tracking-wide text-amber-800">token telemetry</div>
+                        </div>
                       {:else}
                         {tool || "—"}
                       {/if}
                     </td>
                     <td class="px-4 py-3 text-xs" on:click={() => selectEntry(key)}>
-                      {#if e.data?.agentType || e.data?.agentId}
-                        <Badge variant="outline" class="rounded-full text-xs" title={e.data?.agentId || ''}>
-                          {e.data.agentType || e.data.agentId}
+                      {#if e.data?.agentType || e.data?.agentId || isUsageEvent}
+                        <Badge
+                          variant="outline"
+                          class="rounded-full text-xs {isUsageEvent ? 'border-amber-300 text-amber-900 bg-amber-50' : ''}"
+                          title={e.data?.agentId || ''}
+                        >
+                          {usageAgentLabel}
                         </Badge>
                       {:else}
                         <span class="text-muted-foreground">lead</span>
                       {/if}
                     </td>
                     <td class="px-4 py-3 text-xs" on:click={() => selectEntry(key)}>
-                      {#if cepStatus === 'success'}
+                      {#if isUsageEvent}
+                        <span class="text-[10px] uppercase tracking-wide text-amber-800">metering</span>
+                      {:else if cepStatus === 'success'}
                         <Badge variant="outline" class="rounded-full text-green-600 border-green-600">✓</Badge>
                       {:else if cepStatus === 'error'}
                         <Badge variant="outline" class="rounded-full text-red-600 border-red-600">✗</Badge>
@@ -1094,9 +1149,11 @@ ${analysisResult.analysis}
                     </td>
                     <td class="px-4 py-3 text-xs font-medium" on:click={() => selectEntry(key)}>
                       {#if hasUsage && usageTokens}
-                        <div class="text-xs space-y-0.5">
-                          <div>out: {usageTokens.output.toLocaleString()}</div>
-                          <div class="text-muted-foreground text-[10px]">cache: {usageTokens.cacheRead.toLocaleString()}</div>
+                        <div class="text-xs space-y-0.5 {isUsageEvent ? 'text-amber-950' : ''}">
+                          <div>{isUsageEvent ? 'out' : 'out'}: {usageTokens.output.toLocaleString()}</div>
+                          <div class="text-[10px] {isUsageEvent ? 'text-amber-800' : 'text-muted-foreground'}">
+                            in: {usageTokens.input.toLocaleString()} · cache: {usageTokens.cacheRead.toLocaleString()}
+                          </div>
                         </div>
                       {:else}
                         <span class="text-muted-foreground">—</span>
@@ -1241,8 +1298,8 @@ ${analysisResult.analysis}
                   {#if selected.data?.model}
                     <div><span class="font-medium">Model:</span> {selected.data.model}</div>
                   {/if}
-                  {#if selected.data?.agentId}
-                    <div><span class="font-medium">Agent:</span> {selected.data.agentId}</div>
+                  {#if selected.data?.agentType || selected.data?.agentId}
+                    <div><span class="font-medium">Agent:</span> {selected.data.agentType || selected.data.agentId}</div>
                   {/if}
                   <div><span class="font-medium">Input tokens:</span> {detailInputTokens.toLocaleString()}</div>
                   <div><span class="font-medium">Output tokens:</span> {detailOutputTokens.toLocaleString()}</div>
@@ -1860,6 +1917,24 @@ ${analysisResult.analysis}
             {/if}
           </CardContent>
         </Card>
+        </div>
+      </div>
+    {/if}
+
+    {#if confirmDialog}
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" on:click={closeConfirmDialog} on:keydown={(e) => e.key === 'Escape' && closeConfirmDialog()}>
+        <div role="dialog" aria-modal="true" aria-label="Confirm Action" tabindex="-1" on:click|stopPropagation on:keydown|stopPropagation>
+          <Card class="w-full max-w-md">
+            <CardContent class="p-6 space-y-4">
+              <div class="text-lg font-semibold">Confirm Action</div>
+              <div class="text-sm text-muted-foreground">{confirmDialog.message}</div>
+              <div class="flex justify-end gap-2">
+                <Button variant="outline" on:click={closeConfirmDialog}>Cancel</Button>
+                <Button variant="destructive" on:click={confirmDialogAccept}>Confirm</Button>
+              </div>
+            </CardContent>
+          </Card>
         </div>
       </div>
     {/if}
