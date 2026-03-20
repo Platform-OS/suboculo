@@ -9,6 +9,15 @@ const logger = require('./logger');
 const app = express();
 const PORT = process.env.SUBOCULO_PORT || 3000;
 const HOST = process.env.SUBOCULO_HOST || '127.0.0.1';
+const OUTCOME_LABELS = [
+  'success',
+  'partial_success',
+  'failure',
+  'unsafe_success',
+  'interrupted',
+  'abandoned',
+  'unknown'
+];
 
 // SSE Event Emitter for real-time updates
 const sseEmitter = new EventEmitter();
@@ -160,6 +169,156 @@ function initDatabase() {
     );
   `);
 
+  // Phase 2: task-centric reliability model
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS task_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_key TEXT UNIQUE NOT NULL,
+      title TEXT,
+      description TEXT,
+      source TEXT NOT NULL DEFAULT 'derived_session',
+      runner TEXT,
+      model TEXT,
+      agent_system_version TEXT,
+      prompt_version TEXT,
+      toolchain_version TEXT,
+      environment_fingerprint TEXT,
+      git_revision TEXT,
+      status TEXT NOT NULL DEFAULT 'completed',
+      root_session_id TEXT NOT NULL,
+      started_at TEXT,
+      ended_at TEXT,
+      total_events INTEGER NOT NULL DEFAULT 0,
+      total_tool_calls INTEGER NOT NULL DEFAULT 0,
+      distinct_tools INTEGER NOT NULL DEFAULT 0,
+      total_duration_ms INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      subagent_count INTEGER NOT NULL DEFAULT 0,
+      interrupt_count INTEGER NOT NULL DEFAULT 0,
+      token_input INTEGER NOT NULL DEFAULT 0,
+      token_output INTEGER NOT NULL DEFAULT 0,
+      token_cache_creation INTEGER NOT NULL DEFAULT 0,
+      token_cache_read INTEGER NOT NULL DEFAULT 0,
+      estimated_cost REAL NOT NULL DEFAULT 0,
+      metadata TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_task_runs_root_session ON task_runs(root_session_id);
+    CREATE INDEX IF NOT EXISTS idx_task_runs_runner ON task_runs(runner);
+    CREATE INDEX IF NOT EXISTS idx_task_runs_status ON task_runs(status);
+    CREATE INDEX IF NOT EXISTS idx_task_runs_started_at ON task_runs(started_at);
+
+    CREATE TABLE IF NOT EXISTS task_run_events (
+      task_run_id INTEGER NOT NULL,
+      entry_key TEXT NOT NULL,
+      PRIMARY KEY (task_run_id, entry_key),
+      FOREIGN KEY (task_run_id) REFERENCES task_runs(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_task_run_events_entry_key ON task_run_events(entry_key);
+
+    CREATE TABLE IF NOT EXISTS outcomes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_run_id INTEGER NOT NULL,
+      evaluation_type TEXT NOT NULL,
+      outcome_label TEXT NOT NULL,
+      correctness_score REAL,
+      safety_score REAL,
+      efficiency_score REAL,
+      reproducibility_score REAL,
+      requires_human_intervention INTEGER NOT NULL DEFAULT 0,
+      failure_mode TEXT,
+      failure_subtype TEXT,
+      notes TEXT,
+      evaluator TEXT,
+      evidence TEXT,
+      is_canonical INTEGER NOT NULL DEFAULT 0,
+      evaluated_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (task_run_id) REFERENCES task_runs(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_outcomes_task_run_id ON outcomes(task_run_id);
+    CREATE INDEX IF NOT EXISTS idx_outcomes_label ON outcomes(outcome_label);
+    CREATE INDEX IF NOT EXISTS idx_outcomes_canonical ON outcomes(is_canonical);
+
+    CREATE TABLE IF NOT EXISTS benchmarks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      description TEXT,
+      version TEXT NOT NULL DEFAULT '1.0.0',
+      status TEXT NOT NULL DEFAULT 'draft',
+      task_definition_source TEXT,
+      scoring_spec TEXT,
+      policy_spec TEXT,
+      owner TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(name, version)
+    );
+
+    CREATE TABLE IF NOT EXISTS benchmark_cases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      benchmark_id INTEGER NOT NULL,
+      case_key TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT,
+      prompt TEXT,
+      fixture_ref TEXT,
+      timeout_seconds INTEGER,
+      allowed_tools TEXT,
+      expected_outputs TEXT,
+      forbidden_actions TEXT,
+      scoring_rules TEXT,
+      metadata TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (benchmark_id) REFERENCES benchmarks(id) ON DELETE CASCADE,
+      UNIQUE(benchmark_id, case_key)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_benchmark_cases_benchmark_id ON benchmark_cases(benchmark_id);
+
+    CREATE TABLE IF NOT EXISTS benchmark_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      benchmark_id INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'planned',
+      agent_config TEXT,
+      environment_fingerprint TEXT,
+      git_revision TEXT,
+      started_at TEXT,
+      ended_at TEXT,
+      summary_json TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (benchmark_id) REFERENCES benchmarks(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_benchmark_runs_benchmark_id ON benchmark_runs(benchmark_id);
+
+    CREATE TABLE IF NOT EXISTS benchmark_run_cases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      benchmark_run_id INTEGER NOT NULL,
+      benchmark_case_id INTEGER NOT NULL,
+      task_run_id INTEGER,
+      outcome_id INTEGER,
+      status TEXT NOT NULL DEFAULT 'planned',
+      score REAL,
+      notes TEXT,
+      metadata TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (benchmark_run_id) REFERENCES benchmark_runs(id) ON DELETE CASCADE,
+      FOREIGN KEY (benchmark_case_id) REFERENCES benchmark_cases(id) ON DELETE CASCADE,
+      FOREIGN KEY (task_run_id) REFERENCES task_runs(id) ON DELETE SET NULL,
+      FOREIGN KEY (outcome_id) REFERENCES outcomes(id) ON DELETE SET NULL,
+      UNIQUE(benchmark_run_id, benchmark_case_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_benchmark_run_cases_run_id ON benchmark_run_cases(benchmark_run_id);
+    CREATE INDEX IF NOT EXISTS idx_benchmark_run_cases_task_run_id ON benchmark_run_cases(task_run_id);
+  `);
+
   logger.info('Database initialized');
 }
 
@@ -201,6 +360,227 @@ function tryParseJson(value) {
     return null;
   }
 }
+
+function parseJSONSafe(value, fallback = null) {
+  const parsed = tryParseJson(value);
+  return parsed === null ? fallback : parsed;
+}
+
+function deriveTaskRunStatus(rows) {
+  const events = rows.map(row => row.event);
+
+  const endRows = rows.filter(row => row.event === 'session.end');
+  if (endRows.length > 0) {
+    const lastEnd = parseJSONSafe(endRows[endRows.length - 1].data, {});
+    const reason = lastEnd?.data?.reason;
+    if (reason === 'cancelled' || reason === 'user_cancelled') return 'cancelled';
+    if (reason === 'timeout' || reason === 'timed_out') return 'timed_out';
+  }
+
+  const pendingTraceIds = new Set();
+  for (const row of rows) {
+    if (!row.traceId) continue;
+    if (row.event === 'tool.start') pendingTraceIds.add(row.traceId);
+    if (row.event === 'tool.end') pendingTraceIds.delete(row.traceId);
+  }
+
+  if (pendingTraceIds.size > 0) return 'running';
+
+  const hasTerminalActivity = rows.some((row) => (
+    row.event === 'tool.end' ||
+    row.event === 'subagent.stop' ||
+    row.event === 'usage' ||
+    row.event === 'message' ||
+    row.event === 'session.end'
+  ));
+
+  if (hasTerminalActivity) return 'completed';
+  return 'running';
+}
+
+function summarizeTaskRunRows(rows) {
+  const parsed = rows.map(row => parseJSONSafe(row.data, {}));
+  const first = parsed[0] || {};
+  const last = parsed[parsed.length - 1] || {};
+  const toolEndRows = parsed.filter(event => event.event === 'tool.end');
+  const distinctTools = new Set(parsed.map(event => event?.data?.tool).filter(Boolean));
+  const usageRows = parsed.filter(event => event.event === 'usage');
+  const subagentIds = new Set(parsed.map(event => event?.data?.agentId).filter(Boolean));
+
+  let tokenInput = 0;
+  let tokenOutput = 0;
+  let tokenCacheCreation = 0;
+  let tokenCacheRead = 0;
+  let estimatedCost = 0;
+  let interruptCount = 0;
+
+  for (const event of usageRows) {
+    const data = event.data || {};
+    tokenInput += data.inputTokens || 0;
+    tokenOutput += data.outputTokens || 0;
+    tokenCacheCreation += data.cacheCreationTokens || 0;
+    tokenCacheRead += data.cacheReadTokens || 0;
+    estimatedCost += data.cost || 0;
+  }
+
+  for (const event of parsed) {
+    if (event?.data?.isInterrupt) interruptCount++;
+  }
+
+  const sessionStart = parsed.find(event => event.event === 'session.start');
+  const title = sessionStart?.data?.title || first?.data?.title || null;
+  const description = sessionStart?.data?.directory || null;
+  const model = usageRows.find(event => event?.data?.model)?.data?.model || null;
+
+  return {
+    title,
+    description,
+    runner: first.runner || null,
+    model,
+    startedAt: first.ts || null,
+    endedAt: last.ts || null,
+    status: deriveTaskRunStatus(rows),
+    totalEvents: rows.length,
+    totalToolCalls: toolEndRows.length,
+    distinctTools: distinctTools.size,
+    totalDurationMs: toolEndRows.reduce((sum, event) => sum + (event.data?.durationMs || 0), 0),
+    errorCount: parsed.filter(event =>
+      event.event === 'error' || (event.event === 'tool.end' && event.data?.status === 'error')
+    ).length,
+    retryCount: Math.max(toolEndRows.length - distinctTools.size, 0),
+    subagentCount: subagentIds.size,
+    interruptCount,
+    tokenInput,
+    tokenOutput,
+    tokenCacheCreation,
+    tokenCacheRead,
+    estimatedCost: +estimatedCost.toFixed(6),
+    metadata: JSON.stringify({
+      sessionIds: [...new Set(rows.map(row => row.sessionID).filter(Boolean))],
+      tools: [...distinctTools]
+    })
+  };
+}
+
+function upsertTaskRunForRootSession(rootSessionId) {
+  if (!rootSessionId) return null;
+
+  const rows = db.prepare(`
+    SELECT key, ts, sessionID, rootSessionID, runner, event, data
+    FROM entries
+    WHERE rootSessionID = ? OR sessionID = ?
+    ORDER BY ts ASC, id ASC
+  `).all(rootSessionId, rootSessionId);
+
+  if (rows.length === 0) return null;
+
+  const summary = summarizeTaskRunRows(rows);
+  const taskKey = `root:${rootSessionId}`;
+
+  const upsert = db.prepare(`
+    INSERT INTO task_runs (
+      task_key, title, description, source, runner, model, status, root_session_id,
+      started_at, ended_at, total_events, total_tool_calls, distinct_tools,
+      total_duration_ms, error_count, retry_count, subagent_count, interrupt_count,
+      token_input, token_output, token_cache_creation, token_cache_read,
+      estimated_cost, metadata, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(task_key) DO UPDATE SET
+      title = excluded.title,
+      description = excluded.description,
+      source = excluded.source,
+      runner = excluded.runner,
+      model = excluded.model,
+      status = excluded.status,
+      root_session_id = excluded.root_session_id,
+      started_at = excluded.started_at,
+      ended_at = excluded.ended_at,
+      total_events = excluded.total_events,
+      total_tool_calls = excluded.total_tool_calls,
+      distinct_tools = excluded.distinct_tools,
+      total_duration_ms = excluded.total_duration_ms,
+      error_count = excluded.error_count,
+      retry_count = excluded.retry_count,
+      subagent_count = excluded.subagent_count,
+      interrupt_count = excluded.interrupt_count,
+      token_input = excluded.token_input,
+      token_output = excluded.token_output,
+      token_cache_creation = excluded.token_cache_creation,
+      token_cache_read = excluded.token_cache_read,
+      estimated_cost = excluded.estimated_cost,
+      metadata = excluded.metadata,
+      updated_at = excluded.updated_at
+  `);
+
+  upsert.run(
+    taskKey,
+    summary.title,
+    summary.description,
+    'derived_session',
+    summary.runner,
+    summary.model,
+    summary.status,
+    rootSessionId,
+    summary.startedAt,
+    summary.endedAt,
+    summary.totalEvents,
+    summary.totalToolCalls,
+    summary.distinctTools,
+    summary.totalDurationMs,
+    summary.errorCount,
+    summary.retryCount,
+    summary.subagentCount,
+    summary.interruptCount,
+    summary.tokenInput,
+    summary.tokenOutput,
+    summary.tokenCacheCreation,
+    summary.tokenCacheRead,
+    summary.estimatedCost,
+    summary.metadata,
+    new Date().toISOString()
+  );
+
+  const taskRun = db.prepare('SELECT id, task_key FROM task_runs WHERE task_key = ?').get(taskKey);
+  const replaceLinks = db.transaction((taskRunId, eventRows) => {
+    db.prepare('DELETE FROM task_run_events WHERE task_run_id = ?').run(taskRunId);
+    const insertLink = db.prepare(`
+      INSERT OR IGNORE INTO task_run_events (task_run_id, entry_key)
+      VALUES (?, ?)
+    `);
+    for (const row of eventRows) {
+      insertLink.run(taskRunId, row.key);
+    }
+  });
+  replaceLinks(taskRun.id, rows);
+  return taskRun.id;
+}
+
+function getTaskRunById(taskRunId) {
+  return db.prepare(`
+    SELECT *
+    FROM task_runs
+    WHERE id = ?
+  `).get(taskRunId);
+}
+
+function backfillAllTaskRuns() {
+  const rows = db.prepare(`
+    SELECT DISTINCT COALESCE(rootSessionID, sessionID) AS rootSessionId
+    FROM entries
+    WHERE COALESCE(rootSessionID, sessionID) IS NOT NULL
+    ORDER BY rootSessionId
+  `).all();
+
+  let derived = 0;
+  for (const row of rows) {
+    const taskRunId = upsertTaskRunForRootSession(row.rootSessionId);
+    if (taskRunId) derived++;
+  }
+  return derived;
+}
+
+const initialDerivedTaskRuns = backfillAllTaskRuns();
+logger.info(`[suboculo] Derived task runs on startup: ${initialDerivedTaskRuns}`);
 
 // Generate SSE key — must match generateCEPKey logic for consistent dedup
 function sseKey(event) {
@@ -553,6 +933,12 @@ app.post('/api/task-runs/:id/outcomes', (req, res) => {
 
     if (!evaluation_type || !outcome_label) {
       return res.status(400).json({ error: 'evaluation_type and outcome_label are required' });
+    }
+    if (!OUTCOME_LABELS.includes(outcome_label)) {
+      return res.status(400).json({
+        error: 'Invalid outcome_label',
+        allowed: OUTCOME_LABELS
+      });
     }
 
     const insertOutcome = db.transaction(() => {

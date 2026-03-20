@@ -120,6 +120,16 @@
     is_canonical: true
   };
 
+  const outcomeLabelHelp = {
+    success: "Task completed to a reasonable engineering standard.",
+    partial_success: "Meaningful progress was made, but the task is not complete.",
+    failure: "The requested objective was not achieved.",
+    unsafe_success: "The result was achieved, but an important safety or policy boundary was crossed.",
+    interrupted: "The run stopped before conclusion due to interruption.",
+    abandoned: "The run ended without resolution or effectively gave up.",
+    unknown: "The evaluator cannot determine the outcome confidently."
+  };
+
   // Load initial data
   onMount(async () => {
     await loadData();
@@ -777,6 +787,8 @@ ${analysisResult.analysis}
     { value: "partial_success", label: "Partial success" },
     { value: "failure", label: "Failure" },
     { value: "unsafe_success", label: "Unsafe success" },
+    { value: "interrupted", label: "Interrupted" },
+    { value: "abandoned", label: "Abandoned" },
     { value: "unknown", label: "Unknown" },
   ];
 
@@ -1605,6 +1617,9 @@ ${analysisResult.analysis}
                     <div class="space-y-1">
                       <Label>Outcome</Label>
                       <Select bind:value={taskRunOutcome.outcome_label} options={outcomeLabelOptions} />
+                      <div class="text-xs text-muted-foreground">
+                        {outcomeLabelHelp[taskRunOutcome.outcome_label]}
+                      </div>
                     </div>
                   </div>
 
