@@ -169,7 +169,10 @@ Open http://localhost:3000 (port is set during installation).
 Features:
 - Real-time event streaming (SSE)
 - Filter by tool, event type, session, runner, agent type
+- Filter by attempt (derived task-run segment)
 - Agent/subagent tracking (see which agent executed each tool)
+- Task Runs tab with attempt-level runs
+- Structured outcome recording and summary analytics
 - Select events and send to CLI for analysis
 - Analyses tab for viewing saved analyses
 - Tag and annotate events
@@ -257,6 +260,14 @@ This updates hooks and MCP config with the new port. Restart Claude Code afterwa
 - Check `.suboculo/events.db` exists after running a tool
 - Verify hooks are in `.claude/settings.local.json`: `cat .claude/settings.local.json | jq '.hooks'`
 - Restart Claude Code after installation
+
+**Task Runs look stale or legacy rows dominate?**
+- Click "Derive from events" in Task Runs tab
+- Optional cleanup of legacy root-session task runs:
+  ```bash
+  cd .suboculo/backend
+  npm run cleanup:legacy-runs
+  ```
 
 **Real-time updates not working?**
 - Check backend is running: `lsof -ti:3000` (replace with your port)

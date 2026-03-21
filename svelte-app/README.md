@@ -5,7 +5,7 @@ Frontend viewer for the Suboculo AI agent monitoring platform.
 ## Features
 
 - **Real-time updates** - Live event stream via SSE
-- **Powerful filtering** - Filter by runner, event type, tool, agent, session, and tags
+- **Powerful filtering** - Filter by runner, event type, tool, agent, session, attempt, and tags
 - **Search** - Full-text search across all log fields, tags, and notes
 - **Sorting** - Sort by timestamp, duration, tool, or event type
 - **Tagging** - Add custom tags to entries for categorization
@@ -14,6 +14,9 @@ Frontend viewer for the Suboculo AI agent monitoring platform.
 - **Export/Import** - Export and import tags and notes as JSON
 - **Analysis** - Analyze selected events via the Anthropic API
 - **Selection bridge** - Save event selections for CLI-based MCP analysis
+- **Task Runs tab** - Derived attempt-level runs with status and metrics
+- **Outcome recording** - Structured outcomes with taxonomy-driven form
+- **Outcome summaries** - Canonical outcome/failure aggregates and filters
 
 ## Tech Stack
 
@@ -69,6 +72,17 @@ npm run preview
 9. **Analyze** - Select events and run LLM analysis via the Anthropic API
 10. **Export tags** - Click "Export tags" to save your annotations as JSON
 11. **Import tags** - Click "Import tags" to restore previously exported annotations
+12. **Task Runs** - Open Task Runs tab, derive runs, inspect attempts, and record outcomes
+
+## Task Run Attempts
+
+Task runs are derived as attempt-level units:
+
+- split on `session.start`
+- split after `session.end`
+- split on inactivity gap (45 minutes)
+
+Events can be filtered by attempt key in the Events tab.
 
 ## Project Structure
 
