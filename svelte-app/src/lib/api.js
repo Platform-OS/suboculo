@@ -265,3 +265,96 @@ export async function deleteAnalysis(id) {
 
   return response.json();
 }
+
+export async function deriveTaskRuns() {
+  const response = await fetch(`${API_BASE}/task-runs/derive`, {
+    method: 'POST'
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to derive task runs');
+  }
+
+  return response.json();
+}
+
+export async function getTaskRuns(filters = {}) {
+  const params = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== null) {
+      params.append(key, value);
+    }
+  }
+
+  const response = await fetch(`${API_BASE}/task-runs?${params}`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch task runs');
+  }
+
+  return response.json();
+}
+
+export async function getTaskRun(id) {
+  const response = await fetch(`${API_BASE}/task-runs/${id}`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch task run');
+  }
+
+  return response.json();
+}
+
+export async function getTaskRunOutcomeSummary(filters = {}) {
+  const params = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== null) {
+      params.append(key, value);
+    }
+  }
+
+  const response = await fetch(`${API_BASE}/task-runs/outcome-summary?${params}`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch task run outcome summary');
+  }
+
+  return response.json();
+}
+
+export async function createOutcome(taskRunId, outcome) {
+  const response = await fetch(`${API_BASE}/task-runs/${taskRunId}/outcomes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(outcome)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Failed to create outcome');
+  }
+
+  return response.json();
+}
+
+export async function getOutcomeTaxonomy() {
+  const response = await fetch(`${API_BASE}/meta/outcome-taxonomy`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch outcome taxonomy');
+  }
+
+  return response.json();
+}
+
+export async function getBenchmarks() {
+  const response = await fetch(`${API_BASE}/benchmarks`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch benchmarks');
+  }
+
+  return response.json();
+}

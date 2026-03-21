@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "smoke": "node tests/smoke-suite.js"
+    "smoke": "node tests/smoke-suite.js",
+    "cleanup:legacy-runs": "node scripts/cleanup-legacy-task-runs.js"
   },
   "keywords": [
     "suboculo",

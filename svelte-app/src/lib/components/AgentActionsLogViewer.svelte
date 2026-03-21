@@ -37,7 +37,8 @@
     roots: [],
     allTags: [],
     runners: [],
-    events: []
+    events: [],
+    attempts: []
   };
 
   // Filters
@@ -50,6 +51,7 @@
   let tagFilter = "all";
   let runner = "all";
   let event = "all";
+  let attempt = "all";
 
   // Sorting
   let sortKey = "ts";
@@ -97,10 +99,71 @@
   let confirmDialog = null;
   let liveRefreshTimer;
 
+  // Task Runs state
+  let taskRuns = [];
+  let selectedTaskRun = null;
+  let loadingTaskRuns = false;
+  let taskRunsTotal = 0;
+  let taskRunOutcomeSummary = null;
+  let outcomeTaxonomy = null;
+  let taskRunStatusFilter = "all";
+  let taskRunRunnerFilter = "all";
+  let taskRunQuery = "";
+  let taskRunCanonicalOutcomeFilter = "all";
+  let taskRunFailureModeFilter = "all";
+  let taskRunFailureSubtypeFilter = "all";
+  let taskRunHumanInterventionFilter = "all";
+
+  const fallbackEvaluationTypes = ["human", "rule_based", "llm_judge", "benchmark_checker"];
+  const fallbackOutcomeLabels = ["success", "partial_success", "failure", "unsafe_success", "interrupted", "abandoned", "unknown"];
+  const fallbackFailureTaxonomy = {
+    planning_failure: ["missing_plan", "wrong_plan", "incomplete_plan"],
+    execution_failure: ["wrong_edit", "incomplete_edit", "regression_introduced"],
+    tooling_failure: ["tool_error", "tool_unavailable", "tool_timeout"],
+    environment_failure: ["dependency_missing", "sandbox_restriction", "external_service_unavailable"],
+    safety_violation: ["policy_violation", "unsafe_command", "sensitive_data_exposure"],
+    validation_failure: ["tests_failed", "lint_failed", "manual_check_failed"],
+    interruption: ["user_interrupt", "process_killed", "context_limit"],
+    abandonment: ["gave_up", "no_progress", "deferred_without_resolution"],
+    unknown_failure: ["insufficient_evidence"]
+  };
+  const fallbackFailureModes = Object.keys(fallbackFailureTaxonomy);
+  const fallbackRequiredFailureLabels = ["failure", "unsafe_success", "interrupted", "abandoned"];
+
+  function createDefaultOutcomeForm() {
+    return {
+      evaluation_type: "human",
+      outcome_label: "success",
+      correctness_score: "",
+      safety_score: "",
+      efficiency_score: "",
+      reproducibility_score: "",
+      requires_human_intervention: false,
+      failure_mode: "",
+      failure_subtype: "",
+      notes: "",
+      evaluator: "web-ui",
+      is_canonical: true
+    };
+  }
+  let taskRunOutcome = createDefaultOutcomeForm();
+
+  const outcomeLabelHelp = {
+    success: "Task completed to a reasonable engineering standard.",
+    partial_success: "Meaningful progress was made, but the task is not complete.",
+    failure: "The requested objective was not achieved.",
+    unsafe_success: "The result was achieved, but an important safety or policy boundary was crossed.",
+    interrupted: "The run stopped before conclusion due to interruption.",
+    abandoned: "The run ended without resolution or effectively gave up.",
+    unknown: "The evaluator cannot determine the outcome confidently."
+  };
+
   // Load initial data
   onMount(async () => {
     await loadData();
+    await loadOutcomeTaxonomy();
     await loadAnalyses();
+    await loadTaskRuns();
 
     // Subscribe to real-time events
     const unsubscribe = api.subscribeToEvents(
@@ -124,7 +187,7 @@
   $: if (query !== undefined) {
     debouncedFetch();
   }
-  $: if (kind || type || tool || subagent || rootSession || tagFilter || runner || event || sortKey || sortDir || page || pageSize) {
+  $: if (kind || type || tool || subagent || rootSession || tagFilter || runner || event || attempt || sortKey || sortDir || page || pageSize) {
     fetchEntries();
   }
 
@@ -158,6 +221,173 @@
       console.error('Failed to load analyses:', err);
     } finally {
       loadingAnalyses = false;
+    }
+  }
+
+  async function loadTaskRuns() {
+    try {
+      loadingTaskRuns = true;
+      const filters = {
+        pageSize: 100,
+        source: "derived_attempt",
+        status: taskRunStatusFilter !== "all" ? taskRunStatusFilter : undefined,
+        runner: taskRunRunnerFilter !== "all" ? taskRunRunnerFilter : undefined,
+        query: taskRunQuery || undefined,
+        canonical_outcome_label: taskRunCanonicalOutcomeFilter !== "all" ? taskRunCanonicalOutcomeFilter : undefined,
+        failure_mode: taskRunFailureModeFilter !== "all" ? taskRunFailureModeFilter : undefined,
+        failure_subtype: taskRunFailureSubtypeFilter !== "all" ? taskRunFailureSubtypeFilter : undefined,
+        requires_human_intervention: taskRunHumanInterventionFilter === "all" ? undefined : taskRunHumanInterventionFilter
+      };
+
+      const [result, summary] = await Promise.all([
+        api.getTaskRuns(filters),
+        api.getTaskRunOutcomeSummary(filters)
+      ]);
+      taskRuns = result.taskRuns;
+      taskRunsTotal = result.total;
+      taskRunOutcomeSummary = summary;
+
+      if (selectedTaskRun?.id) {
+        const updated = result.taskRuns.find(run => run.id === selectedTaskRun.id);
+        if (updated) {
+          selectedTaskRun = await api.getTaskRun(updated.id);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load task runs:', err);
+      taskRunOutcomeSummary = null;
+    } finally {
+      loadingTaskRuns = false;
+    }
+  }
+
+  async function loadOutcomeTaxonomy() {
+    try {
+      outcomeTaxonomy = await api.getOutcomeTaxonomy();
+    } catch (err) {
+      console.error("Failed to load outcome taxonomy:", err);
+      outcomeTaxonomy = null;
+    }
+  }
+
+  function toggleNoCanonicalFilter() {
+    taskRunCanonicalOutcomeFilter = taskRunCanonicalOutcomeFilter === "none" ? "all" : "none";
+    if (taskRunCanonicalOutcomeFilter === "none") {
+      taskRunFailureModeFilter = "all";
+      taskRunFailureSubtypeFilter = "all";
+      taskRunHumanInterventionFilter = "all";
+    }
+  }
+
+  function toggleRequiresHumanFilter() {
+    taskRunHumanInterventionFilter = taskRunHumanInterventionFilter === "true" ? "all" : "true";
+    if (taskRunHumanInterventionFilter === "true" && taskRunCanonicalOutcomeFilter === "none") {
+      taskRunCanonicalOutcomeFilter = "all";
+    }
+  }
+
+  function normalizeTaskRunFailureSubtypeFilter() {
+    const values = taskRunFailureModeFilter !== "all"
+      ? (failureTaxonomy[taskRunFailureModeFilter] || [])
+      : [...new Set(Object.values(failureTaxonomy).flat())];
+    if (taskRunFailureSubtypeFilter !== "all" && !values.includes(taskRunFailureSubtypeFilter)) {
+      taskRunFailureSubtypeFilter = "all";
+    }
+  }
+
+  function handleTaskRunCanonicalOutcomeFilterChange() {
+    if (taskRunCanonicalOutcomeFilter === "none") {
+      taskRunFailureModeFilter = "all";
+      taskRunFailureSubtypeFilter = "all";
+      taskRunHumanInterventionFilter = "all";
+    }
+  }
+
+  function handleTaskRunFailureModeFilterChange() {
+    if (taskRunFailureModeFilter !== "all" && taskRunCanonicalOutcomeFilter === "none") {
+      taskRunCanonicalOutcomeFilter = "all";
+    }
+    normalizeTaskRunFailureSubtypeFilter();
+  }
+
+  function handleTaskRunHumanInterventionFilterChange() {
+    if (taskRunHumanInterventionFilter !== "all" && taskRunCanonicalOutcomeFilter === "none") {
+      taskRunCanonicalOutcomeFilter = "all";
+    }
+  }
+
+  async function deriveTaskRunsNow() {
+    try {
+      loadingTaskRuns = true;
+      await api.deriveTaskRuns();
+      await loadTaskRuns();
+    } catch (err) {
+      console.error('Failed to derive task runs:', err);
+      alert('Failed to derive task runs');
+    } finally {
+      loadingTaskRuns = false;
+    }
+  }
+
+  async function viewTaskRun(id) {
+    try {
+      selectedTaskRun = await api.getTaskRun(id);
+    } catch (err) {
+      console.error('Failed to load task run:', err);
+      alert('Failed to load task run');
+    }
+  }
+
+  function resetOutcomeForm() {
+    taskRunOutcome = createDefaultOutcomeForm();
+  }
+
+  function handleOutcomeLabelChange() {
+    const requiredFailureLabels = outcomeTaxonomy?.requires_failure_mode_for || fallbackRequiredFailureLabels;
+    if (!requiredFailureLabels.includes(taskRunOutcome.outcome_label)) {
+      taskRunOutcome = { ...taskRunOutcome, failure_mode: "", failure_subtype: "" };
+    }
+  }
+
+  function handleFailureModeChange() {
+    const taxonomy = outcomeTaxonomy?.failure_taxonomy || fallbackFailureTaxonomy;
+    const allowedSubtypes = taskRunOutcome.failure_mode
+      ? (taxonomy[taskRunOutcome.failure_mode] || [])
+      : [];
+    if (!allowedSubtypes.includes(taskRunOutcome.failure_subtype)) {
+      taskRunOutcome = { ...taskRunOutcome, failure_subtype: "" };
+    }
+  }
+
+  async function saveTaskRunOutcome() {
+    if (!selectedTaskRun) return;
+    if (requiresFailureMode && !taskRunOutcome.failure_mode) {
+      alert("Failure mode is required for this outcome label.");
+      return;
+    }
+
+    try {
+      await api.createOutcome(selectedTaskRun.id, {
+        evaluation_type: taskRunOutcome.evaluation_type,
+        outcome_label: taskRunOutcome.outcome_label,
+        correctness_score: taskRunOutcome.correctness_score === "" ? null : Number(taskRunOutcome.correctness_score),
+        safety_score: taskRunOutcome.safety_score === "" ? null : Number(taskRunOutcome.safety_score),
+        efficiency_score: taskRunOutcome.efficiency_score === "" ? null : Number(taskRunOutcome.efficiency_score),
+        reproducibility_score: taskRunOutcome.reproducibility_score === "" ? null : Number(taskRunOutcome.reproducibility_score),
+        requires_human_intervention: taskRunOutcome.requires_human_intervention,
+        failure_mode: taskRunOutcome.failure_mode || undefined,
+        failure_subtype: taskRunOutcome.failure_subtype || undefined,
+        notes: taskRunOutcome.notes || undefined,
+        evaluator: taskRunOutcome.evaluator || undefined,
+        is_canonical: taskRunOutcome.is_canonical
+      });
+
+      selectedTaskRun = await api.getTaskRun(selectedTaskRun.id);
+      await loadTaskRuns();
+      resetOutcomeForm();
+    } catch (err) {
+      console.error('Failed to save outcome:', err);
+      alert(err.message);
     }
   }
 
@@ -202,6 +432,13 @@
   function handleNewEvent(newEvent) {
     // Update stats
     stats.total++;
+
+    // Attempt-level filtering depends on derived task_run mappings from backend,
+    // so use canonical refresh instead of incremental updates.
+    if (attempt !== "all") {
+      scheduleLiveRefresh();
+      return;
+    }
 
     // Check if event matches current filters
     if (!matchesFilters(newEvent)) return;
@@ -271,6 +508,7 @@
         tag: tagFilter !== "all" ? tagFilter : undefined,
         runner: runner !== "all" ? runner : undefined,
         event: event !== "all" ? event : undefined,
+        attempt: attempt !== "all" ? attempt : undefined,
         query: query || undefined,
         sortKey,
         sortDir
@@ -619,6 +857,11 @@ ${analysisResult.analysis}
     ...facets.events.map((e) => ({ value: e, label: e })),
   ];
 
+  $: attemptOptions = [
+    { value: "all", label: "All attempts" },
+    ...facets.attempts.map((a) => ({ value: a, label: a })),
+  ];
+
   $: sortKeyOptions = [
     { value: "ts", label: "Timestamp" },
     { value: "durationMs", label: "Duration" },
@@ -640,6 +883,117 @@ ${analysisResult.analysis}
 
   function subagentLabel(e) {
     return e?.data?.agentType || e?.data?.agentId || e?.subagentType || "lead";
+  }
+
+  function shortAttemptLabel(attemptKey) {
+    if (!attemptKey) return "";
+    const marker = "::attempt:";
+    const idx = attemptKey.indexOf(marker);
+    if (idx === -1) return attemptKey;
+    const number = attemptKey.slice(idx + marker.length);
+    return `attempt ${number}`;
+  }
+
+  $: taskRunStatusOptions = [
+    { value: "all", label: "All statuses" },
+    { value: "running", label: "Running" },
+    { value: "completed", label: "Completed" },
+    { value: "failed", label: "Failed" },
+    { value: "cancelled", label: "Cancelled" },
+    { value: "timed_out", label: "Timed out" },
+  ];
+
+  $: taskRunRunnerOptions = [
+    { value: "all", label: "All runners" },
+    ...facets.runners.map((r) => ({ value: r, label: r })),
+  ];
+
+  $: evaluationTypes = outcomeTaxonomy?.evaluation_types || fallbackEvaluationTypes;
+  $: outcomeLabels = outcomeTaxonomy?.outcome_labels || fallbackOutcomeLabels;
+  $: failureTaxonomy = outcomeTaxonomy?.failure_taxonomy || fallbackFailureTaxonomy;
+  $: failureModes = outcomeTaxonomy?.failure_modes || fallbackFailureModes;
+  $: requiredFailureLabels = outcomeTaxonomy?.requires_failure_mode_for || fallbackRequiredFailureLabels;
+  $: requiresFailureMode = requiredFailureLabels.includes(taskRunOutcome.outcome_label);
+  $: shouldShowFailureFields = requiresFailureMode || !!taskRunOutcome.failure_mode || !!taskRunOutcome.failure_subtype;
+  $: selectedFailureSubtypes = taskRunOutcome.failure_mode
+    ? (failureTaxonomy[taskRunOutcome.failure_mode] || [])
+    : [];
+
+  $: outcomeLabelOptions = [
+    ...outcomeLabels.map((value) => ({
+      value,
+      label: value.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase())
+    }))
+  ];
+
+  $: evaluationTypeOptions = [
+    ...evaluationTypes.map((value) => ({
+      value,
+      label: value.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase())
+    })),
+  ];
+
+  $: failureModeOptions = [
+    { value: "", label: "Select failure mode" },
+    ...failureModes.map((value) => ({
+      value,
+      label: value.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase())
+    })),
+  ];
+
+  $: failureSubtypeOptions = [
+    { value: "", label: "Select failure subtype" },
+    ...selectedFailureSubtypes.map((value) => ({
+      value,
+      label: value.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase())
+    })),
+  ];
+
+  $: taskRunCanonicalOutcomeOptions = [
+    { value: "all", label: "All canonical outcomes" },
+    { value: "none", label: "No canonical outcome" },
+    ...outcomeLabels.map((value) => ({
+      value,
+      label: value.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase())
+    }))
+  ];
+
+  $: taskRunFailureModeOptions = [
+    { value: "all", label: "All failure modes" },
+    ...failureModes.map((value) => ({
+      value,
+      label: value.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase())
+    }))
+  ];
+
+  $: taskRunFailureSubtypeValues = taskRunFailureModeFilter !== "all"
+    ? (failureTaxonomy[taskRunFailureModeFilter] || [])
+    : [...new Set(Object.values(failureTaxonomy).flat())].sort();
+
+  $: taskRunFailureSubtypeOptions = [
+    { value: "all", label: "All failure subtypes" },
+    ...taskRunFailureSubtypeValues.map((value) => ({
+      value,
+      label: value.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase())
+    }))
+  ];
+
+  $: taskRunHumanInterventionOptions = [
+    { value: "all", label: "All human intervention states" },
+    { value: "true", label: "Requires human intervention" },
+    { value: "false", label: "Does not require intervention" }
+  ];
+
+  $: if (
+    taskRunStatusFilter ||
+    taskRunRunnerFilter ||
+    taskRunQuery !== undefined ||
+    taskRunCanonicalOutcomeFilter ||
+    taskRunFailureModeFilter ||
+    taskRunFailureSubtypeFilter ||
+    taskRunHumanInterventionFilter
+  ) {
+    loadTaskRuns();
   }
 </script>
 
@@ -698,6 +1052,12 @@ ${analysisResult.analysis}
       <TabsList class="w-full md:w-auto">
         <TabsTrigger value="events" class="gap-2">
           <Search class="w-4 h-4" /> Events
+        </TabsTrigger>
+        <TabsTrigger value="task-runs" class="gap-2">
+          <FileText class="w-4 h-4" /> Task Runs
+          {#if taskRunsTotal > 0}
+            <Badge variant="secondary" class="ml-1 text-xs">{taskRunsTotal}</Badge>
+          {/if}
         </TabsTrigger>
         <TabsTrigger value="analyses" class="gap-2">
           <Sparkles class="w-4 h-4" /> Analyses
@@ -758,6 +1118,10 @@ ${analysisResult.analysis}
           <div class="md:col-span-1 space-y-1">
             <Label>Tag</Label>
             <Select bind:value={tagFilter} options={tagFilterOptions} />
+          </div>
+          <div class="md:col-span-2 space-y-1">
+            <Label>Attempt</Label>
+            <Select bind:value={attempt} options={attemptOptions} />
           </div>
         </div>
 
@@ -960,7 +1324,16 @@ ${analysisResult.analysis}
                           <div class="text-[10px] uppercase tracking-wide text-amber-800">token telemetry</div>
                         </div>
                       {:else}
-                        {tool || "—"}
+                        <div class="space-y-1">
+                          <div>{tool || "—"}</div>
+                          {#if e.attemptKey}
+                            <div title={e.attemptKey}>
+                              <Badge variant="outline" class="rounded-full text-[10px] px-2 py-0">
+                                {shortAttemptLabel(e.attemptKey)}
+                              </Badge>
+                            </div>
+                          {/if}
+                        </div>
                       {/if}
                     </td>
                     <td class="px-4 py-3 text-xs" on:click={() => selectEntry(key)}>
@@ -1243,6 +1616,428 @@ ${analysisResult.analysis}
         </CardContent>
       </Card>
     </div>
+      </TabsContent>
+
+      <TabsContent value="task-runs">
+        <Card class="rounded-2xl shadow-sm">
+          <CardContent class="p-4 md:p-5 space-y-4">
+            <div class="flex items-center justify-between gap-4 flex-wrap">
+              <div>
+                <h2 class="text-lg font-semibold">Task Runs</h2>
+                <div class="text-sm text-muted-foreground">
+                  Derived from root sessions and used as the base unit for outcomes and benchmarks.
+                </div>
+              </div>
+              <div class="flex gap-2">
+                <Button variant="outline" size="sm" on:click={loadTaskRuns} disabled={loadingTaskRuns}>
+                  {loadingTaskRuns ? 'Loading...' : 'Refresh'}
+                </Button>
+                <Button variant="secondary" size="sm" on:click={deriveTaskRunsNow} disabled={loadingTaskRuns}>
+                  Derive from events
+                </Button>
+              </div>
+            </div>
+
+            <Separator />
+
+            <div class="grid grid-cols-1 md:grid-cols-12 gap-3">
+              <div class="md:col-span-5 space-y-1">
+                <Label>Search</Label>
+                <Input bind:value={taskRunQuery} placeholder="Search task key, title, description, root session..." />
+              </div>
+              <div class="md:col-span-3 space-y-1">
+                <Label>Status</Label>
+                <Select bind:value={taskRunStatusFilter} options={taskRunStatusOptions} />
+              </div>
+              <div class="md:col-span-4 space-y-1">
+                <Label>Runner</Label>
+                <Select bind:value={taskRunRunnerFilter} options={taskRunRunnerOptions} />
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-12 gap-3">
+              <div class="md:col-span-3 space-y-1">
+                <Label>Canonical outcome</Label>
+                <Select
+                  bind:value={taskRunCanonicalOutcomeFilter}
+                  options={taskRunCanonicalOutcomeOptions}
+                  on:change={handleTaskRunCanonicalOutcomeFilterChange}
+                />
+              </div>
+              <div class="md:col-span-3 space-y-1">
+                <Label>Failure mode</Label>
+                <Select
+                  bind:value={taskRunFailureModeFilter}
+                  options={taskRunFailureModeOptions}
+                  on:change={handleTaskRunFailureModeFilterChange}
+                />
+              </div>
+              <div class="md:col-span-3 space-y-1">
+                <Label>Failure subtype</Label>
+                <Select
+                  bind:value={taskRunFailureSubtypeFilter}
+                  options={taskRunFailureSubtypeOptions}
+                  on:change={normalizeTaskRunFailureSubtypeFilter}
+                />
+              </div>
+              <div class="md:col-span-3 space-y-1">
+                <Label>Human intervention</Label>
+                <Select
+                  bind:value={taskRunHumanInterventionFilter}
+                  options={taskRunHumanInterventionOptions}
+                  on:change={handleTaskRunHumanInterventionFilterChange}
+                />
+              </div>
+            </div>
+
+            <div class="flex gap-2 flex-wrap">
+              <Button
+                variant={taskRunCanonicalOutcomeFilter === "none" ? "default" : "outline"}
+                size="sm"
+                on:click={toggleNoCanonicalFilter}
+              >
+                No canonical outcome
+              </Button>
+              <Button
+                variant={taskRunHumanInterventionFilter === "true" ? "default" : "outline"}
+                size="sm"
+                on:click={toggleRequiresHumanFilter}
+              >
+                Requires human intervention
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card class="rounded-2xl shadow-sm">
+          <CardContent class="p-4 md:p-5 space-y-4">
+            <div class="flex items-center justify-between gap-2">
+              <div class="text-base font-semibold">Outcome Summary</div>
+              {#if loadingTaskRuns}
+                <Badge variant="outline">Updating…</Badge>
+              {/if}
+            </div>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div class="rounded-xl border p-3 bg-muted/10">
+                <div class="text-xs text-muted-foreground">Task runs</div>
+                <div class="text-xl font-semibold">{taskRunOutcomeSummary?.totals?.task_runs ?? 0}</div>
+              </div>
+              <div class="rounded-xl border p-3 bg-muted/10">
+                <div class="text-xs text-muted-foreground">With canonical outcome</div>
+                <div class="text-xl font-semibold">{taskRunOutcomeSummary?.totals?.with_canonical_outcome ?? 0}</div>
+              </div>
+              <div class="rounded-xl border p-3 bg-muted/10">
+                <div class="text-xs text-muted-foreground">No canonical outcome</div>
+                <div class="text-xl font-semibold">{taskRunOutcomeSummary?.totals?.no_canonical_outcome ?? 0}</div>
+              </div>
+              <div class="rounded-xl border p-3 bg-muted/10">
+                <div class="text-xs text-muted-foreground">Needs intervention</div>
+                <div class="text-xl font-semibold">{taskRunOutcomeSummary?.totals?.requires_human_intervention ?? 0}</div>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+              <div class="rounded-xl border p-3 space-y-2">
+                <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">By outcome</div>
+                {#if taskRunOutcomeSummary?.by_outcome_label?.length}
+                  <div class="space-y-1">
+                    {#each taskRunOutcomeSummary.by_outcome_label as bucket (bucket.value)}
+                      <div class="flex items-center justify-between text-sm">
+                        <span>{bucket.value}</span>
+                        <Badge variant="outline">{bucket.count}</Badge>
+                      </div>
+                    {/each}
+                  </div>
+                {:else}
+                  <div class="text-xs text-muted-foreground">No canonical outcomes in current scope.</div>
+                {/if}
+              </div>
+              <div class="rounded-xl border p-3 space-y-2">
+                <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">By failure mode</div>
+                {#if taskRunOutcomeSummary?.by_failure_mode?.length}
+                  <div class="space-y-1">
+                    {#each taskRunOutcomeSummary.by_failure_mode as bucket (bucket.value)}
+                      <div class="flex items-center justify-between text-sm">
+                        <span>{bucket.value}</span>
+                        <Badge variant="outline">{bucket.count}</Badge>
+                      </div>
+                    {/each}
+                  </div>
+                {:else}
+                  <div class="text-xs text-muted-foreground">No failure modes in current scope.</div>
+                {/if}
+              </div>
+              <div class="rounded-xl border p-3 space-y-2">
+                <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">By failure subtype</div>
+                {#if taskRunOutcomeSummary?.by_failure_subtype?.length}
+                  <div class="space-y-1">
+                    {#each taskRunOutcomeSummary.by_failure_subtype as bucket (bucket.value)}
+                      <div class="flex items-center justify-between text-sm">
+                        <span>{bucket.value}</span>
+                        <Badge variant="outline">{bucket.count}</Badge>
+                      </div>
+                    {/each}
+                  </div>
+                {:else}
+                  <div class="text-xs text-muted-foreground">No failure subtypes in current scope.</div>
+                {/if}
+              </div>
+              <div class="rounded-xl border p-3 space-y-2">
+                <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">By evaluation type</div>
+                {#if taskRunOutcomeSummary?.by_evaluation_type?.length}
+                  <div class="space-y-1">
+                    {#each taskRunOutcomeSummary.by_evaluation_type as bucket (bucket.value)}
+                      <div class="flex items-center justify-between text-sm">
+                        <span>{bucket.value}</span>
+                        <Badge variant="outline">{bucket.count}</Badge>
+                      </div>
+                    {/each}
+                  </div>
+                {:else}
+                  <div class="text-xs text-muted-foreground">No evaluations in current scope.</div>
+                {/if}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <div class="grid grid-cols-1 xl:grid-cols-[1fr_520px] gap-4">
+          <Card class="rounded-2xl shadow-sm">
+            <CardContent class="p-0">
+              <div class="flex items-center justify-between p-4 bg-muted/5">
+                <div class="text-base font-semibold">Runs</div>
+                <div class="text-sm text-muted-foreground">{taskRunsTotal} total</div>
+              </div>
+              <Separator />
+
+              {#if loadingTaskRuns}
+                <div class="p-6 text-sm text-muted-foreground">Loading task runs...</div>
+              {:else if taskRuns.length === 0}
+                <div class="p-6 text-sm text-muted-foreground">
+                  No task runs yet. Click "Derive from events" to backfill them from existing sessions.
+                </div>
+              {:else}
+                <div class="divide-y">
+                  {#each taskRuns as run (run.id)}
+                    <button
+                      type="button"
+                      class="w-full text-left p-4 hover:bg-muted/20 transition-colors {selectedTaskRun?.id === run.id ? 'bg-blue-50' : ''}"
+                      on:click={() => viewTaskRun(run.id)}
+                    >
+                      <div class="flex items-start justify-between gap-4">
+                        <div class="space-y-2 min-w-0">
+                          <div class="font-medium truncate">{run.title || run.task_key}</div>
+                          <div class="text-xs text-muted-foreground font-mono break-all">{run.task_key}</div>
+                          <div class="flex flex-wrap gap-2">
+                            <Badge variant="outline">{run.runner || 'unknown'}</Badge>
+                            <Badge variant="secondary">{run.status}</Badge>
+                            <Badge variant="outline">{run.total_events} events</Badge>
+                            <Badge variant="outline">{run.total_tool_calls} tools</Badge>
+                          </div>
+                        </div>
+                        <div class="text-right text-xs text-muted-foreground space-y-1 flex-shrink-0">
+                          <div>{formatTs(run.started_at)}</div>
+                          <div>{run.total_duration_ms || 0}ms tool time</div>
+                          {#if run.estimated_cost}
+                            <div>${run.estimated_cost.toFixed(4)}</div>
+                          {/if}
+                        </div>
+                      </div>
+                    </button>
+                  {/each}
+                </div>
+              {/if}
+            </CardContent>
+          </Card>
+
+          <Card class="rounded-2xl shadow-sm">
+            <CardContent class="p-4 space-y-4">
+              <div class="flex items-start justify-between gap-2">
+                <div>
+                  <div class="text-base font-semibold">Task Run Detail</div>
+                  <div class="text-xs text-muted-foreground break-all font-mono mt-1">
+                    {selectedTaskRun ? selectedTaskRun.task_key : "Select a task run"}
+                  </div>
+                </div>
+                {#if selectedTaskRun}
+                  <Button variant="ghost" on:click={() => selectedTaskRun = null} class="h-8 w-8 p-0">
+                    <X class="w-4 h-4" />
+                  </Button>
+                {/if}
+              </div>
+
+              {#if selectedTaskRun}
+                <div class="space-y-3">
+                  <div class="flex flex-wrap gap-2">
+                    <Badge variant="outline">{selectedTaskRun.runner || 'unknown'}</Badge>
+                    <Badge variant="secondary">{selectedTaskRun.status}</Badge>
+                    <Badge variant="outline">{selectedTaskRun.total_events} events</Badge>
+                    <Badge variant="outline">{selectedTaskRun.total_tool_calls} tools</Badge>
+                    <Badge variant="outline">{selectedTaskRun.distinct_tools} distinct tools</Badge>
+                  </div>
+
+                  <div class="grid grid-cols-2 gap-3 text-sm">
+                    <div>
+                      <div class="text-muted-foreground">Started</div>
+                      <div class="font-medium">{formatTs(selectedTaskRun.started_at)}</div>
+                    </div>
+                    <div>
+                      <div class="text-muted-foreground">Ended</div>
+                      <div class="font-medium">{formatTs(selectedTaskRun.ended_at)}</div>
+                    </div>
+                    <div>
+                      <div class="text-muted-foreground">Errors</div>
+                      <div class="font-medium">{selectedTaskRun.error_count}</div>
+                    </div>
+                    <div>
+                      <div class="text-muted-foreground">Interrupts</div>
+                      <div class="font-medium">{selectedTaskRun.interrupt_count}</div>
+                    </div>
+                    <div>
+                      <div class="text-muted-foreground">Input tokens</div>
+                      <div class="font-medium">{selectedTaskRun.token_input.toLocaleString()}</div>
+                    </div>
+                    <div>
+                      <div class="text-muted-foreground">Output tokens</div>
+                      <div class="font-medium">{selectedTaskRun.token_output.toLocaleString()}</div>
+                    </div>
+                  </div>
+
+                  {#if selectedTaskRun.metadata?.tools?.length}
+                    <div>
+                      <div class="text-sm text-muted-foreground mb-2">Tools</div>
+                      <div class="flex flex-wrap gap-2">
+                        {#each selectedTaskRun.metadata.tools as toolName}
+                          <Badge variant="outline" class="font-mono text-xs">{toolName}</Badge>
+                        {/each}
+                      </div>
+                    </div>
+                  {/if}
+                </div>
+
+                <Separator />
+
+                <div class="space-y-3">
+                  <div class="flex items-center justify-between">
+                    <div class="font-medium">Outcomes</div>
+                    <Badge variant="secondary">{selectedTaskRun.outcomes?.length || 0}</Badge>
+                  </div>
+
+                  {#if selectedTaskRun.outcomes?.length}
+                    <div class="space-y-2">
+                      {#each selectedTaskRun.outcomes as outcome (outcome.id)}
+                        <div class="rounded-xl border p-3 space-y-2 bg-muted/10">
+                          <div class="flex flex-wrap gap-2 items-center">
+                            <Badge variant="secondary">{outcome.outcome_label}</Badge>
+                            <Badge variant="outline">{outcome.evaluation_type}</Badge>
+                            {#if outcome.is_canonical}
+                              <Badge variant="outline">canonical</Badge>
+                            {/if}
+                            {#if outcome.requires_human_intervention}
+                              <Badge variant="outline">human intervention</Badge>
+                            {/if}
+                          </div>
+                          <div class="text-xs text-muted-foreground">
+                            {formatTs(outcome.evaluated_at)}{#if outcome.evaluator} by {outcome.evaluator}{/if}
+                          </div>
+                          {#if outcome.failure_mode}
+                            <div class="text-sm"><span class="font-medium">Failure mode:</span> {outcome.failure_mode}</div>
+                          {/if}
+                          {#if outcome.notes}
+                            <div class="text-sm whitespace-pre-wrap">{outcome.notes}</div>
+                          {/if}
+                        </div>
+                      {/each}
+                    </div>
+                  {:else}
+                    <div class="text-sm text-muted-foreground">No outcomes recorded yet.</div>
+                  {/if}
+                </div>
+
+                <Separator />
+
+                <div class="space-y-3">
+                  <div class="font-medium">Add Outcome</div>
+
+                  <div class="grid grid-cols-2 gap-3">
+                    <div class="space-y-1">
+                      <Label>Evaluation type</Label>
+                      <Select bind:value={taskRunOutcome.evaluation_type} options={evaluationTypeOptions} />
+                    </div>
+                    <div class="space-y-1">
+                      <Label>Outcome</Label>
+                      <Select bind:value={taskRunOutcome.outcome_label} options={outcomeLabelOptions} on:change={handleOutcomeLabelChange} />
+                      <div class="text-xs text-muted-foreground">
+                        {outcomeLabelHelp[taskRunOutcome.outcome_label]}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="grid grid-cols-2 gap-3">
+                    <div class="space-y-1">
+                      <Label>Correctness</Label>
+                      <Input bind:value={taskRunOutcome.correctness_score} type="number" min="0" max="1" step="0.1" placeholder="0.0 - 1.0" />
+                    </div>
+                    <div class="space-y-1">
+                      <Label>Safety</Label>
+                      <Input bind:value={taskRunOutcome.safety_score} type="number" min="0" max="1" step="0.1" placeholder="0.0 - 1.0" />
+                    </div>
+                    <div class="space-y-1">
+                      <Label>Efficiency</Label>
+                      <Input bind:value={taskRunOutcome.efficiency_score} type="number" min="0" max="1" step="0.1" placeholder="0.0 - 1.0" />
+                    </div>
+                    <div class="space-y-1">
+                      <Label>Reproducibility</Label>
+                      <Input bind:value={taskRunOutcome.reproducibility_score} type="number" min="0" max="1" step="0.1" placeholder="0.0 - 1.0" />
+                    </div>
+                  </div>
+
+                  {#if shouldShowFailureFields}
+                    <div class="grid grid-cols-2 gap-3">
+                      <div class="space-y-1">
+                        <Label>Failure mode{requiresFailureMode ? " *" : ""}</Label>
+                        <Select bind:value={taskRunOutcome.failure_mode} options={failureModeOptions} on:change={handleFailureModeChange} />
+                      </div>
+                      <div class="space-y-1">
+                        <Label>Failure subtype</Label>
+                        <Select bind:value={taskRunOutcome.failure_subtype} options={failureSubtypeOptions} />
+                      </div>
+                    </div>
+                  {/if}
+
+                  <div class="space-y-1">
+                    <Label>Evaluator</Label>
+                    <Input bind:value={taskRunOutcome.evaluator} placeholder="web-ui" />
+                  </div>
+
+                  <label class="flex items-center gap-2 text-sm">
+                    <input bind:checked={taskRunOutcome.requires_human_intervention} type="checkbox" class="w-4 h-4" />
+                    Requires human intervention
+                  </label>
+
+                  <label class="flex items-center gap-2 text-sm">
+                    <input bind:checked={taskRunOutcome.is_canonical} type="checkbox" class="w-4 h-4" />
+                    Mark as canonical outcome
+                  </label>
+
+                  <div class="space-y-1">
+                    <Label>Notes</Label>
+                    <Textarea bind:value={taskRunOutcome.notes} class="min-h-[120px]" placeholder="Assessment notes, evidence summary, failure explanation..." />
+                  </div>
+
+                  <div class="flex gap-2">
+                    <Button on:click={saveTaskRunOutcome}>Save outcome</Button>
+                    <Button variant="outline" on:click={resetOutcomeForm}>Reset</Button>
+                  </div>
+                </div>
+              {:else}
+                <div class="text-sm text-muted-foreground">
+                  Select a task run to inspect its summary and add outcomes.
+                </div>
+              {/if}
+            </CardContent>
+          </Card>
+        </div>
       </TabsContent>
 
       <!-- Analyses Tab Content -->
