@@ -137,6 +137,8 @@ Monitor and analyze AI agent activity in real-time:
 - **CLI bridge** - Select in UI, analyze in Claude Code, save back to UI
 - **Duration calculation** for performance insights
 - **Session correlation** across multiple agent invocations
+- **Attempt-based task runs** (derived from session boundaries and inactivity gaps)
+- **Events filter by attempt** in the web UI
 
 ### Data Management
 - Per-project SQLite database (`.suboculo/events.db`)
@@ -172,6 +174,19 @@ suboculo.js plugin
 2. **Secondary:** HTTP POST to `/api/notify` (triggers SSE if server running)
 
 This ensures events are never lost while enabling real-time updates when monitoring.
+
+## Task Runs: Attempt Semantics
+
+Task runs are derived as **attempts**, not one forever row per root session.
+
+- New attempt starts at `session.start`
+- New attempt starts after `session.end` when more events arrive
+- New attempt starts after inactivity gap (`45 minutes`)
+- Otherwise events stay in the same attempt
+
+Attempt keys use this format:
+
+`root:<rootSessionId>::attempt:<n>`
 
 ## Installation Details
 

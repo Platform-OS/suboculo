@@ -629,7 +629,9 @@ function splitRowsIntoAttemptRuns(rows) {
   let prevEvent = null;
 
   for (const row of rows) {
-    const isSessionStart = row.event === 'session.start';
+    // Ignore malformed session.start events without a concrete session identity.
+    // They should not create attempt boundaries.
+    const isSessionStart = row.event === 'session.start' && !!row.sessionID;
     const rowTsMs = row.ts ? Date.parse(row.ts) : NaN;
     const gapExceeded = Number.isFinite(prevTsMs) && Number.isFinite(rowTsMs)
       ? (rowTsMs - prevTsMs > ATTEMPT_IDLE_GAP_MS)

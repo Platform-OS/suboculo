@@ -885,6 +885,15 @@ ${analysisResult.analysis}
     return e?.data?.agentType || e?.data?.agentId || e?.subagentType || "lead";
   }
 
+  function shortAttemptLabel(attemptKey) {
+    if (!attemptKey) return "";
+    const marker = "::attempt:";
+    const idx = attemptKey.indexOf(marker);
+    if (idx === -1) return attemptKey;
+    const number = attemptKey.slice(idx + marker.length);
+    return `attempt ${number}`;
+  }
+
   $: taskRunStatusOptions = [
     { value: "all", label: "All statuses" },
     { value: "running", label: "Running" },
@@ -1318,7 +1327,11 @@ ${analysisResult.analysis}
                         <div class="space-y-1">
                           <div>{tool || "—"}</div>
                           {#if e.attemptKey}
-                            <div class="text-[10px] text-muted-foreground">{e.attemptKey}</div>
+                            <div title={e.attemptKey}>
+                              <Badge variant="outline" class="rounded-full text-[10px] px-2 py-0">
+                                {shortAttemptLabel(e.attemptKey)}
+                              </Badge>
+                            </div>
                           {/if}
                         </div>
                       {/if}
