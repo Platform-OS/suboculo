@@ -108,6 +108,8 @@
   let reliabilityKpis = null;
   let reliabilityKpisByRunner = null;
   let reliabilityTrends = null;
+  let kpiDefinitions = null;
+  let showKpiDefinitions = false;
   let reliabilityTrendBucket = "day";
   let reliabilityTrendWindowDays = "30";
   let outcomeTaxonomy = null;
@@ -176,6 +178,7 @@
   onMount(async () => {
     await loadData();
     await loadOutcomeTaxonomy();
+    await loadKpiDefinitions();
     await loadAnalyses();
     await loadTaskRuns();
 
@@ -294,6 +297,15 @@
     } catch (err) {
       console.error("Failed to load outcome taxonomy:", err);
       outcomeTaxonomy = null;
+    }
+  }
+
+  async function loadKpiDefinitions() {
+    try {
+      kpiDefinitions = await api.getKpiDefinitions();
+    } catch (err) {
+      console.error("Failed to load KPI definitions:", err);
+      kpiDefinitions = null;
     }
   }
 
@@ -708,6 +720,11 @@
       return `Week of ${date.toLocaleDateString()}`;
     }
     return date.toLocaleDateString();
+  }
+
+  function formatLabel(value) {
+    if (!value) return "";
+    return String(value).replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
   }
 
   function selectEntry(key) {
@@ -1762,10 +1779,37 @@ ${analysisResult.analysis}
           <CardContent class="p-4 md:p-5 space-y-4">
             <div class="flex items-center justify-between gap-2">
               <div class="text-base font-semibold">Runner Comparison</div>
-              {#if loadingTaskRuns}
-                <Badge variant="outline">Updating…</Badge>
-              {/if}
+              <div class="flex items-center gap-2">
+                <Button variant="outline" size="sm" on:click={() => showKpiDefinitions = !showKpiDefinitions}>
+                  {showKpiDefinitions ? "Hide metric definitions" : "Show metric definitions"}
+                </Button>
+                {#if loadingTaskRuns}
+                  <Badge variant="outline">Updating…</Badge>
+                {/if}
+              </div>
             </div>
+
+            {#if showKpiDefinitions}
+              <div class="rounded-xl border p-3 space-y-2 bg-muted/10">
+                <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">KPI Definitions</div>
+                {#if kpiDefinitions?.metrics}
+                  <div class="space-y-2">
+                    {#each Object.entries(kpiDefinitions.metrics) as [metric, definition] (metric)}
+                      <div class="text-xs space-y-1">
+                        <div class="font-medium">{formatLabel(metric)}</div>
+                        <div class="text-muted-foreground">Formula: {definition.formula}</div>
+                        <div class="text-muted-foreground">Null when: {definition.null_when}</div>
+                      </div>
+                    {/each}
+                  </div>
+                  <div class="text-xs text-muted-foreground">
+                    Guardrails: canonical sample >= {kpiDefinitions?.thresholds?.min_canonical_sample ?? "—"}, successful sample for cost >= {kpiDefinitions?.thresholds?.min_success_sample_for_cost ?? "—"}.
+                  </div>
+                {:else}
+                  <div class="text-xs text-muted-foreground">Metric definitions unavailable.</div>
+                {/if}
+              </div>
+            {/if}
 
             {#if reliabilityKpisByRunner?.by_runner?.length}
               <div class="overflow-auto rounded-xl border">
@@ -1780,6 +1824,7 @@ ${analysisResult.analysis}
                       <th class="px-3 py-2 text-right">Retry</th>
                       <th class="px-3 py-2 text-right">Intervention</th>
                       <th class="px-3 py-2 text-right">Cost/success</th>
+                      <th class="px-3 py-2 text-left">Flags</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1793,6 +1838,19 @@ ${analysisResult.analysis}
                         <td class="px-3 py-2 text-right">{formatPercent(row.rates?.retry_rate)}</td>
                         <td class="px-3 py-2 text-right">{formatPercent(row.rates?.intervention_rate)}</td>
                         <td class="px-3 py-2 text-right">{formatMoney(row.cost?.cost_per_success)}</td>
+                        <td class="px-3 py-2">
+                          {#if row.anomalies?.length}
+                            <div class="flex flex-wrap gap-1">
+                              {#each row.anomalies as anomaly (`${row.runner}-${anomaly.code}`)}
+                                <Badge variant={anomaly.severity === "high" ? "destructive" : "outline"} title={anomaly.message}>
+                                  {formatLabel(anomaly.code)}
+                                </Badge>
+                              {/each}
+                            </div>
+                          {:else}
+                            <span class="text-xs text-muted-foreground">—</span>
+                          {/if}
+                        </td>
                       </tr>
                     {/each}
                   </tbody>

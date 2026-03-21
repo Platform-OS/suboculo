@@ -342,6 +342,16 @@ export async function getReliabilityKpis(filters = {}) {
   return response.json();
 }
 
+export async function getKpiDefinitions() {
+  const response = await fetch(`${API_BASE}/reliability/kpi-definitions`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch KPI definitions');
+  }
+
+  return response.json();
+}
+
 export async function getReliabilityKpisByRunner(filters = {}) {
   const params = new URLSearchParams();
 

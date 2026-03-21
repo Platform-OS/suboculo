@@ -203,6 +203,22 @@ async function run() {
     assert.ok(result.body.total >= 1, 'attempt filter should return entries');
     assert.ok(result.body.entries.every((entry) => entry.attemptKey === attemptKey), 'all entries should match requested attempt');
 
+    result = await request('/reliability/kpi-definitions');
+    assert.equal(result.response.status, 200, 'kpi definitions endpoint should succeed');
+    assert.ok(result.body.metrics && result.body.metrics.success_rate, 'kpi definitions should include success_rate');
+    assert.ok(result.body.thresholds && result.body.thresholds.min_canonical_sample >= 1, 'kpi definitions should include thresholds');
+
+    result = await request('/reliability/kpis/by-runner?source=derived_attempt');
+    assert.equal(result.response.status, 200, 'reliability KPI by-runner endpoint should succeed');
+    assert.ok(Array.isArray(result.body.by_runner), 'KPI by-runner should return array');
+    assert.ok(result.body.by_runner.length >= 1, 'KPI by-runner should include at least one runner');
+    const smokeRunnerKpiBeforeOutcomes = result.body.by_runner.find((row) => row.runner === 'smoke-runner');
+    assert.ok(smokeRunnerKpiBeforeOutcomes, 'KPI by-runner should include smoke-runner before outcomes');
+    assert.equal(smokeRunnerKpiBeforeOutcomes.counts.with_canonical_outcome, 0, 'before outcomes canonical count should be zero');
+    assert.equal(smokeRunnerKpiBeforeOutcomes.rates.success_rate, null, 'success rate should be null without canonical outcomes');
+    assert.equal(smokeRunnerKpiBeforeOutcomes.cost.cost_per_success, null, 'cost per success should be null without successful runs');
+    assert.ok(smokeRunnerKpiBeforeOutcomes.anomalies.some((a) => a.code === 'no_canonical_outcomes'), 'should flag missing canonical outcomes');
+
     result = await request(`/task-runs/${smokeTaskRunId}/outcomes`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -247,11 +263,11 @@ async function run() {
 
     result = await request('/reliability/kpis/by-runner?source=derived_attempt');
     assert.equal(result.response.status, 200, 'reliability KPI by-runner endpoint should succeed');
-    assert.ok(Array.isArray(result.body.by_runner), 'KPI by-runner should return array');
-    assert.ok(result.body.by_runner.length >= 1, 'KPI by-runner should include at least one runner');
     const smokeRunnerKpi = result.body.by_runner.find((row) => row.runner === 'smoke-runner');
     assert.ok(smokeRunnerKpi, 'KPI by-runner should include smoke-runner');
     assert.equal(smokeRunnerKpi.counts.task_runs, 2, 'smoke-runner KPI should include two task runs');
+    assert.ok(smokeRunnerKpi.anomalies.some((a) => a.code === 'low_sample_size'), 'small canonical sample should be flagged');
+    assert.ok(smokeRunnerKpi.anomalies.some((a) => a.code === 'unstable_cost_per_success'), 'small success sample should flag unstable cost-per-success');
 
     result = await request('/reliability/trends?runner=smoke-runner&source=derived_attempt&bucket=day&window_days=7');
     assert.equal(result.response.status, 200, 'reliability trends endpoint should succeed');

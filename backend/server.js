@@ -77,6 +77,8 @@ const OUTCOME_LABELS_REQUIRING_FAILURE_MODE = new Set([
   'interrupted',
   'abandoned'
 ]);
+const KPI_MIN_CANONICAL_SAMPLE = 5;
+const KPI_MIN_SUCCESS_SAMPLE_FOR_COST = 3;
 const ATTEMPT_IDLE_GAP_MS = 45 * 60 * 1000;
 const gitRevisionCache = new Map();
 
@@ -700,6 +702,39 @@ function summarizeReliabilityKpis(rows) {
       output_per_run: ratio(tokenOutputTotal, totalRuns)
     }
   };
+}
+
+function deriveKpiAnomalies(kpiSummary) {
+  const counts = kpiSummary?.counts || {};
+  const withCanonical = Number(counts.with_canonical_outcome || 0);
+  const successCount = Number(counts.successful_runs || 0);
+  const anomalies = [];
+
+  if (withCanonical === 0) {
+    anomalies.push({
+      code: 'no_canonical_outcomes',
+      severity: 'high',
+      message: 'No canonical outcomes. Outcome-dependent rates are not interpretable.'
+    });
+  }
+
+  if (withCanonical > 0 && withCanonical < KPI_MIN_CANONICAL_SAMPLE) {
+    anomalies.push({
+      code: 'low_sample_size',
+      severity: 'medium',
+      message: `Only ${withCanonical} canonical outcomes. KPI stability is limited (recommended >= ${KPI_MIN_CANONICAL_SAMPLE}).`
+    });
+  }
+
+  if (successCount > 0 && successCount < KPI_MIN_SUCCESS_SAMPLE_FOR_COST) {
+    anomalies.push({
+      code: 'unstable_cost_per_success',
+      severity: 'medium',
+      message: `Only ${successCount} successful runs. Cost-per-success is unstable (recommended >= ${KPI_MIN_SUCCESS_SAMPLE_FOR_COST}).`
+    });
+  }
+
+  return anomalies;
 }
 
 function normalizeModelName(model) {
@@ -1404,6 +1439,48 @@ app.get('/api/reliability/kpis', (req, res) => {
   }
 });
 
+app.get('/api/reliability/kpi-definitions', (_req, res) => {
+  res.json({
+    version: '1.0',
+    thresholds: {
+      min_canonical_sample: KPI_MIN_CANONICAL_SAMPLE,
+      min_success_sample_for_cost: KPI_MIN_SUCCESS_SAMPLE_FOR_COST
+    },
+    metrics: {
+      success_rate: {
+        formula: 'successful_runs / with_canonical_outcome',
+        numerator: 'count(outcome_label = success, canonical only)',
+        denominator: 'count(canonical outcomes)',
+        null_when: 'with_canonical_outcome = 0'
+      },
+      first_pass_rate: {
+        formula: 'first_pass_success_runs / with_canonical_outcome',
+        numerator: 'count(success with retry_count = 0, canonical only)',
+        denominator: 'count(canonical outcomes)',
+        null_when: 'with_canonical_outcome = 0'
+      },
+      retry_rate: {
+        formula: 'retry_runs / task_runs',
+        numerator: 'count(task_runs with retry_count > 0)',
+        denominator: 'count(task_runs)',
+        null_when: 'task_runs = 0'
+      },
+      intervention_rate: {
+        formula: 'intervention_runs / with_canonical_outcome',
+        numerator: 'count(canonical outcomes with requires_human_intervention = 1)',
+        denominator: 'count(canonical outcomes)',
+        null_when: 'with_canonical_outcome = 0'
+      },
+      cost_per_success: {
+        formula: 'successful_estimated_cost / successful_runs',
+        numerator: 'sum(estimated_cost for canonical outcome_label = success)',
+        denominator: 'count(successful canonical outcomes)',
+        null_when: 'successful_runs = 0'
+      }
+    }
+  });
+});
+
 app.get('/api/reliability/kpis/by-runner', (req, res) => {
   try {
     const { whereSql, params } = buildTaskRunsWhereClause(req.query, 'tr');
@@ -1448,13 +1525,21 @@ app.get('/api/reliability/kpis/by-runner', (req, res) => {
 
     const by_runner = [...byRunnerMap.entries()]
       .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([runner, runnerRows]) => ({
-        runner,
-        ...summarizeReliabilityKpis(runnerRows)
-      }));
+      .map(([runner, runnerRows]) => {
+        const kpis = summarizeReliabilityKpis(runnerRows);
+        return {
+          runner,
+          ...kpis,
+          anomalies: deriveKpiAnomalies(kpis)
+        };
+      });
 
     res.json({
       total_runners: by_runner.length,
+      thresholds: {
+        min_canonical_sample: KPI_MIN_CANONICAL_SAMPLE,
+        min_success_sample_for_cost: KPI_MIN_SUCCESS_SAMPLE_FOR_COST
+      },
       by_runner
     });
   } catch (error) {
