@@ -106,6 +106,10 @@
   let taskRunsTotal = 0;
   let taskRunOutcomeSummary = null;
   let reliabilityKpis = null;
+  let reliabilityKpisByRunner = null;
+  let reliabilityTrends = null;
+  let reliabilityTrendBucket = "day";
+  let reliabilityTrendWindowDays = "30";
   let outcomeTaxonomy = null;
   let taskRunStatusFilter = "all";
   let taskRunRunnerFilter = "all";
@@ -130,6 +134,15 @@
   };
   const fallbackFailureModes = Object.keys(fallbackFailureTaxonomy);
   const fallbackRequiredFailureLabels = ["failure", "unsafe_success", "interrupted", "abandoned"];
+  const reliabilityTrendBucketOptions = [
+    { value: "day", label: "Daily" },
+    { value: "week", label: "Weekly" }
+  ];
+  const reliabilityTrendWindowOptions = [
+    { value: "14", label: "14 days" },
+    { value: "30", label: "30 days" },
+    { value: "60", label: "60 days" }
+  ];
 
   function createDefaultOutcomeForm() {
     return {
@@ -240,15 +253,23 @@
         requires_human_intervention: taskRunHumanInterventionFilter === "all" ? undefined : taskRunHumanInterventionFilter
       };
 
-      const [result, summary, kpis] = await Promise.all([
+      const [result, summary, kpis, kpisByRunner, trends] = await Promise.all([
         api.getTaskRuns(filters),
         api.getTaskRunOutcomeSummary(filters),
-        api.getReliabilityKpis(filters)
+        api.getReliabilityKpis(filters),
+        api.getReliabilityKpisByRunner(filters),
+        api.getReliabilityTrends({
+          ...filters,
+          bucket: reliabilityTrendBucket,
+          window_days: reliabilityTrendWindowDays
+        })
       ]);
       taskRuns = result.taskRuns;
       taskRunsTotal = result.total;
       taskRunOutcomeSummary = summary;
       reliabilityKpis = kpis;
+      reliabilityKpisByRunner = kpisByRunner;
+      reliabilityTrends = trends;
 
       if (selectedTaskRun?.id) {
         const updated = result.taskRuns.find(run => run.id === selectedTaskRun.id);
@@ -260,6 +281,8 @@
       console.error('Failed to load task runs:', err);
       taskRunOutcomeSummary = null;
       reliabilityKpis = null;
+      reliabilityKpisByRunner = null;
+      reliabilityTrends = null;
     } finally {
       loadingTaskRuns = false;
     }
@@ -677,6 +700,16 @@
     return `$${Number(value).toFixed(4)}`;
   }
 
+  function formatBucketStart(value, bucket = "day") {
+    if (!value) return "—";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+    if (bucket === "week") {
+      return `Week of ${date.toLocaleDateString()}`;
+    }
+    return date.toLocaleDateString();
+  }
+
   function selectEntry(key) {
     selectedKey = key;
     selected = pageItems.find(e => e.__key === key) || null;
@@ -1005,7 +1038,9 @@ ${analysisResult.analysis}
     taskRunCanonicalOutcomeFilter ||
     taskRunFailureModeFilter ||
     taskRunFailureSubtypeFilter ||
-    taskRunHumanInterventionFilter
+    taskRunHumanInterventionFilter ||
+    reliabilityTrendBucket ||
+    reliabilityTrendWindowDays
   ) {
     loadTaskRuns();
   }
@@ -1726,6 +1761,119 @@ ${analysisResult.analysis}
         <Card class="rounded-2xl shadow-sm">
           <CardContent class="p-4 md:p-5 space-y-4">
             <div class="flex items-center justify-between gap-2">
+              <div class="text-base font-semibold">Runner Comparison</div>
+              {#if loadingTaskRuns}
+                <Badge variant="outline">Updating…</Badge>
+              {/if}
+            </div>
+
+            {#if reliabilityKpisByRunner?.by_runner?.length}
+              <div class="overflow-auto rounded-xl border">
+                <table class="min-w-full text-sm">
+                  <thead class="bg-muted/20 text-xs text-muted-foreground uppercase tracking-wide">
+                    <tr>
+                      <th class="px-3 py-2 text-left">Runner</th>
+                      <th class="px-3 py-2 text-right">Runs</th>
+                      <th class="px-3 py-2 text-right">With outcome</th>
+                      <th class="px-3 py-2 text-right">Success</th>
+                      <th class="px-3 py-2 text-right">First-pass</th>
+                      <th class="px-3 py-2 text-right">Retry</th>
+                      <th class="px-3 py-2 text-right">Intervention</th>
+                      <th class="px-3 py-2 text-right">Cost/success</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {#each reliabilityKpisByRunner.by_runner as row (row.runner)}
+                      <tr class="border-t">
+                        <td class="px-3 py-2 font-medium">{row.runner}</td>
+                        <td class="px-3 py-2 text-right">{row.counts?.task_runs ?? 0}</td>
+                        <td class="px-3 py-2 text-right">{row.counts?.with_canonical_outcome ?? 0}</td>
+                        <td class="px-3 py-2 text-right">{formatPercent(row.rates?.success_rate)}</td>
+                        <td class="px-3 py-2 text-right">{formatPercent(row.rates?.first_pass_rate)}</td>
+                        <td class="px-3 py-2 text-right">{formatPercent(row.rates?.retry_rate)}</td>
+                        <td class="px-3 py-2 text-right">{formatPercent(row.rates?.intervention_rate)}</td>
+                        <td class="px-3 py-2 text-right">{formatMoney(row.cost?.cost_per_success)}</td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </div>
+            {:else}
+              <div class="text-sm text-muted-foreground">No runner comparison data in current scope.</div>
+            {/if}
+          </CardContent>
+        </Card>
+
+        <Card class="rounded-2xl shadow-sm">
+          <CardContent class="p-4 md:p-5 space-y-4">
+            <div class="flex items-center justify-between gap-3 flex-wrap">
+              <div class="text-base font-semibold">Reliability Trends</div>
+              <div class="flex gap-2">
+                <Select bind:value={reliabilityTrendBucket} options={reliabilityTrendBucketOptions} />
+                <Select bind:value={reliabilityTrendWindowDays} options={reliabilityTrendWindowOptions} />
+              </div>
+            </div>
+
+            {#if reliabilityTrends?.series?.length}
+              <div class="overflow-auto rounded-xl border">
+                <table class="min-w-full text-sm">
+                  <thead class="bg-muted/20 text-xs text-muted-foreground uppercase tracking-wide">
+                    <tr>
+                      <th class="px-3 py-2 text-left">Bucket</th>
+                      <th class="px-3 py-2 text-right">Runs</th>
+                      <th class="px-3 py-2 text-right">Success</th>
+                      <th class="px-3 py-2 text-right">Partial</th>
+                      <th class="px-3 py-2 text-right">Failure</th>
+                      <th class="px-3 py-2 text-right">Retry</th>
+                      <th class="px-3 py-2 text-right">Cost/success</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {#each [...reliabilityTrends.series].reverse() as bucketRow (bucketRow.bucket_start)}
+                      <tr class="border-t">
+                        <td class="px-3 py-2">{formatBucketStart(bucketRow.bucket_start, reliabilityTrends.bucket)}</td>
+                        <td class="px-3 py-2 text-right">{bucketRow.task_runs}</td>
+                        <td class="px-3 py-2 text-right">{formatPercent(bucketRow.success_rate)}</td>
+                        <td class="px-3 py-2 text-right">{formatPercent(bucketRow.partial_success_rate)}</td>
+                        <td class="px-3 py-2 text-right">{formatPercent(bucketRow.failure_rate)}</td>
+                        <td class="px-3 py-2 text-right">{formatPercent(bucketRow.retry_rate)}</td>
+                        <td class="px-3 py-2 text-right">{formatMoney(bucketRow.cost_per_success)}</td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </div>
+
+              {#if Object.keys(reliabilityTrends.by_runner || {}).length}
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {#each Object.entries(reliabilityTrends.by_runner) as [runnerName, runnerSeries] (runnerName)}
+                    <div class="rounded-xl border p-3 space-y-2">
+                      <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">{runnerName}</div>
+                      {#if runnerSeries.length}
+                        {#each [...runnerSeries].slice(-3).reverse() as runnerBucket (runnerBucket.bucket_start)}
+                          <div class="flex items-center justify-between text-sm">
+                            <span>{formatBucketStart(runnerBucket.bucket_start, reliabilityTrends.bucket)}</span>
+                            <span class="text-muted-foreground">{runnerBucket.task_runs} runs · {formatPercent(runnerBucket.success_rate)}</span>
+                          </div>
+                        {/each}
+                      {:else}
+                        <div class="text-xs text-muted-foreground">No buckets.</div>
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+            {:else}
+              <div class="text-sm text-muted-foreground">
+                No trend data in current scope.
+              </div>
+            {/if}
+          </CardContent>
+        </Card>
+
+        <Card class="rounded-2xl shadow-sm">
+          <CardContent class="p-4 md:p-5 space-y-4">
+            <div class="flex items-center justify-between gap-2">
               <div class="text-base font-semibold">Reliability KPIs</div>
               {#if loadingTaskRuns}
                 <Badge variant="outline">Updating…</Badge>
@@ -1968,6 +2116,18 @@ ${analysisResult.analysis}
                     <div>
                       <div class="text-muted-foreground">Output tokens</div>
                       <div class="font-medium">{selectedTaskRun.token_output.toLocaleString()}</div>
+                    </div>
+                    <div>
+                      <div class="text-muted-foreground">Model</div>
+                      <div class="font-medium break-all">{selectedTaskRun.model || "—"}</div>
+                    </div>
+                    <div>
+                      <div class="text-muted-foreground">Runner version</div>
+                      <div class="font-medium break-all">{selectedTaskRun.agent_system_version || selectedTaskRun.toolchain_version || "—"}</div>
+                    </div>
+                    <div class="col-span-2">
+                      <div class="text-muted-foreground">Git revision</div>
+                      <div class="font-medium break-all font-mono">{selectedTaskRun.git_revision || "—"}</div>
                     </div>
                   </div>
 

@@ -342,6 +342,42 @@ export async function getReliabilityKpis(filters = {}) {
   return response.json();
 }
 
+export async function getReliabilityKpisByRunner(filters = {}) {
+  const params = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== null) {
+      params.append(key, value);
+    }
+  }
+
+  const response = await fetch(`${API_BASE}/reliability/kpis/by-runner?${params}`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch reliability KPIs by runner');
+  }
+
+  return response.json();
+}
+
+export async function getReliabilityTrends(filters = {}) {
+  const params = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== null && value !== '') {
+      params.append(key, value);
+    }
+  }
+
+  const response = await fetch(`${API_BASE}/reliability/trends?${params}`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch reliability trends');
+  }
+
+  return response.json();
+}
+
 export async function createOutcome(taskRunId, outcome) {
   const response = await fetch(`${API_BASE}/task-runs/${taskRunId}/outcomes`, {
     method: 'POST',

@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "EVENT=$(jq -c '{ts: (now | todate), event: \"tool.end\", runner: \"claude-code\", sessionId: .session_id, traceId: .tool_use_id, data: {tool: .tool_name, status: \"success\", agentType: (.agent_type // .tool_input.subagent_type), agentId: .agent_id, args: (.tool_input | tojson | @base64), response: (.tool_response | tojson | @base64), transcriptPath: .transcript_path}}') && echo \"$EVENT\" | node \"$CLAUDE_PROJECT_DIR/.suboculo/integrations/claude-code/event-writer.mjs\" && (echo \"$EVENT\" | curl -s -X POST -H 'Content-Type: application/json' -d @- http://localhost:3000/api/notify 2>/dev/null || true)",
+            "command": "EVENT=$(jq -c '{ts: (now | todate), event: \"tool.end\", runner: \"claude-code\", sessionId: .session_id, traceId: .tool_use_id, data: {tool: .tool_name, status: \"success\", agentType: (.agent_type // .tool_input.subagent_type), agentId: .agent_id, runnerVersion: (.version // env.CLAUDE_CODE_VERSION // null), args: (.tool_input | tojson | @base64), response: (.tool_response | tojson | @base64), transcriptPath: .transcript_path}}') && echo \"$EVENT\" | node \"$CLAUDE_PROJECT_DIR/.suboculo/integrations/claude-code/event-writer.mjs\" && (echo \"$EVENT\" | curl -s -X POST -H 'Content-Type: application/json' -d @- http://localhost:3000/api/notify 2>/dev/null || true)",
             "timeout": 5
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "EVENT=$(jq -c '{ts: (now | todate), event: \"tool.end\", runner: \"claude-code\", sessionId: .session_id, traceId: .tool_use_id, data: {tool: .tool_name, status: \"error\", isInterrupt: (.is_interrupt // false), agentType: (.agent_type // .tool_input.subagent_type), agentId: .agent_id, args: (.tool_input | tojson | @base64), response: ((.error // \"unknown error\") | tojson | @base64), transcriptPath: .transcript_path}}') && echo \"$EVENT\" | node \"$CLAUDE_PROJECT_DIR/.suboculo/integrations/claude-code/event-writer.mjs\" && (echo \"$EVENT\" | curl -s -X POST -H 'Content-Type: application/json' -d @- http://localhost:3000/api/notify 2>/dev/null || true)",
+            "command": "EVENT=$(jq -c '{ts: (now | todate), event: \"tool.end\", runner: \"claude-code\", sessionId: .session_id, traceId: .tool_use_id, data: {tool: .tool_name, status: \"error\", isInterrupt: (.is_interrupt // false), agentType: (.agent_type // .tool_input.subagent_type), agentId: .agent_id, runnerVersion: (.version // env.CLAUDE_CODE_VERSION // null), args: (.tool_input | tojson | @base64), response: ((.error // \"unknown error\") | tojson | @base64), transcriptPath: .transcript_path}}') && echo \"$EVENT\" | node \"$CLAUDE_PROJECT_DIR/.suboculo/integrations/claude-code/event-writer.mjs\" && (echo \"$EVENT\" | curl -s -X POST -H 'Content-Type: application/json' -d @- http://localhost:3000/api/notify 2>/dev/null || true)",
             "timeout": 5
           }
         ]
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "EVENT=$(jq -c '{ts: (now | todate), event: \"tool.start\", runner: \"claude-code\", sessionId: .session_id, traceId: .tool_use_id, data: {tool: .tool_name, agentType: (.agent_type // .tool_input.subagent_type), agentId: .agent_id, args: (.tool_input | tojson | @base64)}}') && echo \"$EVENT\" | node \"$CLAUDE_PROJECT_DIR/.suboculo/integrations/claude-code/event-writer.mjs\" && (echo \"$EVENT\" | curl -s -X POST -H 'Content-Type: application/json' -d @- http://localhost:3000/api/notify 2>/dev/null || true)",
+            "command": "EVENT=$(jq -c '{ts: (now | todate), event: \"tool.start\", runner: \"claude-code\", sessionId: .session_id, traceId: .tool_use_id, data: {tool: .tool_name, agentType: (.agent_type // .tool_input.subagent_type), agentId: .agent_id, runnerVersion: (.version // env.CLAUDE_CODE_VERSION // null), args: (.tool_input | tojson | @base64)}}') && echo \"$EVENT\" | node \"$CLAUDE_PROJECT_DIR/.suboculo/integrations/claude-code/event-writer.mjs\" && (echo \"$EVENT\" | curl -s -X POST -H 'Content-Type: application/json' -d @- http://localhost:3000/api/notify 2>/dev/null || true)",
             "timeout": 5
           }
         ]
@@ -42,7 +42,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "EVENT=$(jq -c '{ts: (now | todate), event: \"subagent.spawn\", runner: \"claude-code\", sessionId: .session_id, data: {agentId: .agent_id, agentType: .agent_type}}') && echo \"$EVENT\" | node \"$CLAUDE_PROJECT_DIR/.suboculo/integrations/claude-code/event-writer.mjs\" && (echo \"$EVENT\" | curl -s -X POST -H 'Content-Type: application/json' -d @- http://localhost:3000/api/notify 2>/dev/null || true)",
+            "command": "EVENT=$(jq -c '{ts: (now | todate), event: \"subagent.spawn\", runner: \"claude-code\", sessionId: .session_id, data: {agentId: .agent_id, agentType: .agent_type, runnerVersion: (.version // env.CLAUDE_CODE_VERSION // null)}}') && echo \"$EVENT\" | node \"$CLAUDE_PROJECT_DIR/.suboculo/integrations/claude-code/event-writer.mjs\" && (echo \"$EVENT\" | curl -s -X POST -H 'Content-Type: application/json' -d @- http://localhost:3000/api/notify 2>/dev/null || true)",
             "timeout": 5
           }
         ]
@@ -54,7 +54,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "EVENT=$(jq -c '{ts: (now | todate), event: \"subagent.stop\", runner: \"claude-code\", sessionId: .session_id, data: {agentId: .agent_id, agentType: .agent_type, response: (.last_assistant_message | tojson | @base64)}}') && echo \"$EVENT\" | node \"$CLAUDE_PROJECT_DIR/.suboculo/integrations/claude-code/event-writer.mjs\" && (echo \"$EVENT\" | curl -s -X POST -H 'Content-Type: application/json' -d @- http://localhost:3000/api/notify 2>/dev/null || true)",
+            "command": "EVENT=$(jq -c '{ts: (now | todate), event: \"subagent.stop\", runner: \"claude-code\", sessionId: .session_id, data: {agentId: .agent_id, agentType: .agent_type, runnerVersion: (.version // env.CLAUDE_CODE_VERSION // null), response: (.last_assistant_message | tojson | @base64)}}') && echo \"$EVENT\" | node \"$CLAUDE_PROJECT_DIR/.suboculo/integrations/claude-code/event-writer.mjs\" && (echo \"$EVENT\" | curl -s -X POST -H 'Content-Type: application/json' -d @- http://localhost:3000/api/notify 2>/dev/null || true)",
             "timeout": 5
           }
         ]
@@ -66,7 +66,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "EVENT=$(jq -c --arg ts \"$(date -Iseconds)\" --arg sid \"${CLAUDE_SESSION_ID:-}\" --arg dir \"$(pwd)\" '{ts: $ts, event: \"session.start\", runner: \"claude-code\", sessionId: (.session_id // (if $sid == \"\" then null else $sid end)), data: {directory: $dir}}') && echo \"$EVENT\" | node \"$CLAUDE_PROJECT_DIR/.suboculo/integrations/claude-code/event-writer.mjs\" && (echo \"$EVENT\" | curl -s -X POST -H 'Content-Type: application/json' -d @- http://localhost:3000/api/notify 2>/dev/null || true)",
+            "command": "CLI_VERSION=$(claude --version 2>/dev/null | sed -nE 's/.*([0-9]+\\.[0-9]+\\.[0-9]+([.-][A-Za-z0-9]+)?).*/\\1/p' | head -n1 || true); RUNNER_VERSION=\"${CLAUDE_CODE_VERSION:-$CLI_VERSION}\"; EVENT=$(jq -c --arg ts \"$(date -Iseconds)\" --arg sid \"${CLAUDE_SESSION_ID:-}\" --arg dir \"$(pwd)\" --arg ver \"$RUNNER_VERSION\" '{ts: $ts, event: \"session.start\", runner: \"claude-code\", sessionId: (.session_id // (if $sid == \"\" then null else $sid end)), data: {directory: $dir, model: (.model // null), runnerVersion: (if $ver == \"\" then null else $ver end)}}') && echo \"$EVENT\" | node \"$CLAUDE_PROJECT_DIR/.suboculo/integrations/claude-code/event-writer.mjs\" && (echo \"$EVENT\" | curl -s -X POST -H 'Content-Type: application/json' -d @- http://localhost:3000/api/notify 2>/dev/null || true)",
             "timeout": 5
           }
         ]

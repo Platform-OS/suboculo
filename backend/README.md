@@ -24,6 +24,15 @@ node server.js
 
 Server runs on `http://localhost:3000` (override with `SUBOCULO_PORT`).
 
+## Maintenance Scripts
+
+```bash
+npm run smoke
+npm run provenance:check
+```
+
+`provenance:check` validates model + runner version provenance coverage in recent `entries` and `task_runs` for `claude-code` and `opencode`.
+
 ## API Endpoints
 
 ### Ingestion
@@ -56,6 +65,11 @@ Server runs on `http://localhost:3000` (override with `SUBOCULO_PORT`).
 - `GET /api/analyses-history` - List saved analyses
 - `GET /api/analyses-history/:id` - Get a specific analysis
 - `DELETE /api/analyses-history/:id` - Delete an analysis
+
+### Reliability
+- `GET /api/reliability/kpis` - Aggregate KPI snapshot over filtered task runs
+- `GET /api/reliability/kpis/by-runner` - KPI snapshot split by runner over filtered task runs
+- `GET /api/reliability/trends` - Time-bucketed KPI trends (`bucket=day|week`, `window_days=N`)
 
 ### Selection
 - `POST /api/selection` - Save selected event keys for CLI analysis
