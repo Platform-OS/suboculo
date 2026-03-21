@@ -437,6 +437,8 @@ function buildTaskRunsWhereClause(query = {}, taskRunsAlias = 'task_runs') {
     runner,
     status,
     source,
+    from,
+    to,
     query: textQuery,
     canonical_outcome_label,
     failure_mode,
@@ -459,6 +461,14 @@ function buildTaskRunsWhereClause(query = {}, taskRunsAlias = 'task_runs') {
   if (source && source !== 'all') {
     where.push(`${taskRunsAlias}.source = ?`);
     params.push(source);
+  }
+  if (from) {
+    where.push(`${taskRunsAlias}.started_at >= ?`);
+    params.push(from);
+  }
+  if (to) {
+    where.push(`${taskRunsAlias}.started_at <= ?`);
+    params.push(to);
   }
   if (textQuery) {
     where.push(`(${taskRunsAlias}.task_key LIKE ? OR ${taskRunsAlias}.title LIKE ? OR ${taskRunsAlias}.description LIKE ? OR ${taskRunsAlias}.root_session_id LIKE ?)`);
@@ -538,6 +548,18 @@ function buildTaskRunsWhereClause(query = {}, taskRunsAlias = 'task_runs') {
     whereSql: where.join(' AND '),
     params
   };
+}
+
+function quantile(values, q) {
+  if (!Array.isArray(values) || values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const pos = (sorted.length - 1) * q;
+  const base = Math.floor(pos);
+  const rest = pos - base;
+  if (sorted[base + 1] !== undefined) {
+    return sorted[base] + rest * (sorted[base + 1] - sorted[base]);
+  }
+  return sorted[base];
 }
 
 function deriveTaskRunStatus(rows) {
@@ -1123,6 +1145,103 @@ app.get('/api/task-runs/outcome-summary', (req, res) => {
     });
   } catch (error) {
     console.error('Task run outcome summary error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/reliability/kpis', (req, res) => {
+  try {
+    const { whereSql, params } = buildTaskRunsWhereClause(req.query, 'tr');
+
+    const rows = db.prepare(`
+      SELECT
+        tr.id,
+        tr.retry_count,
+        tr.estimated_cost,
+        tr.total_duration_ms,
+        tr.token_input,
+        tr.token_output,
+        tr.token_cache_creation,
+        tr.token_cache_read,
+        (
+          SELECT o.outcome_label
+          FROM outcomes o
+          WHERE o.task_run_id = tr.id
+            AND o.is_canonical = 1
+          ORDER BY o.evaluated_at DESC, o.id DESC
+          LIMIT 1
+        ) AS canonical_outcome_label,
+        (
+          SELECT o.requires_human_intervention
+          FROM outcomes o
+          WHERE o.task_run_id = tr.id
+            AND o.is_canonical = 1
+          ORDER BY o.evaluated_at DESC, o.id DESC
+          LIMIT 1
+        ) AS canonical_requires_human_intervention
+      FROM task_runs tr
+      WHERE ${whereSql}
+    `).all(...params);
+
+    const totalRuns = rows.length;
+    const withCanonical = rows.filter(r => !!r.canonical_outcome_label);
+    const successfulRuns = withCanonical.filter(r => r.canonical_outcome_label === 'success');
+    const unsafeSuccessRuns = withCanonical.filter(r => r.canonical_outcome_label === 'unsafe_success');
+    const retryRuns = rows.filter(r => (r.retry_count || 0) > 0);
+    const firstPassSuccessRuns = successfulRuns.filter(r => (r.retry_count || 0) === 0);
+    const interventionRuns = withCanonical.filter(r => Number(r.canonical_requires_human_intervention) === 1);
+
+    const totalCost = rows.reduce((sum, r) => sum + (r.estimated_cost || 0), 0);
+    const successfulCost = successfulRuns.reduce((sum, r) => sum + (r.estimated_cost || 0), 0);
+
+    const durations = rows
+      .map(r => r.total_duration_ms)
+      .filter(v => typeof v === 'number' && Number.isFinite(v));
+
+    const tokenInputTotal = rows.reduce((sum, r) => sum + (r.token_input || 0), 0);
+    const tokenOutputTotal = rows.reduce((sum, r) => sum + (r.token_output || 0), 0);
+    const tokenCacheCreationTotal = rows.reduce((sum, r) => sum + (r.token_cache_creation || 0), 0);
+    const tokenCacheReadTotal = rows.reduce((sum, r) => sum + (r.token_cache_read || 0), 0);
+
+    const ratio = (numerator, denominator) => (denominator > 0 ? +(numerator / denominator).toFixed(6) : null);
+
+    res.json({
+      counts: {
+        task_runs: totalRuns,
+        with_canonical_outcome: withCanonical.length,
+        successful_runs: successfulRuns.length,
+        unsafe_success_runs: unsafeSuccessRuns.length,
+        retry_runs: retryRuns.length,
+        first_pass_success_runs: firstPassSuccessRuns.length,
+        intervention_runs: interventionRuns.length
+      },
+      rates: {
+        success_rate: ratio(successfulRuns.length, withCanonical.length),
+        unsafe_success_rate: ratio(unsafeSuccessRuns.length, withCanonical.length),
+        first_pass_rate: ratio(firstPassSuccessRuns.length, withCanonical.length),
+        retry_rate: ratio(retryRuns.length, totalRuns),
+        intervention_rate: ratio(interventionRuns.length, withCanonical.length)
+      },
+      cost: {
+        total_estimated_cost: +totalCost.toFixed(6),
+        successful_estimated_cost: +successfulCost.toFixed(6),
+        cost_per_success: ratio(successfulCost, successfulRuns.length)
+      },
+      duration_ms: {
+        p50: durations.length ? Math.round(quantile(durations, 0.5)) : null,
+        p95: durations.length ? Math.round(quantile(durations, 0.95)) : null
+      },
+      tokens: {
+        input_total: tokenInputTotal,
+        output_total: tokenOutputTotal,
+        cache_creation_total: tokenCacheCreationTotal,
+        cache_read_total: tokenCacheReadTotal,
+        input_per_run: ratio(tokenInputTotal, totalRuns),
+        output_per_run: ratio(tokenOutputTotal, totalRuns)
+      }
+    });
+  } catch (error) {
+    console.error('Reliability KPI error:', error);
     res.status(500).json({ error: error.message });
   }
 });

@@ -105,6 +105,7 @@
   let loadingTaskRuns = false;
   let taskRunsTotal = 0;
   let taskRunOutcomeSummary = null;
+  let reliabilityKpis = null;
   let outcomeTaxonomy = null;
   let taskRunStatusFilter = "all";
   let taskRunRunnerFilter = "all";
@@ -239,13 +240,15 @@
         requires_human_intervention: taskRunHumanInterventionFilter === "all" ? undefined : taskRunHumanInterventionFilter
       };
 
-      const [result, summary] = await Promise.all([
+      const [result, summary, kpis] = await Promise.all([
         api.getTaskRuns(filters),
-        api.getTaskRunOutcomeSummary(filters)
+        api.getTaskRunOutcomeSummary(filters),
+        api.getReliabilityKpis(filters)
       ]);
       taskRuns = result.taskRuns;
       taskRunsTotal = result.total;
       taskRunOutcomeSummary = summary;
+      reliabilityKpis = kpis;
 
       if (selectedTaskRun?.id) {
         const updated = result.taskRuns.find(run => run.id === selectedTaskRun.id);
@@ -256,6 +259,7 @@
     } catch (err) {
       console.error('Failed to load task runs:', err);
       taskRunOutcomeSummary = null;
+      reliabilityKpis = null;
     } finally {
       loadingTaskRuns = false;
     }
@@ -661,6 +665,16 @@
     const d = new Date(ts);
     if (Number.isNaN(d.getTime())) return String(ts);
     return d.toLocaleString();
+  }
+
+  function formatPercent(value) {
+    if (value == null || Number.isNaN(value)) return "—";
+    return `${(value * 100).toFixed(1)}%`;
+  }
+
+  function formatMoney(value) {
+    if (value == null || Number.isNaN(value)) return "—";
+    return `$${Number(value).toFixed(4)}`;
   }
 
   function selectEntry(key) {
@@ -1705,6 +1719,60 @@ ${analysisResult.analysis}
               >
                 Requires human intervention
               </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card class="rounded-2xl shadow-sm">
+          <CardContent class="p-4 md:p-5 space-y-4">
+            <div class="flex items-center justify-between gap-2">
+              <div class="text-base font-semibold">Reliability KPIs</div>
+              {#if loadingTaskRuns}
+                <Badge variant="outline">Updating…</Badge>
+              {/if}
+            </div>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div class="rounded-xl border p-3 bg-muted/10">
+                <div class="text-xs text-muted-foreground">Success rate</div>
+                <div class="text-xl font-semibold">{formatPercent(reliabilityKpis?.rates?.success_rate)}</div>
+              </div>
+              <div class="rounded-xl border p-3 bg-muted/10">
+                <div class="text-xs text-muted-foreground">First-pass rate</div>
+                <div class="text-xl font-semibold">{formatPercent(reliabilityKpis?.rates?.first_pass_rate)}</div>
+              </div>
+              <div class="rounded-xl border p-3 bg-muted/10">
+                <div class="text-xs text-muted-foreground">Retry rate</div>
+                <div class="text-xl font-semibold">{formatPercent(reliabilityKpis?.rates?.retry_rate)}</div>
+              </div>
+              <div class="rounded-xl border p-3 bg-muted/10">
+                <div class="text-xs text-muted-foreground">Cost per success</div>
+                <div class="text-xl font-semibold">{formatMoney(reliabilityKpis?.cost?.cost_per_success)}</div>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div class="rounded-xl border p-3 bg-muted/10">
+                <div class="text-xs text-muted-foreground">Unsafe success rate</div>
+                <div class="text-lg font-semibold">{formatPercent(reliabilityKpis?.rates?.unsafe_success_rate)}</div>
+              </div>
+              <div class="rounded-xl border p-3 bg-muted/10">
+                <div class="text-xs text-muted-foreground">Intervention rate</div>
+                <div class="text-lg font-semibold">{formatPercent(reliabilityKpis?.rates?.intervention_rate)}</div>
+              </div>
+              <div class="rounded-xl border p-3 bg-muted/10">
+                <div class="text-xs text-muted-foreground">Duration p50 / p95</div>
+                <div class="text-lg font-semibold">
+                  {#if reliabilityKpis?.duration_ms}
+                    {reliabilityKpis.duration_ms.p50 ?? "—"} / {reliabilityKpis.duration_ms.p95 ?? "—"} ms
+                  {:else}
+                    —
+                  {/if}
+                </div>
+              </div>
+              <div class="rounded-xl border p-3 bg-muted/10">
+                <div class="text-xs text-muted-foreground">Total estimated cost</div>
+                <div class="text-lg font-semibold">{formatMoney(reliabilityKpis?.cost?.total_estimated_cost)}</div>
+              </div>
             </div>
           </CardContent>
         </Card>

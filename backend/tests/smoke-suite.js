@@ -222,6 +222,13 @@ async function run() {
     assert.ok(result.body.by_outcome_label.some((row) => row.value === 'failure'), 'summary should include failure outcome bucket');
     assert.ok(result.body.by_failure_mode.some((row) => row.value === 'execution_failure'), 'summary should include failure mode bucket');
 
+    result = await request('/reliability/kpis?runner=smoke-runner&source=derived_attempt');
+    assert.equal(result.response.status, 200, 'reliability KPI endpoint should succeed');
+    assert.equal(result.body.counts.task_runs, 2, 'KPI counts should include two attempt task runs');
+    assert.ok(result.body.counts.with_canonical_outcome >= 1, 'KPI counts should include canonical outcomes');
+    assert.ok(result.body.rates.retry_rate != null, 'KPI retry rate should be present');
+    assert.ok(result.body.cost.total_estimated_cost >= 0, 'KPI cost aggregate should be non-negative');
+
     result = await request('/task-runs?pageSize=10&runner=smoke-runner&canonical_outcome_label=failure&failure_mode=execution_failure');
     assert.equal(result.response.status, 200, 'task run filters by canonical outcome and failure mode should succeed');
     assert.ok(result.body.total >= 1, 'filtered task runs should include the smoke run');

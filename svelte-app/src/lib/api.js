@@ -324,6 +324,24 @@ export async function getTaskRunOutcomeSummary(filters = {}) {
   return response.json();
 }
 
+export async function getReliabilityKpis(filters = {}) {
+  const params = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== null) {
+      params.append(key, value);
+    }
+  }
+
+  const response = await fetch(`${API_BASE}/reliability/kpis?${params}`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch reliability KPIs');
+  }
+
+  return response.json();
+}
+
 export async function createOutcome(taskRunId, outcome) {
   const response = await fetch(`${API_BASE}/task-runs/${taskRunId}/outcomes`, {
     method: 'POST',
