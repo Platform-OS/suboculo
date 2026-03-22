@@ -9,6 +9,10 @@ const taskRunsTabPath = path.resolve(__dirname, "../src/lib/components/TaskRunsT
 const taskRunsSource = fs.readFileSync(taskRunsTabPath, "utf8");
 const taskRunWorkspacePath = path.resolve(__dirname, "../src/lib/components/TaskRunWorkspace.svelte");
 const taskRunWorkspaceSource = fs.readFileSync(taskRunWorkspacePath, "utf8");
+const taskRunListPanelPath = path.resolve(__dirname, "../src/lib/components/TaskRunListPanel.svelte");
+const taskRunListPanelSource = fs.readFileSync(taskRunListPanelPath, "utf8");
+const taskRunDetailPanelPath = path.resolve(__dirname, "../src/lib/components/TaskRunDetailPanel.svelte");
+const taskRunDetailPanelSource = fs.readFileSync(taskRunDetailPanelPath, "utf8");
 
 function assertPattern(pattern, message) {
   assert.ok(pattern.test(taskRunsSource), message);
@@ -20,12 +24,22 @@ const taskRunsHasLocalFormatTs = /function\s+formatTs\s*\(\s*ts\s*\)\s*\{/.test(
 const taskRunsHasImportedFormatTs = /import\s*\{[\s\S]*\bformatTs\b[\s\S]*\}\s*from\s*["']\$lib\/formatters\.js["']/.test(taskRunsSource);
 const workspaceHasLocalFormatTs = /function\s+formatTs\s*\(\s*ts\s*\)\s*\{/.test(taskRunWorkspaceSource);
 const workspaceHasImportedFormatTs = /import\s*\{[\s\S]*\bformatTs\b[\s\S]*\}\s*from\s*["']\$lib\/formatters\.js["']/.test(taskRunWorkspaceSource);
+const listPanelHasLocalFormatTs = /function\s+formatTs\s*\(\s*ts\s*\)\s*\{/.test(taskRunListPanelSource);
+const listPanelHasImportedFormatTs = /import\s*\{[\s\S]*\bformatTs\b[\s\S]*\}\s*from\s*["']\$lib\/formatters\.js["']/.test(taskRunListPanelSource);
+const detailPanelHasLocalFormatTs = /function\s+formatTs\s*\(\s*ts\s*\)\s*\{/.test(taskRunDetailPanelSource);
+const detailPanelHasImportedFormatTs = /import\s*\{[\s\S]*\bformatTs\b[\s\S]*\}\s*from\s*["']\$lib\/formatters\.js["']/.test(taskRunDetailPanelSource);
 assert.ok(
-  taskRunsHasLocalFormatTs || taskRunsHasImportedFormatTs || workspaceHasLocalFormatTs || workspaceHasImportedFormatTs,
+  taskRunsHasLocalFormatTs || taskRunsHasImportedFormatTs ||
+    workspaceHasLocalFormatTs || workspaceHasImportedFormatTs ||
+    listPanelHasLocalFormatTs || listPanelHasImportedFormatTs ||
+    detailPanelHasLocalFormatTs || detailPanelHasImportedFormatTs,
   "Task Runs UI must define or import formatTs(ts)"
 );
 assert.ok(
-  /formatTs\(\s*run\.started_at\s*\)/.test(taskRunsSource) || /formatTs\(\s*run\.started_at\s*\)/.test(taskRunWorkspaceSource),
+  /formatTs\(\s*run\.started_at\s*\)/.test(taskRunsSource) ||
+    /formatTs\(\s*run\.started_at\s*\)/.test(taskRunWorkspaceSource) ||
+    /formatTs\(\s*run\.started_at\s*\)/.test(taskRunListPanelSource) ||
+    /formatTs\(\s*run\.started_at\s*\)/.test(taskRunDetailPanelSource),
   "Task Runs UI should use formatTs for run list rendering"
 );
 
