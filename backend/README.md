@@ -71,6 +71,11 @@ npm run provenance:check
 - `GET /api/reliability/kpi-definitions` - KPI formulas, denominator rules, and guardrail thresholds
 - `GET /api/reliability/kpis/by-runner` - KPI snapshot split by runner over filtered task runs
 - `GET /api/reliability/trends` - Time-bucketed KPI trends (`bucket=day|week`, `window_days=N`)
+- `GET /api/reliability/trends/insights` - Trend deltas with significance and sample-confidence guardrails
+
+### Task Runs
+- `POST /api/task-runs/:id/outcomes` - Record single outcome for a task run
+- `POST /api/task-runs/outcomes/batch` - Record outcomes for multiple task runs in one request
 
 ### Selection
 - `POST /api/selection` - Save selected event keys for CLI analysis

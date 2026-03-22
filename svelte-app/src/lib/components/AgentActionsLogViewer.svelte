@@ -108,6 +108,7 @@
   let reliabilityKpis = null;
   let reliabilityKpisByRunner = null;
   let reliabilityTrends = null;
+  let reliabilityTrendInsights = null;
   let kpiDefinitions = null;
   let showKpiDefinitions = false;
   let reliabilityTrendBucket = "day";
@@ -120,6 +121,9 @@
   let taskRunFailureModeFilter = "all";
   let taskRunFailureSubtypeFilter = "all";
   let taskRunHumanInterventionFilter = "all";
+  let taskRunNeedsLabelingOnly = false;
+  let selectedTaskRunIds = new Set();
+  let savingBulkOutcomes = false;
 
   const fallbackEvaluationTypes = ["human", "rule_based", "llm_judge", "benchmark_checker"];
   const fallbackOutcomeLabels = ["success", "partial_success", "failure", "unsafe_success", "interrupted", "abandoned", "unknown"];
@@ -163,6 +167,7 @@
     };
   }
   let taskRunOutcome = createDefaultOutcomeForm();
+  let bulkTaskRunOutcome = createDefaultOutcomeForm();
 
   const outcomeLabelHelp = {
     success: "Task completed to a reasonable engineering standard.",
@@ -251,12 +256,13 @@
         runner: taskRunRunnerFilter !== "all" ? taskRunRunnerFilter : undefined,
         query: taskRunQuery || undefined,
         canonical_outcome_label: taskRunCanonicalOutcomeFilter !== "all" ? taskRunCanonicalOutcomeFilter : undefined,
+        has_canonical_outcome: taskRunNeedsLabelingOnly ? "false" : undefined,
         failure_mode: taskRunFailureModeFilter !== "all" ? taskRunFailureModeFilter : undefined,
         failure_subtype: taskRunFailureSubtypeFilter !== "all" ? taskRunFailureSubtypeFilter : undefined,
         requires_human_intervention: taskRunHumanInterventionFilter === "all" ? undefined : taskRunHumanInterventionFilter
       };
 
-      const [result, summary, kpis, kpisByRunner, trends] = await Promise.all([
+      const [result, summary, kpis, kpisByRunner, trends, trendInsights] = await Promise.all([
         api.getTaskRuns(filters),
         api.getTaskRunOutcomeSummary(filters),
         api.getReliabilityKpis(filters),
@@ -265,14 +271,23 @@
           ...filters,
           bucket: reliabilityTrendBucket,
           window_days: reliabilityTrendWindowDays
+        }),
+        api.getReliabilityTrendInsights({
+          ...filters,
+          bucket: reliabilityTrendBucket,
+          window_days: reliabilityTrendWindowDays
         })
       ]);
       taskRuns = result.taskRuns;
+      selectedTaskRunIds = new Set(
+        [...selectedTaskRunIds].filter((id) => result.taskRuns.some((run) => run.id === id))
+      );
       taskRunsTotal = result.total;
       taskRunOutcomeSummary = summary;
       reliabilityKpis = kpis;
       reliabilityKpisByRunner = kpisByRunner;
       reliabilityTrends = trends;
+      reliabilityTrendInsights = trendInsights;
 
       if (selectedTaskRun?.id) {
         const updated = result.taskRuns.find(run => run.id === selectedTaskRun.id);
@@ -286,6 +301,7 @@
       reliabilityKpis = null;
       reliabilityKpisByRunner = null;
       reliabilityTrends = null;
+      reliabilityTrendInsights = null;
     } finally {
       loadingTaskRuns = false;
     }
@@ -352,6 +368,100 @@
   function handleTaskRunHumanInterventionFilterChange() {
     if (taskRunHumanInterventionFilter !== "all" && taskRunCanonicalOutcomeFilter === "none") {
       taskRunCanonicalOutcomeFilter = "all";
+    }
+  }
+
+  function toggleNeedsLabelingQueue() {
+    taskRunNeedsLabelingOnly = !taskRunNeedsLabelingOnly;
+    if (taskRunNeedsLabelingOnly) {
+      taskRunCanonicalOutcomeFilter = "all";
+      taskRunFailureModeFilter = "all";
+      taskRunFailureSubtypeFilter = "all";
+      taskRunHumanInterventionFilter = "all";
+    }
+  }
+
+  function toggleTaskRunSelection(taskRunId) {
+    const next = new Set(selectedTaskRunIds);
+    if (next.has(taskRunId)) next.delete(taskRunId);
+    else next.add(taskRunId);
+    selectedTaskRunIds = next;
+  }
+
+  function selectAllVisibleTaskRuns() {
+    selectedTaskRunIds = new Set(taskRuns.map((run) => run.id));
+  }
+
+  function clearSelectedTaskRuns() {
+    selectedTaskRunIds = new Set();
+  }
+
+  function handleBulkOutcomeLabelChange() {
+    const requiredFailureLabels = outcomeTaxonomy?.requires_failure_mode_for || fallbackRequiredFailureLabels;
+    if (!requiredFailureLabels.includes(bulkTaskRunOutcome.outcome_label)) {
+      bulkTaskRunOutcome = { ...bulkTaskRunOutcome, failure_mode: "", failure_subtype: "" };
+    }
+  }
+
+  function handleBulkFailureModeChange() {
+    const taxonomy = outcomeTaxonomy?.failure_taxonomy || fallbackFailureTaxonomy;
+    const allowedSubtypes = bulkTaskRunOutcome.failure_mode
+      ? (taxonomy[bulkTaskRunOutcome.failure_mode] || [])
+      : [];
+    if (!allowedSubtypes.includes(bulkTaskRunOutcome.failure_subtype)) {
+      bulkTaskRunOutcome = { ...bulkTaskRunOutcome, failure_subtype: "" };
+    }
+  }
+
+  async function applyBulkTaskRunOutcome() {
+    if (selectedTaskRunIds.size === 0) {
+      alert("Select at least one task run.");
+      return;
+    }
+
+    const requiredFailureLabels = outcomeTaxonomy?.requires_failure_mode_for || fallbackRequiredFailureLabels;
+    const requiresFailure = requiredFailureLabels.includes(bulkTaskRunOutcome.outcome_label);
+    if (requiresFailure && !bulkTaskRunOutcome.failure_mode) {
+      alert("Failure mode is required for this outcome label.");
+      return;
+    }
+
+    try {
+      savingBulkOutcomes = true;
+      const items = [...selectedTaskRunIds].map((taskRunId) => ({
+        task_run_id: taskRunId,
+        evaluation_type: bulkTaskRunOutcome.evaluation_type,
+        outcome_label: bulkTaskRunOutcome.outcome_label,
+        correctness_score: bulkTaskRunOutcome.correctness_score === "" ? null : Number(bulkTaskRunOutcome.correctness_score),
+        safety_score: bulkTaskRunOutcome.safety_score === "" ? null : Number(bulkTaskRunOutcome.safety_score),
+        efficiency_score: bulkTaskRunOutcome.efficiency_score === "" ? null : Number(bulkTaskRunOutcome.efficiency_score),
+        reproducibility_score: bulkTaskRunOutcome.reproducibility_score === "" ? null : Number(bulkTaskRunOutcome.reproducibility_score),
+        requires_human_intervention: bulkTaskRunOutcome.requires_human_intervention,
+        failure_mode: bulkTaskRunOutcome.failure_mode || undefined,
+        failure_subtype: bulkTaskRunOutcome.failure_subtype || undefined,
+        notes: bulkTaskRunOutcome.notes || undefined,
+        evaluator: bulkTaskRunOutcome.evaluator || undefined,
+        is_canonical: bulkTaskRunOutcome.is_canonical
+      }));
+
+      const result = await api.createOutcomesBatch(items);
+      showNotice(
+        `Bulk outcomes: ${result.success_count} succeeded, ${result.failure_count} failed.`,
+        result.failure_count > 0 ? "error" : "success"
+      );
+
+      await loadTaskRuns();
+      if (selectedTaskRun?.id && selectedTaskRunIds.has(selectedTaskRun.id)) {
+        selectedTaskRun = await api.getTaskRun(selectedTaskRun.id);
+      }
+      if (result.failure_count === 0) {
+        clearSelectedTaskRuns();
+      }
+    } catch (err) {
+      console.error("Failed to apply bulk outcomes:", err);
+      alert("Failed to apply bulk outcomes");
+    } finally {
+      savingBulkOutcomes = false;
     }
   }
 
@@ -727,6 +837,13 @@
     return String(value).replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
   }
 
+  function formatSignedPercentDelta(value) {
+    if (value == null || Number.isNaN(value)) return "—";
+    const pct = value * 100;
+    const sign = pct > 0 ? "+" : "";
+    return `${sign}${pct.toFixed(1)}%`;
+  }
+
   function selectEntry(key) {
     selectedKey = key;
     selected = pageItems.find(e => e.__key === key) || null;
@@ -1056,6 +1173,7 @@ ${analysisResult.analysis}
     taskRunFailureModeFilter ||
     taskRunFailureSubtypeFilter ||
     taskRunHumanInterventionFilter ||
+    taskRunNeedsLabelingOnly ||
     reliabilityTrendBucket ||
     reliabilityTrendWindowDays
   ) {
@@ -1771,6 +1889,13 @@ ${analysisResult.analysis}
               >
                 Requires human intervention
               </Button>
+              <Button
+                variant={taskRunNeedsLabelingOnly ? "default" : "outline"}
+                size="sm"
+                on:click={toggleNeedsLabelingQueue}
+              >
+                Needs labeling queue
+              </Button>
             </div>
           </CardContent>
         </Card>
@@ -1873,6 +1998,49 @@ ${analysisResult.analysis}
             </div>
 
             {#if reliabilityTrends?.series?.length}
+              <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div class="rounded-xl border p-3 space-y-2">
+                  <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Improving</div>
+                  {#if reliabilityTrendInsights?.insights?.improving?.length}
+                    {#each reliabilityTrendInsights.insights.improving as insight (`improve-${insight.metric}-${insight.current_bucket_start}`)}
+                      <div class="text-sm flex items-center justify-between gap-3">
+                        <span>{formatLabel(insight.metric)}</span>
+                        <span class="text-green-700">{formatSignedPercentDelta(insight.abs_delta)}</span>
+                      </div>
+                    {/each}
+                  {:else}
+                    <div class="text-xs text-muted-foreground">No significant improving signals.</div>
+                  {/if}
+                </div>
+
+                <div class="rounded-xl border p-3 space-y-2">
+                  <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Degrading</div>
+                  {#if reliabilityTrendInsights?.insights?.degrading?.length}
+                    {#each reliabilityTrendInsights.insights.degrading as insight (`degrade-${insight.metric}-${insight.current_bucket_start}`)}
+                      <div class="text-sm flex items-center justify-between gap-3">
+                        <span>{formatLabel(insight.metric)}</span>
+                        <span class="text-red-700">{formatSignedPercentDelta(insight.abs_delta)}</span>
+                      </div>
+                    {/each}
+                  {:else}
+                    <div class="text-xs text-muted-foreground">No significant degrading signals.</div>
+                  {/if}
+                </div>
+
+                <div class="rounded-xl border p-3 space-y-2">
+                  <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Insufficient Evidence</div>
+                  {#if reliabilityTrendInsights?.insights?.insufficient_evidence?.length}
+                    {#each reliabilityTrendInsights.insights.insufficient_evidence.slice(-3) as item (`evidence-${item.metric}-${item.bucket_start}`)}
+                      <div class="text-xs text-muted-foreground">
+                        {formatLabel(item.metric)}: {item.reason}
+                      </div>
+                    {/each}
+                  {:else}
+                    <div class="text-xs text-muted-foreground">Sample guardrails satisfied.</div>
+                  {/if}
+                </div>
+              </div>
+
               <div class="overflow-auto rounded-xl border">
                 <table class="min-w-full text-sm">
                   <thead class="bg-muted/20 text-xs text-muted-foreground uppercase tracking-wide">
@@ -2082,6 +2250,31 @@ ${analysisResult.analysis}
                 <div class="text-base font-semibold">Runs</div>
                 <div class="text-sm text-muted-foreground">{taskRunsTotal} total</div>
               </div>
+              <div class="px-4 py-3 border-b bg-muted/5 space-y-3">
+                <div class="flex items-center justify-between gap-2 flex-wrap">
+                  <div class="text-xs text-muted-foreground">{selectedTaskRunIds.size} selected</div>
+                  <div class="flex gap-2">
+                    <Button variant="outline" size="sm" on:click={selectAllVisibleTaskRuns} disabled={taskRuns.length === 0}>Select visible</Button>
+                    <Button variant="outline" size="sm" on:click={clearSelectedTaskRuns} disabled={selectedTaskRunIds.size === 0}>Clear</Button>
+                  </div>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-12 gap-2">
+                  <div class="md:col-span-3">
+                    <Select bind:value={bulkTaskRunOutcome.evaluation_type} options={evaluationTypeOptions} />
+                  </div>
+                  <div class="md:col-span-3">
+                    <Select bind:value={bulkTaskRunOutcome.outcome_label} options={outcomeLabelOptions} on:change={handleBulkOutcomeLabelChange} />
+                  </div>
+                  <div class="md:col-span-3">
+                    <Select bind:value={bulkTaskRunOutcome.failure_mode} options={failureModeOptions} on:change={handleBulkFailureModeChange} />
+                  </div>
+                  <div class="md:col-span-3">
+                    <Button class="w-full" size="sm" on:click={applyBulkTaskRunOutcome} disabled={savingBulkOutcomes || selectedTaskRunIds.size === 0}>
+                      {savingBulkOutcomes ? "Applying..." : "Apply to selected"}
+                    </Button>
+                  </div>
+                </div>
+              </div>
               <Separator />
 
               {#if loadingTaskRuns}
@@ -2100,7 +2293,16 @@ ${analysisResult.analysis}
                     >
                       <div class="flex items-start justify-between gap-4">
                         <div class="space-y-2 min-w-0">
-                          <div class="font-medium truncate">{run.title || run.task_key}</div>
+                          <div class="flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={selectedTaskRunIds.has(run.id)}
+                              on:click|stopPropagation
+                              on:change|stopPropagation={() => toggleTaskRunSelection(run.id)}
+                              class="w-4 h-4"
+                            />
+                            <span class="font-medium truncate">{run.title || run.task_key}</span>
+                          </div>
                           <div class="text-xs text-muted-foreground font-mono break-all">{run.task_key}</div>
                           <div class="flex flex-wrap gap-2">
                             <Badge variant="outline">{run.runner || 'unknown'}</Badge>

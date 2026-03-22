@@ -388,6 +388,24 @@ export async function getReliabilityTrends(filters = {}) {
   return response.json();
 }
 
+export async function getReliabilityTrendInsights(filters = {}) {
+  const params = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== null && value !== '') {
+      params.append(key, value);
+    }
+  }
+
+  const response = await fetch(`${API_BASE}/reliability/trends/insights?${params}`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch reliability trend insights');
+  }
+
+  return response.json();
+}
+
 export async function createOutcome(taskRunId, outcome) {
   const response = await fetch(`${API_BASE}/task-runs/${taskRunId}/outcomes`, {
     method: 'POST',
@@ -398,6 +416,21 @@ export async function createOutcome(taskRunId, outcome) {
   if (!response.ok) {
     const error = await response.json();
     throw new Error(error.error || 'Failed to create outcome');
+  }
+
+  return response.json();
+}
+
+export async function createOutcomesBatch(items) {
+  const response = await fetch(`${API_BASE}/task-runs/outcomes/batch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items })
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Failed to create outcomes batch');
   }
 
   return response.json();

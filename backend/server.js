@@ -644,6 +644,104 @@ function finalizeTrendBucket(bucket) {
   };
 }
 
+function buildReliabilityTrendsData(query = {}) {
+  const bucket = query.bucket === 'week' ? 'week' : 'day';
+  const parsedWindowDays = Number.parseInt(String(query.window_days || ''), 10);
+  const windowDays = Number.isFinite(parsedWindowDays) && parsedWindowDays > 0 ? parsedWindowDays : 30;
+
+  const scopedQuery = { ...query };
+  if (!scopedQuery.from && !scopedQuery.to) {
+    scopedQuery.from = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString();
+  }
+
+  const { whereSql, params } = buildTaskRunsWhereClause(scopedQuery, 'tr');
+  const rows = db.prepare(`
+    SELECT
+      tr.id,
+      tr.runner,
+      tr.started_at,
+      tr.retry_count,
+      tr.estimated_cost,
+      (
+        SELECT o.outcome_label
+        FROM outcomes o
+        WHERE o.task_run_id = tr.id
+          AND o.is_canonical = 1
+        ORDER BY o.evaluated_at DESC, o.id DESC
+        LIMIT 1
+      ) AS canonical_outcome_label
+    FROM task_runs tr
+    WHERE ${whereSql}
+      AND tr.started_at IS NOT NULL
+    ORDER BY tr.started_at ASC
+  `).all(...params);
+
+  const buckets = new Map();
+  const byRunner = new Map();
+
+  function upsertBucket(map, key, startDate) {
+    if (!map.has(key)) {
+      const base = createTrendBucket(startDate);
+      base.bucket_end = addBucketSpan(startDate, bucket).toISOString();
+      map.set(key, base);
+    }
+    return map.get(key);
+  }
+
+  for (const row of rows) {
+    const start = floorToBucketStart(row.started_at, bucket);
+    if (!start) continue;
+    const key = start.toISOString();
+
+    const globalBucket = upsertBucket(buckets, key, start);
+    const runnerName = row.runner || 'unknown';
+    if (!byRunner.has(runnerName)) byRunner.set(runnerName, new Map());
+    const runnerBucket = upsertBucket(byRunner.get(runnerName), key, start);
+
+    const targets = [globalBucket, runnerBucket];
+    for (const target of targets) {
+      target.task_runs += 1;
+      target.total_estimated_cost += row.estimated_cost || 0;
+      if ((row.retry_count || 0) > 0) target.retry_runs += 1;
+
+      const label = row.canonical_outcome_label;
+      if (label) {
+        target.with_canonical_outcome += 1;
+        if (label === 'success') {
+          target.success_count += 1;
+          target.successful_estimated_cost += row.estimated_cost || 0;
+        } else if (label === 'partial_success') {
+          target.partial_success_count += 1;
+        } else if (label === 'failure') {
+          target.failure_count += 1;
+        } else if (label === 'unsafe_success') {
+          target.unsafe_success_count += 1;
+        }
+      }
+    }
+  }
+
+  const series = [...buckets.values()]
+    .sort((a, b) => a.bucket_start.localeCompare(b.bucket_start))
+    .map(finalizeTrendBucket);
+
+  const by_runner = {};
+  for (const [runner, runnerBuckets] of byRunner.entries()) {
+    by_runner[runner] = [...runnerBuckets.values()]
+      .sort((a, b) => a.bucket_start.localeCompare(b.bucket_start))
+      .map(finalizeTrendBucket);
+  }
+
+  return {
+    bucket,
+    window_days: windowDays,
+    from: scopedQuery.from || null,
+    to: scopedQuery.to || null,
+    series,
+    by_runner
+  };
+}
+
 function summarizeReliabilityKpis(rows) {
   const totalRuns = rows.length;
   const withCanonical = rows.filter(r => !!r.canonical_outcome_label);
@@ -702,6 +800,142 @@ function summarizeReliabilityKpis(rows) {
       output_per_run: ratio(tokenOutputTotal, totalRuns)
     }
   };
+}
+
+function validateOutcomePayload(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return { ok: false, status: 400, error: 'Outcome payload must be a JSON object' };
+  }
+
+  const {
+    evaluation_type,
+    outcome_label,
+    correctness_score,
+    safety_score,
+    efficiency_score,
+    reproducibility_score,
+    requires_human_intervention,
+    failure_mode,
+    failure_subtype,
+    notes,
+    evaluator,
+    evidence,
+    is_canonical
+  } = payload;
+
+  if (!evaluation_type || !outcome_label) {
+    return { ok: false, status: 400, error: 'evaluation_type and outcome_label are required' };
+  }
+  if (!EVALUATION_TYPES.includes(evaluation_type)) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'Invalid evaluation_type',
+      allowed: EVALUATION_TYPES
+    };
+  }
+  if (!OUTCOME_LABELS.includes(outcome_label)) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'Invalid outcome_label',
+      allowed: OUTCOME_LABELS
+    };
+  }
+
+  const normalizedFailureMode = normalizeOptionalString(failure_mode);
+  const normalizedFailureSubtype = normalizeOptionalString(failure_subtype);
+  const requiresFailureMode = OUTCOME_LABELS_REQUIRING_FAILURE_MODE.has(outcome_label);
+
+  if (requiresFailureMode && !normalizedFailureMode) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'failure_mode is required for this outcome_label',
+      outcome_label,
+      required_for: [...OUTCOME_LABELS_REQUIRING_FAILURE_MODE]
+    };
+  }
+  if (normalizedFailureMode && !FAILURE_MODES.includes(normalizedFailureMode)) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'Invalid failure_mode',
+      allowed: FAILURE_MODES
+    };
+  }
+  if (normalizedFailureSubtype && !normalizedFailureMode) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'failure_subtype requires failure_mode'
+    };
+  }
+  if (normalizedFailureMode && normalizedFailureSubtype) {
+    const allowedSubtypes = FAILURE_TAXONOMY[normalizedFailureMode] || [];
+    if (!allowedSubtypes.includes(normalizedFailureSubtype)) {
+      return {
+        ok: false,
+        status: 400,
+        error: 'Invalid failure_subtype for failure_mode',
+        failure_mode: normalizedFailureMode,
+        allowed: allowedSubtypes
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    value: {
+      evaluation_type,
+      outcome_label,
+      correctness_score: correctness_score ?? null,
+      safety_score: safety_score ?? null,
+      efficiency_score: efficiency_score ?? null,
+      reproducibility_score: reproducibility_score ?? null,
+      requires_human_intervention: !!requires_human_intervention,
+      failure_mode: normalizedFailureMode,
+      failure_subtype: normalizedFailureSubtype,
+      notes: notes || null,
+      evaluator: evaluator || null,
+      evidence: evidence ?? null,
+      is_canonical: !!is_canonical
+    }
+  };
+}
+
+function insertOutcomeForTaskRun(taskRunId, outcomeInput) {
+  const insertOutcome = db.transaction((targetTaskRunId, input) => {
+    if (input.is_canonical) {
+      db.prepare('UPDATE outcomes SET is_canonical = 0 WHERE task_run_id = ?').run(targetTaskRunId);
+    }
+
+    return db.prepare(`
+      INSERT INTO outcomes (
+        task_run_id, evaluation_type, outcome_label, correctness_score, safety_score,
+        efficiency_score, reproducibility_score, requires_human_intervention,
+        failure_mode, failure_subtype, notes, evaluator, evidence, is_canonical, evaluated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      targetTaskRunId,
+      input.evaluation_type,
+      input.outcome_label,
+      input.correctness_score,
+      input.safety_score,
+      input.efficiency_score,
+      input.reproducibility_score,
+      input.requires_human_intervention ? 1 : 0,
+      input.failure_mode,
+      input.failure_subtype,
+      input.notes,
+      input.evaluator,
+      input.evidence == null ? null : JSON.stringify(input.evidence),
+      input.is_canonical ? 1 : 0,
+      new Date().toISOString()
+    );
+  });
+
+  return insertOutcome(taskRunId, outcomeInput);
 }
 
 function deriveKpiAnomalies(kpiSummary) {
@@ -1550,104 +1784,120 @@ app.get('/api/reliability/kpis/by-runner', (req, res) => {
 
 app.get('/api/reliability/trends', (req, res) => {
   try {
-    const bucket = req.query.bucket === 'week' ? 'week' : 'day';
-    const parsedWindowDays = Number.parseInt(String(req.query.window_days || ''), 10);
-    const windowDays = Number.isFinite(parsedWindowDays) && parsedWindowDays > 0 ? parsedWindowDays : 30;
-
-    const scopedQuery = { ...req.query };
-    if (!scopedQuery.from && !scopedQuery.to) {
-      scopedQuery.from = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString();
-    }
-
-    const { whereSql, params } = buildTaskRunsWhereClause(scopedQuery, 'tr');
-
-    const rows = db.prepare(`
-      SELECT
-        tr.id,
-        tr.runner,
-        tr.started_at,
-        tr.retry_count,
-        tr.estimated_cost,
-        (
-          SELECT o.outcome_label
-          FROM outcomes o
-          WHERE o.task_run_id = tr.id
-            AND o.is_canonical = 1
-          ORDER BY o.evaluated_at DESC, o.id DESC
-          LIMIT 1
-        ) AS canonical_outcome_label
-      FROM task_runs tr
-      WHERE ${whereSql}
-        AND tr.started_at IS NOT NULL
-      ORDER BY tr.started_at ASC
-    `).all(...params);
-
-    const buckets = new Map();
-    const byRunner = new Map();
-
-    function upsertBucket(map, key, startDate) {
-      if (!map.has(key)) {
-        const base = createTrendBucket(startDate);
-        base.bucket_end = addBucketSpan(startDate, bucket).toISOString();
-        map.set(key, base);
-      }
-      return map.get(key);
-    }
-
-    for (const row of rows) {
-      const start = floorToBucketStart(row.started_at, bucket);
-      if (!start) continue;
-      const key = start.toISOString();
-
-      const globalBucket = upsertBucket(buckets, key, start);
-      const runnerName = row.runner || 'unknown';
-      if (!byRunner.has(runnerName)) byRunner.set(runnerName, new Map());
-      const runnerBucket = upsertBucket(byRunner.get(runnerName), key, start);
-
-      const targets = [globalBucket, runnerBucket];
-      for (const target of targets) {
-        target.task_runs += 1;
-        target.total_estimated_cost += row.estimated_cost || 0;
-        if ((row.retry_count || 0) > 0) target.retry_runs += 1;
-
-        const label = row.canonical_outcome_label;
-        if (label) {
-          target.with_canonical_outcome += 1;
-          if (label === 'success') {
-            target.success_count += 1;
-            target.successful_estimated_cost += row.estimated_cost || 0;
-          } else if (label === 'partial_success') {
-            target.partial_success_count += 1;
-          } else if (label === 'failure') {
-            target.failure_count += 1;
-          } else if (label === 'unsafe_success') {
-            target.unsafe_success_count += 1;
-          }
-        }
-      }
-    }
-
-    const series = [...buckets.values()]
-      .sort((a, b) => a.bucket_start.localeCompare(b.bucket_start))
-      .map(finalizeTrendBucket);
-
-    const by_runner = {};
-    for (const [runner, runnerBuckets] of byRunner.entries()) {
-      by_runner[runner] = [...runnerBuckets.values()]
-        .sort((a, b) => a.bucket_start.localeCompare(b.bucket_start))
-        .map(finalizeTrendBucket);
-    }
-
-    res.json({
-      bucket,
-      window_days: windowDays,
-      from: scopedQuery.from || null,
-      to: scopedQuery.to || null,
-      series,
-      by_runner
-    });
+    res.json(buildReliabilityTrendsData(req.query));
   } catch (error) {
     console.error('Reliability trends error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/reliability/trends/insights', (req, res) => {
+  try {
+    const trendData = buildReliabilityTrendsData(req.query);
+    const series = trendData.series || [];
+    const deltas = [];
+    const thresholds = {
+      min_canonical_sample: KPI_MIN_CANONICAL_SAMPLE,
+      min_success_sample_for_cost: KPI_MIN_SUCCESS_SAMPLE_FOR_COST,
+      significant_abs_delta: {
+        success_rate: 0.1,
+        retry_rate: 0.1
+      },
+      significant_relative_delta: {
+        cost_per_success: 0.25
+      }
+    };
+
+    const metricSpecs = [
+      { key: 'success_rate', direction: 'higher_better', significantAbs: thresholds.significant_abs_delta.success_rate },
+      { key: 'retry_rate', direction: 'lower_better', significantAbs: thresholds.significant_abs_delta.retry_rate },
+      { key: 'cost_per_success', direction: 'lower_better', significantRelative: thresholds.significant_relative_delta.cost_per_success }
+    ];
+
+    function bucketHasEnoughSample(bucketRow, metricKey) {
+      if (!bucketRow) return false;
+      if (metricKey === 'cost_per_success') return (bucketRow.success_count || 0) >= KPI_MIN_SUCCESS_SAMPLE_FOR_COST;
+      return (bucketRow.with_canonical_outcome || 0) >= KPI_MIN_CANONICAL_SAMPLE;
+    }
+
+    for (const metric of metricSpecs) {
+      for (let i = 1; i < series.length; i++) {
+        const previous = series[i - 1];
+        const current = series[i];
+        const previousValue = previous?.[metric.key];
+        const currentValue = current?.[metric.key];
+        if (previousValue == null || currentValue == null) continue;
+
+        const absDelta = +(currentValue - previousValue).toFixed(6);
+        const relativeDelta = previousValue === 0 ? null : +((currentValue - previousValue) / Math.abs(previousValue)).toFixed(6);
+        const insufficientSample = !bucketHasEnoughSample(previous, metric.key) || !bucketHasEnoughSample(current, metric.key);
+
+        let significant = false;
+        if (metric.significantAbs != null) {
+          significant = Math.abs(absDelta) >= metric.significantAbs;
+        } else if (metric.significantRelative != null && relativeDelta != null) {
+          significant = Math.abs(relativeDelta) >= metric.significantRelative;
+        }
+
+        const improved = metric.direction === 'higher_better' ? absDelta > 0 : absDelta < 0;
+
+        deltas.push({
+          metric: metric.key,
+          previous_bucket_start: previous.bucket_start,
+          current_bucket_start: current.bucket_start,
+          previous_value: previousValue,
+          current_value: currentValue,
+          abs_delta: absDelta,
+          relative_delta: relativeDelta,
+          significant,
+          insufficient_sample: insufficientSample,
+          direction: improved ? 'improving' : 'degrading'
+        });
+      }
+    }
+
+    const comparable = deltas.filter(d => d.significant && !d.insufficient_sample);
+    const improving = comparable
+      .filter(d => d.direction === 'improving')
+      .sort((a, b) => Math.abs(b.abs_delta) - Math.abs(a.abs_delta))
+      .slice(0, 3);
+    const degrading = comparable
+      .filter(d => d.direction === 'degrading')
+      .sort((a, b) => Math.abs(b.abs_delta) - Math.abs(a.abs_delta))
+      .slice(0, 3);
+
+    const insufficientEvidenceMap = new Map();
+    for (const d of deltas.filter(item => item.insufficient_sample)) {
+      const reason = d.metric === 'cost_per_success'
+        ? `successful_runs < ${KPI_MIN_SUCCESS_SAMPLE_FOR_COST}`
+        : `with_canonical_outcome < ${KPI_MIN_CANONICAL_SAMPLE}`;
+      const key = `${d.metric}::${reason}`;
+      const existing = insufficientEvidenceMap.get(key);
+      if (!existing || existing.bucket_start < d.current_bucket_start) {
+        insufficientEvidenceMap.set(key, {
+          metric: d.metric,
+          bucket_start: d.current_bucket_start,
+          reason
+        });
+      }
+    }
+    const insufficient_evidence = [...insufficientEvidenceMap.values()]
+      .sort((a, b) => a.bucket_start.localeCompare(b.bucket_start))
+      .slice(-6);
+
+    res.json({
+      ...trendData,
+      thresholds,
+      latest_bucket_start: series.length ? series[series.length - 1].bucket_start : null,
+      insights: {
+        improving,
+        degrading,
+        insufficient_evidence
+      },
+      deltas
+    });
+  } catch (error) {
+    console.error('Reliability trend insights error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1694,114 +1944,107 @@ app.get('/api/task-runs/:id', (req, res) => {
 
 app.post('/api/task-runs/:id/outcomes', (req, res) => {
   try {
-    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
-      return res.status(400).json({ error: 'Request body must be a JSON object' });
-    }
-
     const taskRun = getTaskRunById(req.params.id);
     if (!taskRun) {
       return res.status(404).json({ error: 'Task run not found' });
     }
 
-    const {
-      evaluation_type,
-      outcome_label,
-      correctness_score,
-      safety_score,
-      efficiency_score,
-      reproducibility_score,
-      requires_human_intervention,
-      failure_mode,
-      failure_subtype,
-      notes,
-      evaluator,
-      evidence,
-      is_canonical
-    } = req.body;
-
-    if (!evaluation_type || !outcome_label) {
-      return res.status(400).json({ error: 'evaluation_type and outcome_label are required' });
-    }
-    if (!EVALUATION_TYPES.includes(evaluation_type)) {
-      return res.status(400).json({
-        error: 'Invalid evaluation_type',
-        allowed: EVALUATION_TYPES
-      });
-    }
-    if (!OUTCOME_LABELS.includes(outcome_label)) {
-      return res.status(400).json({
-        error: 'Invalid outcome_label',
-        allowed: OUTCOME_LABELS
-      });
+    const validation = validateOutcomePayload(req.body);
+    if (!validation.ok) {
+      return res.status(validation.status || 400).json(validation);
     }
 
-    const normalizedFailureMode = normalizeOptionalString(failure_mode);
-    const normalizedFailureSubtype = normalizeOptionalString(failure_subtype);
-    const requiresFailureMode = OUTCOME_LABELS_REQUIRING_FAILURE_MODE.has(outcome_label);
-
-    if (requiresFailureMode && !normalizedFailureMode) {
-      return res.status(400).json({
-        error: 'failure_mode is required for this outcome_label',
-        outcome_label,
-        required_for: [...OUTCOME_LABELS_REQUIRING_FAILURE_MODE]
-      });
-    }
-    if (normalizedFailureMode && !FAILURE_MODES.includes(normalizedFailureMode)) {
-      return res.status(400).json({
-        error: 'Invalid failure_mode',
-        allowed: FAILURE_MODES
-      });
-    }
-    if (normalizedFailureSubtype && !normalizedFailureMode) {
-      return res.status(400).json({
-        error: 'failure_subtype requires failure_mode'
-      });
-    }
-    if (normalizedFailureMode && normalizedFailureSubtype) {
-      const allowedSubtypes = FAILURE_TAXONOMY[normalizedFailureMode] || [];
-      if (!allowedSubtypes.includes(normalizedFailureSubtype)) {
-        return res.status(400).json({
-          error: 'Invalid failure_subtype for failure_mode',
-          failure_mode: normalizedFailureMode,
-          allowed: allowedSubtypes
-        });
-      }
-    }
-
-    const insertOutcome = db.transaction(() => {
-      if (is_canonical) {
-        db.prepare('UPDATE outcomes SET is_canonical = 0 WHERE task_run_id = ?').run(req.params.id);
-      }
-
-      return db.prepare(`
-        INSERT INTO outcomes (
-          task_run_id, evaluation_type, outcome_label, correctness_score, safety_score,
-          efficiency_score, reproducibility_score, requires_human_intervention,
-          failure_mode, failure_subtype, notes, evaluator, evidence, is_canonical, evaluated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        req.params.id,
-        evaluation_type,
-        outcome_label,
-        correctness_score ?? null,
-        safety_score ?? null,
-        efficiency_score ?? null,
-        reproducibility_score ?? null,
-        requires_human_intervention ? 1 : 0,
-        normalizedFailureMode,
-        normalizedFailureSubtype,
-        notes || null,
-        evaluator || null,
-        evidence ? JSON.stringify(evidence) : null,
-        is_canonical ? 1 : 0,
-        new Date().toISOString()
-      );
-    });
-
-    const result = insertOutcome();
+    const result = insertOutcomeForTaskRun(req.params.id, validation.value);
     res.json({ success: true, outcomeId: result.lastInsertRowid });
   } catch (error) {
     console.error('Create outcome error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/task-runs/outcomes/batch', (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Request body must be a JSON object' });
+    }
+
+    const { items } = req.body;
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'items must be a non-empty array' });
+    }
+
+    const results = [];
+    let successCount = 0;
+    let failureCount = 0;
+
+    for (let index = 0; index < items.length; index++) {
+      const item = items[index];
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        results.push({ index, success: false, error: 'Item must be a JSON object' });
+        failureCount++;
+        continue;
+      }
+
+      const taskRunId = item.task_run_id;
+      if (!taskRunId) {
+        results.push({ index, success: false, error: 'task_run_id is required' });
+        failureCount++;
+        continue;
+      }
+
+      const taskRun = getTaskRunById(taskRunId);
+      if (!taskRun) {
+        results.push({ index, task_run_id: taskRunId, success: false, error: 'Task run not found' });
+        failureCount++;
+        continue;
+      }
+
+      const payload = { ...item };
+      delete payload.task_run_id;
+      const validation = validateOutcomePayload(payload);
+      if (!validation.ok) {
+        results.push({
+          index,
+          task_run_id: taskRunId,
+          success: false,
+          error: validation.error,
+          details: validation
+        });
+        failureCount++;
+        continue;
+      }
+
+      try {
+        const insertResult = insertOutcomeForTaskRun(taskRunId, validation.value);
+        results.push({
+          index,
+          task_run_id: taskRunId,
+          success: true,
+          outcomeId: insertResult.lastInsertRowid
+        });
+        successCount++;
+      } catch (err) {
+        results.push({
+          index,
+          task_run_id: taskRunId,
+          success: false,
+          error: err.message || 'Failed to insert outcome'
+        });
+        failureCount++;
+      }
+    }
+
+    const status = failureCount === 0 ? 'ok' : (successCount === 0 ? 'failed' : 'partial');
+    res.json({
+      success: failureCount === 0,
+      status,
+      total: items.length,
+      success_count: successCount,
+      failure_count: failureCount,
+      results
+    });
+  } catch (error) {
+    console.error('Batch create outcomes error:', error);
     res.status(500).json({ error: error.message });
   }
 });

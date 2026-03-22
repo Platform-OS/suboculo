@@ -193,6 +193,10 @@ async function run() {
     const smokeTaskRunId = result.body.taskRuns[0].id;
     const secondSmokeTaskRunId = result.body.taskRuns[1].id;
 
+    result = await request('/task-runs?pageSize=10&runner=smoke-runner&has_canonical_outcome=false');
+    assert.equal(result.response.status, 200, 'has_canonical_outcome=false filter should succeed');
+    assert.equal(result.body.total, 2, 'all runs should initially require labeling');
+
     result = await request('/facets');
     assert.equal(result.response.status, 200, 'facets should include attempts');
     assert.ok(Array.isArray(result.body.attempts), 'facets.attempts should be an array');
@@ -218,6 +222,32 @@ async function run() {
     assert.equal(smokeRunnerKpiBeforeOutcomes.rates.success_rate, null, 'success rate should be null without canonical outcomes');
     assert.equal(smokeRunnerKpiBeforeOutcomes.cost.cost_per_success, null, 'cost per success should be null without successful runs');
     assert.ok(smokeRunnerKpiBeforeOutcomes.anomalies.some((a) => a.code === 'no_canonical_outcomes'), 'should flag missing canonical outcomes');
+
+    result = await request('/task-runs/outcomes/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        items: [
+          {
+            task_run_id: smokeTaskRunId,
+            evaluation_type: 'human',
+            outcome_label: 'partial_success',
+            evaluator: 'smoke-suite',
+            is_canonical: false
+          },
+          {
+            task_run_id: 999999,
+            evaluation_type: 'human',
+            outcome_label: 'success'
+          }
+        ]
+      })
+    });
+    assert.equal(result.response.status, 200, 'batch outcomes endpoint should succeed with partial results');
+    assert.equal(result.body.status, 'partial', 'batch outcomes should report partial status');
+    assert.equal(result.body.success_count, 1, 'batch outcomes should report one success');
+    assert.equal(result.body.failure_count, 1, 'batch outcomes should report one failure');
+    assert.ok(Array.isArray(result.body.results), 'batch outcomes should return per-item results');
 
     result = await request(`/task-runs/${smokeTaskRunId}/outcomes`, {
       method: 'POST',
@@ -277,6 +307,13 @@ async function run() {
     assert.ok(result.body.series.some((row) => row.failure_count >= 1), 'trends should include failure bucket');
     assert.ok(result.body.series.some((row) => row.success_count >= 1), 'trends should include success bucket');
     assert.ok(result.body.by_runner && result.body.by_runner['smoke-runner'], 'trends should include runner split');
+
+    result = await request('/reliability/trends/insights?runner=smoke-runner&source=derived_attempt&bucket=day&window_days=7');
+    assert.equal(result.response.status, 200, 'reliability trend insights endpoint should succeed');
+    assert.ok(Array.isArray(result.body.deltas), 'trend insights should include deltas');
+    assert.ok(result.body.deltas.length >= 1, 'trend insights should include at least one delta');
+    assert.ok(result.body.deltas.some((d) => d.insufficient_sample === true), 'trend insights should flag insufficient sample for sparse buckets');
+    assert.ok(result.body.insights && typeof result.body.insights === 'object', 'trend insights should include grouped insights');
 
     result = await request('/task-runs?pageSize=10&runner=smoke-runner&canonical_outcome_label=failure&failure_mode=execution_failure');
     assert.equal(result.response.status, 200, 'task run filters by canonical outcome and failure mode should succeed');
