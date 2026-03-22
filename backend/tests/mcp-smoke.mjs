@@ -31,10 +31,6 @@ function sleep(ms) {
 async function waitForServer(server, getOutput, timeoutMs = 10000) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
-    if (server.exitCode !== null) {
-      const out = getOutput();
-      throw new Error(`Server exited before startup (code ${server.exitCode})\n${out}`);
-    }
     try {
       const res = await fetch(`${baseUrl}/stats`);
       if (res.ok) return;
@@ -43,7 +39,8 @@ async function waitForServer(server, getOutput, timeoutMs = 10000) {
     }
     await sleep(200);
   }
-  throw new Error('Server did not start in time');
+  const out = getOutput();
+  throw new Error(`Server did not start in time (exitCode=${server.exitCode})\n${out}`);
 }
 
 async function request(pathname, options = {}) {
@@ -67,6 +64,32 @@ function assertCallResult(callResult, label) {
   );
   assert.ok(Array.isArray(callResult.content), `${label}: MCP content should be an array`);
   assert.ok(callResult.content.length >= 1, `${label}: MCP content should not be empty`);
+}
+
+function getCallText(callResult) {
+  if (!callResult || !Array.isArray(callResult.content)) return '';
+  return callResult.content
+    .filter((item) => item && item.type === 'text' && typeof item.text === 'string')
+    .map((item) => item.text)
+    .join('\n');
+}
+
+function assertCallSuccessText(callResult, label) {
+  assertCallResult(callResult, label);
+  const text = getCallText(callResult);
+  assert.ok(!/Failed to /i.test(text), `${label}: expected success text but got failure payload: ${text}`);
+}
+
+function assertCallFailureText(callResult, label, expectedFragment) {
+  assertCallResult(callResult, label);
+  const text = getCallText(callResult);
+  assert.ok(/Failed to /i.test(text), `${label}: expected failure text payload`);
+  if (expectedFragment) {
+    assert.ok(
+      text.includes(expectedFragment),
+      `${label}: expected failure payload to include "${expectedFragment}", got: ${text}`
+    );
+  }
 }
 
 async function run() {
@@ -162,6 +185,14 @@ async function run() {
     const listed = await client.listTools();
     const toolNames = new Set((listed.tools || []).map((t) => t.name));
     for (const required of [
+      'suboculo_get_facets',
+      'suboculo_get_stats',
+      'suboculo_list_sessions',
+      'suboculo_query_events',
+      'suboculo_get_session',
+      'suboculo_get_selection',
+      'suboculo_get_usage',
+      'suboculo_save_analysis',
       'suboculo_get_reliability_kpis',
       'suboculo_get_reliability_trends',
       'suboculo_get_failure_mode_trends',
@@ -172,28 +203,71 @@ async function run() {
       assert.ok(toolNames.has(required), `MCP should expose ${required}`);
     }
 
-    assertCallResult(
+    assertCallSuccessText(
+      await client.callTool({ name: 'suboculo_get_facets', arguments: {} }),
+      'suboculo_get_facets'
+    );
+    assertCallSuccessText(
+      await client.callTool({ name: 'suboculo_get_stats', arguments: {} }),
+      'suboculo_get_stats'
+    );
+    assertCallSuccessText(
+      await client.callTool({ name: 'suboculo_list_sessions', arguments: { runner: 'mcp-smoke', limit: 10 } }),
+      'suboculo_list_sessions'
+    );
+    assertCallSuccessText(
+      await client.callTool({
+        name: 'suboculo_query_events',
+        arguments: { runner: 'mcp-smoke', sessionId: 'mcp-session-1', limit: 20, sort: 'asc' }
+      }),
+      'suboculo_query_events'
+    );
+    assertCallSuccessText(
+      await client.callTool({ name: 'suboculo_get_session', arguments: { sessionId: 'mcp-session-1' } }),
+      'suboculo_get_session'
+    );
+    assertCallSuccessText(
+      await client.callTool({ name: 'suboculo_get_selection', arguments: {} }),
+      'suboculo_get_selection'
+    );
+    assertCallSuccessText(
+      await client.callTool({ name: 'suboculo_get_usage', arguments: { sessionId: 'mcp-session-1' } }),
+      'suboculo_get_usage'
+    );
+    assertCallSuccessText(
+      await client.callTool({
+        name: 'suboculo_save_analysis',
+        arguments: {
+          analysis: 'MCP smoke analysis',
+          event_count: 4,
+          prompt: 'MCP smoke test save analysis'
+        }
+      }),
+      'suboculo_save_analysis'
+    );
+
+    assertCallSuccessText(
       await client.callTool({ name: 'suboculo_get_reliability_kpis', arguments: { runner: 'mcp-smoke', source: 'derived_attempt' } }),
       'suboculo_get_reliability_kpis'
     );
-    assertCallResult(
+    assertCallSuccessText(
       await client.callTool({ name: 'suboculo_get_reliability_trends', arguments: { runner: 'mcp-smoke', bucket: 'day', window_days: 7 } }),
       'suboculo_get_reliability_trends'
     );
-    assertCallResult(
+    assertCallSuccessText(
       await client.callTool({ name: 'suboculo_get_failure_mode_trends', arguments: { runner: 'mcp-smoke', bucket: 'day', window_days: 7 } }),
       'suboculo_get_failure_mode_trends'
     );
-    assertCallResult(
+    assertCallSuccessText(
       await client.callTool({ name: 'suboculo_get_reliability_review', arguments: { runner: 'mcp-smoke', source: 'derived_attempt', bucket: 'week' } }),
       'suboculo_get_reliability_review'
     );
-    assertCallResult(
+    assertCallSuccessText(
       await client.callTool({ name: 'suboculo_get_task_run_after_action_report', arguments: { task_run_id: taskRunId } }),
       'suboculo_get_task_run_after_action_report'
     );
 
-    assertCallResult(
+    assertCallSuccessText(
       await client.callTool({
         name: 'suboculo_record_task_run_outcome',
         arguments: {
@@ -206,6 +280,87 @@ async function run() {
       }),
       'suboculo_record_task_run_outcome'
     );
+
+    // Negative paths: existing tool invocation but backend validation/retrieval failure
+    assertCallFailureText(
+      await client.callTool({
+        name: 'suboculo_get_task_run_after_action_report',
+        arguments: { task_run_id: 999999 }
+      }),
+      'suboculo_get_task_run_after_action_report (invalid id)',
+      'Task run not found'
+    );
+    assertCallFailureText(
+      await client.callTool({
+        name: 'suboculo_record_task_run_outcome',
+        arguments: {
+          task_run_id: taskRunId,
+          evaluation_type: 'human',
+          outcome_label: 'failure',
+          evaluator: 'mcp-smoke-negative'
+        }
+      }),
+      'suboculo_record_task_run_outcome (invalid payload)',
+      'requires failure_mode'
+    );
+
+    // Negative path: MCP schema-level validation rejection
+    let invalidArgsRejected = false;
+    try {
+      await client.callTool({
+        name: 'suboculo_list_sessions',
+        arguments: { limit: 999 } // > max(50)
+      });
+    } catch (error) {
+      invalidArgsRejected = true;
+      const message = error?.message || String(error);
+      assert.ok(/limit|validation|Invalid arguments/i.test(message), `unexpected validation error: ${message}`);
+    }
+    assert.equal(invalidArgsRejected, true, 'schema-invalid MCP arguments should be rejected');
+
+    let invalidTrendsBucketRejected = false;
+    try {
+      await client.callTool({
+        name: 'suboculo_get_reliability_trends',
+        arguments: { runner: 'mcp-smoke', bucket: 'month' }
+      });
+    } catch (error) {
+      invalidTrendsBucketRejected = true;
+      const message = error?.message || String(error);
+      assert.ok(/bucket|validation|Invalid arguments/i.test(message), `unexpected validation error: ${message}`);
+    }
+    assert.equal(invalidTrendsBucketRejected, true, 'invalid trends bucket should be rejected');
+
+    let invalidWindowDaysRejected = false;
+    try {
+      await client.callTool({
+        name: 'suboculo_get_failure_mode_trends',
+        arguments: { runner: 'mcp-smoke', bucket: 'day', window_days: 0 }
+      });
+    } catch (error) {
+      invalidWindowDaysRejected = true;
+      const message = error?.message || String(error);
+      assert.ok(/window_days|validation|Invalid arguments/i.test(message), `unexpected validation error: ${message}`);
+    }
+    assert.equal(invalidWindowDaysRejected, true, 'invalid window_days should be rejected');
+
+    let invalidScoreRejected = false;
+    try {
+      await client.callTool({
+        name: 'suboculo_record_task_run_outcome',
+        arguments: {
+          task_run_id: taskRunId,
+          evaluation_type: 'human',
+          outcome_label: 'success',
+          correctness_score: 1.5
+        }
+      });
+    } catch (error) {
+      invalidScoreRejected = true;
+      const message = error?.message || String(error);
+      assert.ok(/correctness_score|validation|Invalid arguments/i.test(message), `unexpected validation error: ${message}`);
+    }
+    assert.equal(invalidScoreRejected, true, 'out-of-range score should be rejected');
 
     const runAfterOutcome = await request(`/task-runs/${taskRunId}`);
     assert.equal(runAfterOutcome.response.status, 200, 'task run detail should succeed');

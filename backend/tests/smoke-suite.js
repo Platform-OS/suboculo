@@ -242,6 +242,9 @@ async function run() {
     assert.equal(result.body.cache?.source, 'db', 'second report request should come from persisted cache');
     assert.equal(result.body.generated_at, initialAarGeneratedAt, 'cached report should preserve generated_at');
 
+    result = await request('/task-runs/999999/after-action-report');
+    assert.equal(result.response.status, 404, 'after-action report should return 404 for unknown task run');
+
     result = await request('/facets');
     assert.equal(result.response.status, 200, 'facets should include attempts');
     assert.ok(Array.isArray(result.body.attempts), 'facets.attempts should be an array');
@@ -301,6 +304,20 @@ async function run() {
     assert.equal(result.body.success_count, 1, 'batch outcomes should report one success');
     assert.equal(result.body.failure_count, 1, 'batch outcomes should report one failure');
     assert.ok(Array.isArray(result.body.results), 'batch outcomes should return per-item results');
+
+    result = await request('/task-runs/outcomes/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        items: [
+          {
+            evaluation_type: 'human',
+            outcome_label: 'success'
+          }
+        ]
+      })
+    });
+    assert.equal(result.response.status, 400, 'batch outcomes should reject items without task_run_id');
 
     result = await request(`/task-runs/${smokeTaskRunId}/outcomes`, {
       method: 'POST',
