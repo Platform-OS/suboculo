@@ -81,6 +81,24 @@ const KPI_MIN_CANONICAL_SAMPLE = 5;
 const KPI_MIN_SUCCESS_SAMPLE_FOR_COST = 3;
 const ATTEMPT_IDLE_GAP_MS = 45 * 60 * 1000;
 const gitRevisionCache = new Map();
+const KPI_THRESHOLDS_PATH = process.env.SUBOCULO_THRESHOLDS_PATH || path.join(process.cwd(), '.suboculo', 'thresholds.json');
+const KPI_TARGET_METRICS = new Set([
+  'success_rate',
+  'first_pass_rate',
+  'retry_rate',
+  'unsafe_success_rate',
+  'intervention_rate',
+  'cost_per_success'
+]);
+const DEFAULT_KPI_TARGETS = {
+  success_rate: { min: 0.85, severity: 'high' },
+  retry_rate: { max: 0.2, severity: 'medium' }
+};
+let kpiTargetsCache = {
+  mtimeMs: null,
+  loadedPath: KPI_THRESHOLDS_PATH,
+  targets: DEFAULT_KPI_TARGETS
+};
 
 // SSE Event Emitter for real-time updates
 const sseEmitter = new EventEmitter();
@@ -621,6 +639,65 @@ function ratioOrNull(numerator, denominator) {
   return +(numerator / denominator).toFixed(6);
 }
 
+function formatKpiValue(metric, value) {
+  if (value == null) return 'null';
+  if (metric === 'cost_per_success') return `$${Number(value).toFixed(4)}`;
+  return `${(Number(value) * 100).toFixed(1)}%`;
+}
+
+function normalizeKpiTargets(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
+  const normalized = {};
+  for (const [metric, rule] of Object.entries(input)) {
+    if (!KPI_TARGET_METRICS.has(metric)) continue;
+    if (!rule || typeof rule !== 'object' || Array.isArray(rule)) continue;
+    const min = Number.isFinite(rule.min) ? rule.min : null;
+    const max = Number.isFinite(rule.max) ? rule.max : null;
+    if (min == null && max == null) continue;
+    normalized[metric] = {
+      min,
+      max,
+      severity: ['low', 'medium', 'high'].includes(rule.severity) ? rule.severity : 'medium'
+    };
+  }
+  return normalized;
+}
+
+function getConfiguredKpiTargets() {
+  try {
+    const stat = fs.statSync(KPI_THRESHOLDS_PATH);
+    if (
+      kpiTargetsCache.loadedPath === KPI_THRESHOLDS_PATH &&
+      kpiTargetsCache.mtimeMs === stat.mtimeMs
+    ) {
+      return kpiTargetsCache.targets;
+    }
+    const raw = fs.readFileSync(KPI_THRESHOLDS_PATH, 'utf8');
+    const parsed = JSON.parse(raw);
+    const merged = {
+      ...DEFAULT_KPI_TARGETS,
+      ...normalizeKpiTargets(parsed)
+    };
+    kpiTargetsCache = {
+      loadedPath: KPI_THRESHOLDS_PATH,
+      mtimeMs: stat.mtimeMs,
+      targets: merged
+    };
+    return merged;
+  } catch (error) {
+    const missing = error && (error.code === 'ENOENT' || error.code === 'ENOTDIR');
+    if (!missing) {
+      logger.warn(`[suboculo] Failed to load KPI thresholds from ${KPI_THRESHOLDS_PATH}: ${error.message}`);
+    }
+    kpiTargetsCache = {
+      loadedPath: KPI_THRESHOLDS_PATH,
+      mtimeMs: null,
+      targets: DEFAULT_KPI_TARGETS
+    };
+    return DEFAULT_KPI_TARGETS;
+  }
+}
+
 function finalizeTrendBucket(bucket) {
   const withCanonical = bucket.with_canonical_outcome;
   const success = bucket.success_count;
@@ -879,6 +956,40 @@ function buildFailureModeTrendsData(query = {}) {
   };
 }
 
+function fetchReliabilityRows(query = {}) {
+  const { whereSql, params } = buildTaskRunsWhereClause(query, 'tr');
+  return db.prepare(`
+    SELECT
+      tr.id,
+      tr.runner,
+      tr.retry_count,
+      tr.estimated_cost,
+      tr.total_duration_ms,
+      tr.token_input,
+      tr.token_output,
+      tr.token_cache_creation,
+      tr.token_cache_read,
+      (
+        SELECT o.outcome_label
+        FROM outcomes o
+        WHERE o.task_run_id = tr.id
+          AND o.is_canonical = 1
+        ORDER BY o.evaluated_at DESC, o.id DESC
+        LIMIT 1
+      ) AS canonical_outcome_label,
+      (
+        SELECT o.requires_human_intervention
+        FROM outcomes o
+        WHERE o.task_run_id = tr.id
+          AND o.is_canonical = 1
+        ORDER BY o.evaluated_at DESC, o.id DESC
+        LIMIT 1
+      ) AS canonical_requires_human_intervention
+    FROM task_runs tr
+    WHERE ${whereSql}
+  `).all(...params);
+}
+
 function summarizeReliabilityKpis(rows) {
   const totalRuns = rows.length;
   const withCanonical = rows.filter(r => !!r.canonical_outcome_label);
@@ -1075,8 +1186,10 @@ function insertOutcomeForTaskRun(taskRunId, outcomeInput) {
   return insertOutcome(taskRunId, outcomeInput);
 }
 
-function deriveKpiAnomalies(kpiSummary) {
+function deriveKpiAnomalies(kpiSummary, targets = {}) {
   const counts = kpiSummary?.counts || {};
+  const rates = kpiSummary?.rates || {};
+  const cost = kpiSummary?.cost || {};
   const withCanonical = Number(counts.with_canonical_outcome || 0);
   const successCount = Number(counts.successful_runs || 0);
   const anomalies = [];
@@ -1105,7 +1218,222 @@ function deriveKpiAnomalies(kpiSummary) {
     });
   }
 
+  const metricValues = {
+    success_rate: rates.success_rate,
+    first_pass_rate: rates.first_pass_rate,
+    retry_rate: rates.retry_rate,
+    unsafe_success_rate: rates.unsafe_success_rate,
+    intervention_rate: rates.intervention_rate,
+    cost_per_success: cost.cost_per_success
+  };
+  for (const [metric, rule] of Object.entries(targets || {})) {
+    const value = metricValues[metric];
+    if (value == null) continue;
+    if (rule.min != null && value < rule.min) {
+      anomalies.push({
+        code: `below_target_${metric}`,
+        severity: rule.severity || 'medium',
+        message: `${metric} is ${formatKpiValue(metric, value)}, below target ${formatKpiValue(metric, rule.min)}.`
+      });
+    }
+    if (rule.max != null && value > rule.max) {
+      anomalies.push({
+        code: `above_target_${metric}`,
+        severity: rule.severity || 'medium',
+        message: `${metric} is ${formatKpiValue(metric, value)}, above target ${formatKpiValue(metric, rule.max)}.`
+      });
+    }
+  }
+
   return anomalies;
+}
+
+function buildReliabilityReviewMarkdown(review) {
+  const period = review.period || {};
+  const kpis = review.kpis || {};
+  const rates = kpis.rates || {};
+  const cost = kpis.cost || {};
+  const counts = kpis.counts || {};
+  const lines = [
+    '# Reliability Review',
+    '',
+    `- Generated at: ${review.generated_at}`,
+    `- From: ${period.from || '—'}`,
+    `- To: ${period.to || '—'}`,
+    '',
+    '## KPI Snapshot',
+    '',
+    `- Task runs: ${counts.task_runs ?? 0}`,
+    `- Canonical outcomes: ${counts.with_canonical_outcome ?? 0}`,
+    `- Success rate: ${formatKpiValue('success_rate', rates.success_rate)}`,
+    `- Retry rate: ${formatKpiValue('retry_rate', rates.retry_rate)}`,
+    `- Intervention rate: ${formatKpiValue('intervention_rate', rates.intervention_rate)}`,
+    `- Cost per success: ${formatKpiValue('cost_per_success', cost.cost_per_success)}`,
+    ''
+  ];
+
+  lines.push('## Signals', '');
+  const anomalies = review.anomalies || [];
+  if (!anomalies.length) lines.push('- No KPI anomalies.');
+  else anomalies.slice(0, 8).forEach((a) => lines.push(`- [${a.severity}] ${a.code}: ${a.message}`));
+  lines.push('');
+
+  lines.push('## Failure Modes', '');
+  const latestFailureBucket = review.failure_modes?.latest_bucket || null;
+  if (!latestFailureBucket || !latestFailureBucket.by_mode?.length) {
+    lines.push('- No failure mode data in this period.');
+  } else {
+    latestFailureBucket.by_mode.slice(0, 5).forEach((row) => {
+      lines.push(`- ${row.failure_mode}: ${row.count} (${formatKpiValue('retry_rate', row.failure_mode_share)})`);
+    });
+  }
+  lines.push('');
+
+  lines.push('## Backlog', '');
+  lines.push(`- Runs without canonical outcome: ${review.labeling_backlog?.no_canonical_outcome_runs ?? 0}`);
+  lines.push('');
+
+  lines.push('## Top Failing Runs', '');
+  const failingRuns = review.top_failing_runs || [];
+  if (!failingRuns.length) {
+    lines.push('- No failing runs in this period.');
+  } else {
+    for (const run of failingRuns) {
+      lines.push(`- #${run.id} ${run.task_key} | ${run.canonical_outcome_label} | errors=${run.error_count} retries=${run.retry_count} cost=${formatKpiValue('cost_per_success', run.estimated_cost)}`);
+    }
+  }
+
+  return lines.join('\n').trim();
+}
+
+function buildReliabilityReviewData(query = {}) {
+  const scopedQuery = { ...query };
+  if (scopedQuery.week_of && !scopedQuery.from && !scopedQuery.to) {
+    const weekDate = new Date(scopedQuery.week_of);
+    if (!Number.isNaN(weekDate.getTime())) {
+      const weekStart = floorToBucketStart(weekDate.toISOString(), 'week');
+      const weekEnd = addBucketSpan(weekStart, 'week');
+      scopedQuery.from = weekStart.toISOString();
+      scopedQuery.to = weekEnd.toISOString();
+    }
+  }
+  if (!scopedQuery.from && !scopedQuery.to) {
+    scopedQuery.from = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  }
+
+  const rows = fetchReliabilityRows(scopedQuery);
+  const kpis = summarizeReliabilityKpis(rows);
+  const targets = getConfiguredKpiTargets();
+  const anomalies = deriveKpiAnomalies(kpis, targets);
+  const trendQuery = {
+    ...scopedQuery,
+    bucket: scopedQuery.bucket === 'day' ? 'day' : 'week'
+  };
+  const trends = buildReliabilityTrendsData(trendQuery);
+  const trendInsights = (() => {
+    const series = trends.series || [];
+    if (series.length < 2) return null;
+    const previous = series[series.length - 2];
+    const current = series[series.length - 1];
+    const metricDelta = (key) => {
+      if (previous[key] == null || current[key] == null) return null;
+      return +(current[key] - previous[key]).toFixed(6);
+    };
+    return {
+      previous_bucket_start: previous.bucket_start,
+      current_bucket_start: current.bucket_start,
+      success_rate_delta: metricDelta('success_rate'),
+      retry_rate_delta: metricDelta('retry_rate'),
+      cost_per_success_delta: metricDelta('cost_per_success')
+    };
+  })();
+  const failureModes = buildFailureModeTrendsData(trendQuery);
+
+  const backlogWhere = buildTaskRunsWhereClause({
+    ...scopedQuery,
+    has_canonical_outcome: 'false'
+  }, 'tr');
+  const backlogRow = db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM task_runs tr
+    WHERE ${backlogWhere.whereSql}
+  `).get(...backlogWhere.params);
+
+  const topFailWhere = buildTaskRunsWhereClause(scopedQuery, 'tr');
+  const topFailingRuns = db.prepare(`
+    SELECT
+      tr.id,
+      tr.task_key,
+      tr.title,
+      tr.runner,
+      tr.started_at,
+      tr.ended_at,
+      tr.error_count,
+      tr.retry_count,
+      tr.estimated_cost,
+      (
+        SELECT o.outcome_label
+        FROM outcomes o
+        WHERE o.task_run_id = tr.id
+          AND o.is_canonical = 1
+        ORDER BY o.evaluated_at DESC, o.id DESC
+        LIMIT 1
+      ) AS canonical_outcome_label,
+      (
+        SELECT o.failure_mode
+        FROM outcomes o
+        WHERE o.task_run_id = tr.id
+          AND o.is_canonical = 1
+        ORDER BY o.evaluated_at DESC, o.id DESC
+        LIMIT 1
+      ) AS canonical_failure_mode
+    FROM task_runs tr
+    WHERE ${topFailWhere.whereSql}
+      AND EXISTS (
+        SELECT 1
+        FROM outcomes o
+        WHERE o.task_run_id = tr.id
+          AND o.is_canonical = 1
+          AND o.outcome_label IN ('failure', 'unsafe_success', 'interrupted', 'abandoned')
+      )
+    ORDER BY tr.error_count DESC, tr.estimated_cost DESC, tr.started_at DESC
+    LIMIT 5
+  `).all(...topFailWhere.params);
+
+  const review = {
+    generated_at: new Date().toISOString(),
+    period: {
+      from: scopedQuery.from || null,
+      to: scopedQuery.to || null,
+      bucket: trendQuery.bucket
+    },
+    filters: {
+      runner: scopedQuery.runner || null,
+      source: scopedQuery.source || null,
+      status: scopedQuery.status || null
+    },
+    thresholds: {
+      min_canonical_sample: KPI_MIN_CANONICAL_SAMPLE,
+      min_success_sample_for_cost: KPI_MIN_SUCCESS_SAMPLE_FOR_COST,
+      targets
+    },
+    kpis,
+    anomalies,
+    trends: {
+      latest_bucket: (trends.series || []).length ? trends.series[trends.series.length - 1] : null,
+      delta_from_previous_bucket: trendInsights
+    },
+    failure_modes: {
+      latest_bucket: (failureModes.series || []).length ? failureModes.series[failureModes.series.length - 1] : null,
+      insufficient_evidence: failureModes.insufficient_evidence || []
+    },
+    labeling_backlog: {
+      no_canonical_outcome_runs: backlogRow?.count || 0
+    },
+    top_failing_runs: topFailingRuns
+  };
+  review.markdown = buildReliabilityReviewMarkdown(review);
+  return review;
 }
 
 function normalizeModelName(model) {
@@ -2051,39 +2379,18 @@ app.get('/api/task-runs/outcome-summary', (req, res) => {
 
 app.get('/api/reliability/kpis', (req, res) => {
   try {
-    const { whereSql, params } = buildTaskRunsWhereClause(req.query, 'tr');
-
-    const rows = db.prepare(`
-      SELECT
-        tr.id,
-        tr.retry_count,
-        tr.estimated_cost,
-        tr.total_duration_ms,
-        tr.token_input,
-        tr.token_output,
-        tr.token_cache_creation,
-        tr.token_cache_read,
-        (
-          SELECT o.outcome_label
-          FROM outcomes o
-          WHERE o.task_run_id = tr.id
-            AND o.is_canonical = 1
-          ORDER BY o.evaluated_at DESC, o.id DESC
-          LIMIT 1
-        ) AS canonical_outcome_label,
-        (
-          SELECT o.requires_human_intervention
-          FROM outcomes o
-          WHERE o.task_run_id = tr.id
-            AND o.is_canonical = 1
-          ORDER BY o.evaluated_at DESC, o.id DESC
-          LIMIT 1
-        ) AS canonical_requires_human_intervention
-      FROM task_runs tr
-      WHERE ${whereSql}
-    `).all(...params);
-
-    res.json(summarizeReliabilityKpis(rows));
+    const rows = fetchReliabilityRows(req.query);
+    const targets = getConfiguredKpiTargets();
+    const kpis = summarizeReliabilityKpis(rows);
+    res.json({
+      ...kpis,
+      thresholds: {
+        min_canonical_sample: KPI_MIN_CANONICAL_SAMPLE,
+        min_success_sample_for_cost: KPI_MIN_SUCCESS_SAMPLE_FOR_COST,
+        targets
+      },
+      anomalies: deriveKpiAnomalies(kpis, targets)
+    });
   } catch (error) {
     console.error('Reliability KPI error:', error);
     res.status(500).json({ error: error.message });
@@ -2134,38 +2441,8 @@ app.get('/api/reliability/kpi-definitions', (_req, res) => {
 
 app.get('/api/reliability/kpis/by-runner', (req, res) => {
   try {
-    const { whereSql, params } = buildTaskRunsWhereClause(req.query, 'tr');
-
-    const rows = db.prepare(`
-      SELECT
-        tr.id,
-        tr.runner,
-        tr.retry_count,
-        tr.estimated_cost,
-        tr.total_duration_ms,
-        tr.token_input,
-        tr.token_output,
-        tr.token_cache_creation,
-        tr.token_cache_read,
-        (
-          SELECT o.outcome_label
-          FROM outcomes o
-          WHERE o.task_run_id = tr.id
-            AND o.is_canonical = 1
-          ORDER BY o.evaluated_at DESC, o.id DESC
-          LIMIT 1
-        ) AS canonical_outcome_label,
-        (
-          SELECT o.requires_human_intervention
-          FROM outcomes o
-          WHERE o.task_run_id = tr.id
-            AND o.is_canonical = 1
-          ORDER BY o.evaluated_at DESC, o.id DESC
-          LIMIT 1
-        ) AS canonical_requires_human_intervention
-      FROM task_runs tr
-      WHERE ${whereSql}
-    `).all(...params);
+    const rows = fetchReliabilityRows(req.query);
+    const targets = getConfiguredKpiTargets();
 
     const byRunnerMap = new Map();
     for (const row of rows) {
@@ -2181,7 +2458,7 @@ app.get('/api/reliability/kpis/by-runner', (req, res) => {
         return {
           runner,
           ...kpis,
-          anomalies: deriveKpiAnomalies(kpis)
+          anomalies: deriveKpiAnomalies(kpis, targets)
         };
       });
 
@@ -2189,7 +2466,8 @@ app.get('/api/reliability/kpis/by-runner', (req, res) => {
       total_runners: by_runner.length,
       thresholds: {
         min_canonical_sample: KPI_MIN_CANONICAL_SAMPLE,
-        min_success_sample_for_cost: KPI_MIN_SUCCESS_SAMPLE_FOR_COST
+        min_success_sample_for_cost: KPI_MIN_SUCCESS_SAMPLE_FOR_COST,
+        targets
       },
       by_runner
     });
@@ -2324,6 +2602,15 @@ app.get('/api/reliability/trends/failure-modes', (req, res) => {
     res.json(buildFailureModeTrendsData(req.query));
   } catch (error) {
     console.error('Reliability failure-mode trends error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/reliability/review', (req, res) => {
+  try {
+    res.json(buildReliabilityReviewData(req.query));
+  } catch (error) {
+    console.error('Reliability review error:', error);
     res.status(500).json({ error: error.message });
   }
 });

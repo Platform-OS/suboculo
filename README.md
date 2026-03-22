@@ -72,6 +72,7 @@ Analyze my Read vs Edit ratio
 Show reliability KPIs for source=derived_attempt
 Show reliability trends for the last 30 days, bucketed by week
 Show failure mode trends for runner=claude-code
+Generate a reliability review for runner=claude-code, week_of=2026-03-16
 Generate an after-action report for task run 42
 ```
 
@@ -98,6 +99,7 @@ Compare OpenCode vs Claude Code tool usage
 Show reliability KPIs for runner=opencode and source=derived_attempt
 Show reliability trends for runner=opencode over the last 30 days
 Show failure mode trends for runner=opencode by week
+Generate a reliability review for runner=opencode, week_of=2026-03-16
 Generate an after-action report for task run 42
 ```
 
@@ -164,7 +166,7 @@ Monitor and analyze AI agent activity in real-time:
 - Multi-runner support (Claude Code and OpenCode share same database)
 
 ### Analysis & Querying
-- **MCP tools** for CLI queries via Claude (13 tools, including reliability KPIs/trends/AAR)
+- **MCP tools** for CLI queries via Claude (14 tools, including reliability KPIs/trends/review/AAR)
 - **Web UI** for visual filtering and exploration
 - **LLM analysis** with custom prompts (API or CLI)
 - **CLI bridge** - Select in UI, analyze in Claude Code, save back to UI
