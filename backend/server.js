@@ -81,6 +81,7 @@ const KPI_MIN_CANONICAL_SAMPLE = 5;
 const KPI_MIN_SUCCESS_SAMPLE_FOR_COST = 3;
 const ATTEMPT_IDLE_GAP_MS = 45 * 60 * 1000;
 const gitRevisionCache = new Map();
+const AUTO_LABEL_ENABLED = String(process.env.SUBOCULO_AUTO_LABEL ?? 'true').toLowerCase() !== 'false';
 const KPI_THRESHOLDS_PATH = process.env.SUBOCULO_THRESHOLDS_PATH || path.join(process.cwd(), '.suboculo', 'thresholds.json');
 const KPI_TARGET_METRICS = new Set([
   'success_rate',
@@ -1186,6 +1187,61 @@ function insertOutcomeForTaskRun(taskRunId, outcomeInput) {
   return insertOutcome(taskRunId, outcomeInput);
 }
 
+function getCanonicalOutcomeForTaskRun(taskRunId) {
+  return db.prepare(`
+    SELECT id, evaluation_type, outcome_label, evaluator, evaluated_at
+    FROM outcomes
+    WHERE task_run_id = ?
+      AND is_canonical = 1
+    ORDER BY evaluated_at DESC, id DESC
+    LIMIT 1
+  `).get(taskRunId);
+}
+
+function autoLabelTaskRunIfEligible(taskRunId, summary) {
+  if (!AUTO_LABEL_ENABLED) return { applied: false, reason: 'disabled' };
+  if (!summary) return { applied: false, reason: 'missing_summary' };
+
+  const existingCanonical = getCanonicalOutcomeForTaskRun(taskRunId);
+  if (existingCanonical) {
+    return { applied: false, reason: 'canonical_exists', canonical: existingCanonical };
+  }
+
+  const eligible = (
+    summary.status === 'completed' &&
+    Number(summary.errorCount || 0) === 0 &&
+    Number(summary.interruptCount || 0) === 0 &&
+    Number(summary.totalToolCalls || 0) > 0
+  );
+  if (!eligible) {
+    return { applied: false, reason: 'rule_not_matched' };
+  }
+
+  const outcome = {
+    evaluation_type: 'rule_based',
+    outcome_label: 'success',
+    correctness_score: null,
+    safety_score: null,
+    efficiency_score: null,
+    reproducibility_score: null,
+    requires_human_intervention: false,
+    failure_mode: null,
+    failure_subtype: null,
+    notes: 'Auto-labeled by conservative rule: completed + no errors + no interrupts.',
+    evaluator: 'auto-labeler/v1',
+    evidence: {
+      rule_id: 'completed_no_errors_no_interrupts_v1',
+      status: summary.status,
+      error_count: summary.errorCount || 0,
+      interrupt_count: summary.interruptCount || 0,
+      total_tool_calls: summary.totalToolCalls || 0
+    },
+    is_canonical: true
+  };
+  const inserted = insertOutcomeForTaskRun(taskRunId, outcome);
+  return { applied: true, outcomeId: inserted.lastInsertRowid, rule_id: outcome.evidence.rule_id };
+}
+
 function deriveKpiAnomalies(kpiSummary, targets = {}) {
   const counts = kpiSummary?.counts || {};
   const rates = kpiSummary?.rates || {};
@@ -1775,6 +1831,7 @@ function upsertTaskRunForRootSession(rootSessionId) {
     const taskRun = db.prepare('SELECT id FROM task_runs WHERE task_key = ?').get(taskKey);
     if (!taskRun?.id) return;
     replaceLinks(taskRun.id, attemptRows);
+    autoLabelTaskRunIfEligible(taskRun.id, summary);
     taskRunIds.push(taskRun.id);
   });
 
