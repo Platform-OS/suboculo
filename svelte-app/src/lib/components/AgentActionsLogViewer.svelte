@@ -90,6 +90,7 @@
 
   // Main tab state
   let mainTab = "events";
+  let hasHydratedMainTabFromUrl = false;
 
   // Analysis History state
   let analyses = [];
@@ -109,6 +110,8 @@
 
   // Load initial data
   onMount(async () => {
+    hydrateMainTabFromUrl();
+    hasHydratedMainTabFromUrl = true;
     await loadData();
     await loadOutcomeTaxonomy();
     await loadKpiDefinitions();
@@ -132,12 +135,37 @@
     };
   });
 
+  function hydrateMainTabFromUrl() {
+    const params = new URLSearchParams(window.location.search);
+    const tab = params.get("tab");
+    if (tab === "task-runs" || tab === "analyses" || tab === "events") {
+      mainTab = tab;
+      return;
+    }
+    // Backward compatibility for old shared links
+    if (tab === "taskruns") {
+      mainTab = "task-runs";
+    }
+  }
+
+  function syncMainTabToUrl() {
+    const params = new URLSearchParams(window.location.search);
+    if (mainTab === "events") params.delete("tab");
+    else params.set("tab", mainTab);
+    const query = params.toString();
+    const nextUrl = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash || ""}`;
+    window.history.replaceState({}, "", nextUrl);
+  }
+
   // Reactive: fetch when filters change
   $: if (query !== undefined) {
     debouncedFetch();
   }
   $: if (kind || type || tool || subagent || rootSession || tagFilter || runner || event || attempt || sortKey || sortDir || page || pageSize) {
     fetchEntries();
+  }
+  $: if (hasHydratedMainTabFromUrl && mainTab) {
+    syncMainTabToUrl();
   }
 
   let debounceTimer;

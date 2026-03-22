@@ -44,6 +44,7 @@
   let reliabilityKpiComparePeriodATo = "";
   let reliabilityKpiComparePeriodBFrom = "";
   let reliabilityKpiComparePeriodBTo = "";
+  let hasHydratedStateFromUrl = false;
   let taskRunStatusFilter = "all";
   let taskRunRunnerFilter = "all";
   let taskRunQuery = "";
@@ -120,6 +121,8 @@
   };
 
   onMount(async () => {
+    hydrateStateFromUrl();
+    hasHydratedStateFromUrl = true;
     await loadTaskRuns();
   });
 
@@ -459,6 +462,28 @@
     }
   }
 
+  async function copyKpiCompareShareLink() {
+    const link = window.location.href;
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(link);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = link;
+        textarea.style.position = "fixed";
+        textarea.style.left = "-9999px";
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
+      showNotice("KPI compare link copied", "success");
+    } catch (err) {
+      console.error("Failed to copy KPI compare link:", err);
+      showNotice("Failed to copy KPI compare link", "error");
+    }
+  }
+
   function openNeedsLabelingQueue() {
     taskRunNeedsLabelingOnly = true;
     taskRunCanonicalOutcomeFilter = "all";
@@ -576,6 +601,139 @@
     if (value == null || Number.isNaN(value)) return "—";
     const sign = value > 0 ? "+" : "";
     return `${sign}${Number(value).toFixed(precision)}`;
+  }
+
+  function toDateInputValue(value) {
+    if (!value) return "";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    const year = date.getUTCFullYear();
+    const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(date.getUTCDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  function getStringParam(params, key, fallback = "") {
+    const value = params.get(key);
+    return value == null ? fallback : value;
+  }
+
+  function getEnumParam(params, key, allowed, fallback) {
+    const value = params.get(key);
+    return value && allowed.includes(value) ? value : fallback;
+  }
+
+  function getBooleanParam(params, key, fallback = false) {
+    const value = params.get(key);
+    if (value === "true") return true;
+    if (value === "false") return false;
+    return fallback;
+  }
+
+  function hydrateStateFromUrl() {
+    const params = new URLSearchParams(window.location.search);
+
+    taskRunStatusFilter = getStringParam(params, "tr_status", taskRunStatusFilter) || "all";
+    taskRunRunnerFilter = getStringParam(params, "tr_runner", taskRunRunnerFilter) || "all";
+    taskRunQuery = getStringParam(params, "tr_query", taskRunQuery);
+    taskRunCanonicalOutcomeFilter = getStringParam(params, "tr_canonical_outcome", taskRunCanonicalOutcomeFilter) || "all";
+    taskRunFailureModeFilter = getStringParam(params, "tr_failure_mode", taskRunFailureModeFilter) || "all";
+    taskRunFailureSubtypeFilter = getStringParam(params, "tr_failure_subtype", taskRunFailureSubtypeFilter) || "all";
+    taskRunHumanInterventionFilter = getStringParam(params, "tr_human_intervention", taskRunHumanInterventionFilter) || "all";
+    taskRunNeedsLabelingOnly = getBooleanParam(params, "tr_needs_labeling", taskRunNeedsLabelingOnly);
+
+    reliabilityKpiCompareMode = getEnumParam(params, "cmp_mode", ["preset", "custom"], reliabilityKpiCompareMode);
+    reliabilityKpiComparePreset = getEnumParam(params, "cmp_preset", ["7", "14", "30"], reliabilityKpiComparePreset);
+
+    reliabilityKpiComparePeriodAFrom = toDateInputValue(getStringParam(params, "cmp_a_from"));
+    reliabilityKpiComparePeriodATo = toDateInputValue(getStringParam(params, "cmp_a_to"));
+    reliabilityKpiComparePeriodBFrom = toDateInputValue(getStringParam(params, "cmp_b_from"));
+    reliabilityKpiComparePeriodBTo = toDateInputValue(getStringParam(params, "cmp_b_to"));
+  }
+
+  function syncStateToUrl() {
+    const params = new URLSearchParams(window.location.search);
+
+    const setOrDelete = (key, value, shouldPersist = Boolean(value)) => {
+      if (shouldPersist) params.set(key, String(value));
+      else params.delete(key);
+    };
+
+    setOrDelete("tr_source", "derived_attempt", true);
+    setOrDelete("tab", "task-runs", true);
+    setOrDelete("tr_status", taskRunStatusFilter, taskRunStatusFilter !== "all");
+    setOrDelete("tr_runner", taskRunRunnerFilter, taskRunRunnerFilter !== "all");
+    setOrDelete("tr_query", taskRunQuery, !!taskRunQuery);
+    setOrDelete("tr_canonical_outcome", taskRunCanonicalOutcomeFilter, taskRunCanonicalOutcomeFilter !== "all");
+    setOrDelete("tr_failure_mode", taskRunFailureModeFilter, taskRunFailureModeFilter !== "all");
+    setOrDelete("tr_failure_subtype", taskRunFailureSubtypeFilter, taskRunFailureSubtypeFilter !== "all");
+    setOrDelete("tr_human_intervention", taskRunHumanInterventionFilter, taskRunHumanInterventionFilter !== "all");
+    setOrDelete("tr_needs_labeling", taskRunNeedsLabelingOnly, taskRunNeedsLabelingOnly);
+
+    setOrDelete("cmp_mode", reliabilityKpiCompareMode, reliabilityKpiCompareMode !== "preset");
+    setOrDelete("cmp_preset", reliabilityKpiComparePreset, reliabilityKpiCompareMode === "preset");
+    setOrDelete("cmp_a_from", reliabilityKpiComparePeriodAFrom, reliabilityKpiCompareMode === "custom" && !!reliabilityKpiComparePeriodAFrom);
+    setOrDelete("cmp_a_to", reliabilityKpiComparePeriodATo, reliabilityKpiCompareMode === "custom" && !!reliabilityKpiComparePeriodATo);
+    setOrDelete("cmp_b_from", reliabilityKpiComparePeriodBFrom, reliabilityKpiCompareMode === "custom" && !!reliabilityKpiComparePeriodBFrom);
+    setOrDelete("cmp_b_to", reliabilityKpiComparePeriodBTo, reliabilityKpiCompareMode === "custom" && !!reliabilityKpiComparePeriodBTo);
+
+    const query = params.toString();
+    const nextUrl = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash || ""}`;
+    window.history.replaceState({}, "", nextUrl);
+  }
+
+  function getPeriodGuardrails(period, thresholds) {
+    const guards = [];
+    const canonicalCount = period?.counts?.with_canonical_outcome ?? 0;
+    const knownCostSuccessCount = period?.counts?.successful_runs_with_known_cost ?? 0;
+    const minCanonical = thresholds?.min_canonical_sample ?? 0;
+    const minCost = thresholds?.min_success_sample_for_cost ?? 0;
+
+    if (canonicalCount < minCanonical) {
+      guards.push({
+        key: "canonical",
+        severity: "warn",
+        message: `Canonical outcomes ${canonicalCount}/${minCanonical}`
+      });
+    }
+    if (knownCostSuccessCount < minCost) {
+      guards.push({
+        key: "cost",
+        severity: "warn",
+        message: `Known-cost successes ${knownCostSuccessCount}/${minCost}`
+      });
+    }
+    if (!guards.length) {
+      guards.push({
+        key: "ok",
+        severity: "ok",
+        message: "Guardrails satisfied"
+      });
+    }
+    return guards;
+  }
+
+  function isMetricGuardrailSatisfied(metricKey, period, thresholds) {
+    const canonicalCount = period?.counts?.with_canonical_outcome ?? 0;
+    const knownCostSuccessCount = period?.counts?.successful_runs_with_known_cost ?? 0;
+    const minCanonical = thresholds?.min_canonical_sample ?? 0;
+    const minCost = thresholds?.min_success_sample_for_cost ?? 0;
+
+    if (metricKey === "cost_per_success") {
+      return knownCostSuccessCount >= minCost;
+    }
+    if (["success_rate", "first_pass_rate", "retry_rate", "intervention_rate"].includes(metricKey)) {
+      return canonicalCount >= minCanonical;
+    }
+    return true;
+  }
+
+  function getMetricSampleNote(metricKey, comparePayload) {
+    if (!comparePayload) return "";
+    const periodAOk = isMetricGuardrailSatisfied(metricKey, comparePayload.period_a, comparePayload.thresholds);
+    const periodBOk = isMetricGuardrailSatisfied(metricKey, comparePayload.period_b, comparePayload.thresholds);
+    if (periodAOk && periodBOk) return "";
+    return "Insufficient sample";
   }
 
   function toIsoStartOfDay(dateInput) {
@@ -754,6 +912,7 @@
   ];
 
   $: if (
+    hasHydratedStateFromUrl &&
     taskRunStatusFilter ||
     taskRunRunnerFilter ||
     taskRunQuery !== undefined ||
@@ -772,6 +931,10 @@
     reliabilityTrendWindowDays
   ) {
     scheduleLoadTaskRuns();
+  }
+
+  $: if (hasHydratedStateFromUrl) {
+    syncStateToUrl();
   }
 </script>
 
@@ -964,6 +1127,9 @@
                 {#if reliabilityKpiCompareMode === "preset"}
                   <Select bind:value={reliabilityKpiComparePreset} options={reliabilityKpiComparePresetOptions} />
                 {/if}
+                <Button variant="outline" size="sm" on:click={copyKpiCompareShareLink}>
+                  Copy share link
+                </Button>
               </div>
             </div>
 
@@ -1000,11 +1166,21 @@
                   <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Period A (current)</div>
                   <div class="text-sm">{formatPeriodRange(reliabilityKpiCompare.period_a)}</div>
                   <div class="text-xs text-muted-foreground mt-1">{reliabilityKpiCompare.period_a?.counts?.task_runs ?? 0} runs</div>
+                  <div class="mt-2 flex flex-wrap gap-1">
+                    {#each getPeriodGuardrails(reliabilityKpiCompare.period_a, reliabilityKpiCompare.thresholds) as guard (`a-${guard.key}`)}
+                      <Badge variant={guard.severity === "ok" ? "outline" : "secondary"}>{guard.message}</Badge>
+                    {/each}
+                  </div>
                 </div>
                 <div class="rounded-xl border p-3 bg-muted/10">
                   <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Period B (baseline)</div>
                   <div class="text-sm">{formatPeriodRange(reliabilityKpiCompare.period_b)}</div>
                   <div class="text-xs text-muted-foreground mt-1">{reliabilityKpiCompare.period_b?.counts?.task_runs ?? 0} runs</div>
+                  <div class="mt-2 flex flex-wrap gap-1">
+                    {#each getPeriodGuardrails(reliabilityKpiCompare.period_b, reliabilityKpiCompare.thresholds) as guard (`b-${guard.key}`)}
+                      <Badge variant={guard.severity === "ok" ? "outline" : "secondary"}>{guard.message}</Badge>
+                    {/each}
+                  </div>
                 </div>
               </div>
 
@@ -1026,7 +1202,11 @@
                       <td class="px-3 py-2 text-right">{formatPercent(reliabilityKpiCompare.period_b?.rates?.success_rate)}</td>
                       <td class="px-3 py-2 text-right">{formatSignedPercentDelta(reliabilityKpiCompare.deltas?.rates?.success_rate)}</td>
                       <td class={`px-3 py-2 text-right ${compareToneClass(getDeltaTrend("success_rate", reliabilityKpiCompare.deltas?.rates?.success_rate).tone)}`}>
-                        {getDeltaTrend("success_rate", reliabilityKpiCompare.deltas?.rates?.success_rate).label}
+                        {#if getMetricSampleNote("success_rate", reliabilityKpiCompare)}
+                          <span class="text-muted-foreground">{getMetricSampleNote("success_rate", reliabilityKpiCompare)}</span>
+                        {:else}
+                          {getDeltaTrend("success_rate", reliabilityKpiCompare.deltas?.rates?.success_rate).label}
+                        {/if}
                       </td>
                     </tr>
                     <tr class="border-t">
@@ -1035,7 +1215,11 @@
                       <td class="px-3 py-2 text-right">{formatPercent(reliabilityKpiCompare.period_b?.rates?.first_pass_rate)}</td>
                       <td class="px-3 py-2 text-right">{formatSignedPercentDelta(reliabilityKpiCompare.deltas?.rates?.first_pass_rate)}</td>
                       <td class={`px-3 py-2 text-right ${compareToneClass(getDeltaTrend("first_pass_rate", reliabilityKpiCompare.deltas?.rates?.first_pass_rate).tone)}`}>
-                        {getDeltaTrend("first_pass_rate", reliabilityKpiCompare.deltas?.rates?.first_pass_rate).label}
+                        {#if getMetricSampleNote("first_pass_rate", reliabilityKpiCompare)}
+                          <span class="text-muted-foreground">{getMetricSampleNote("first_pass_rate", reliabilityKpiCompare)}</span>
+                        {:else}
+                          {getDeltaTrend("first_pass_rate", reliabilityKpiCompare.deltas?.rates?.first_pass_rate).label}
+                        {/if}
                       </td>
                     </tr>
                     <tr class="border-t">
@@ -1044,7 +1228,11 @@
                       <td class="px-3 py-2 text-right">{formatPercent(reliabilityKpiCompare.period_b?.rates?.retry_rate)}</td>
                       <td class="px-3 py-2 text-right">{formatSignedPercentDelta(reliabilityKpiCompare.deltas?.rates?.retry_rate)}</td>
                       <td class={`px-3 py-2 text-right ${compareToneClass(getDeltaTrend("retry_rate", reliabilityKpiCompare.deltas?.rates?.retry_rate).tone)}`}>
-                        {getDeltaTrend("retry_rate", reliabilityKpiCompare.deltas?.rates?.retry_rate).label}
+                        {#if getMetricSampleNote("retry_rate", reliabilityKpiCompare)}
+                          <span class="text-muted-foreground">{getMetricSampleNote("retry_rate", reliabilityKpiCompare)}</span>
+                        {:else}
+                          {getDeltaTrend("retry_rate", reliabilityKpiCompare.deltas?.rates?.retry_rate).label}
+                        {/if}
                       </td>
                     </tr>
                     <tr class="border-t">
@@ -1053,7 +1241,11 @@
                       <td class="px-3 py-2 text-right">{formatPercent(reliabilityKpiCompare.period_b?.rates?.intervention_rate)}</td>
                       <td class="px-3 py-2 text-right">{formatSignedPercentDelta(reliabilityKpiCompare.deltas?.rates?.intervention_rate)}</td>
                       <td class={`px-3 py-2 text-right ${compareToneClass(getDeltaTrend("intervention_rate", reliabilityKpiCompare.deltas?.rates?.intervention_rate).tone)}`}>
-                        {getDeltaTrend("intervention_rate", reliabilityKpiCompare.deltas?.rates?.intervention_rate).label}
+                        {#if getMetricSampleNote("intervention_rate", reliabilityKpiCompare)}
+                          <span class="text-muted-foreground">{getMetricSampleNote("intervention_rate", reliabilityKpiCompare)}</span>
+                        {:else}
+                          {getDeltaTrend("intervention_rate", reliabilityKpiCompare.deltas?.rates?.intervention_rate).label}
+                        {/if}
                       </td>
                     </tr>
                     <tr class="border-t">
@@ -1062,7 +1254,11 @@
                       <td class="px-3 py-2 text-right">{formatMoney(reliabilityKpiCompare.period_b?.cost?.cost_per_success)}</td>
                       <td class="px-3 py-2 text-right">{formatSignedNumberDelta(reliabilityKpiCompare.deltas?.cost?.cost_per_success, 4)}</td>
                       <td class={`px-3 py-2 text-right ${compareToneClass(getDeltaTrend("cost_per_success", reliabilityKpiCompare.deltas?.cost?.cost_per_success).tone)}`}>
-                        {getDeltaTrend("cost_per_success", reliabilityKpiCompare.deltas?.cost?.cost_per_success).label}
+                        {#if getMetricSampleNote("cost_per_success", reliabilityKpiCompare)}
+                          <span class="text-muted-foreground">{getMetricSampleNote("cost_per_success", reliabilityKpiCompare)}</span>
+                        {:else}
+                          {getDeltaTrend("cost_per_success", reliabilityKpiCompare.deltas?.cost?.cost_per_success).label}
+                        {/if}
                       </td>
                     </tr>
                     <tr class="border-t">
