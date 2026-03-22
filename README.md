@@ -196,6 +196,10 @@ Monitor and analyze AI agent activity in real-time:
 - **Session correlation** across multiple agent invocations
 - **Attempt-based task runs** (derived from session boundaries and inactivity gaps)
 - **Events filter by attempt** in the web UI
+- **KPI Compare polish** (preset windows + custom A/B date ranges)
+- **Period-aware compare summaries** (explicit date ranges and per-period run counts)
+- **Compare sample guardrails** (canonical sample and known-cost success sufficiency)
+- **Shareable compare links** (URL-pinned compare/filter state opening directly on Task Runs)
 
 ### Data Management
 - Per-project SQLite database (`.suboculo/events.db`)
