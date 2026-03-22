@@ -6,9 +6,11 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const taskRunsTabPath = path.resolve(__dirname, "../src/lib/components/TaskRunsTab.svelte");
+const taskRunsUrlStatePath = path.resolve(__dirname, "../src/lib/taskRunsUrlState.js");
 const viewerPath = path.resolve(__dirname, "../src/lib/components/AgentActionsLogViewer.svelte");
 
 const taskRunsSource = fs.readFileSync(taskRunsTabPath, "utf8");
+const taskRunsUrlStateSource = fs.readFileSync(taskRunsUrlStatePath, "utf8");
 const viewerSource = fs.readFileSync(viewerPath, "utf8");
 
 function assertPattern(source, pattern, message) {
@@ -16,10 +18,10 @@ function assertPattern(source, pattern, message) {
 }
 
 // Regression: shared KPI compare links must pin Task Runs tab.
-assertPattern(
-  taskRunsSource,
-  /setOrDelete\("tab",\s*"task-runs",\s*true\)/,
-  "TaskRunsTab should persist tab=task-runs in URL state"
+assert.ok(
+  /setOrDelete\("tab",\s*"task-runs",\s*true\)/.test(taskRunsSource) ||
+    /setOrDelete\("tab",\s*"task-runs",\s*true\)/.test(taskRunsUrlStateSource),
+  "Task Runs URL state should persist tab=task-runs"
 );
 
 // Regression: parent must hydrate tab from URL and accept canonical value.

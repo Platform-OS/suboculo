@@ -7,6 +7,7 @@
   import KpiSummaryPanel from "./KpiSummaryPanel.svelte";
   import ReliabilityTrendsPanel from "./ReliabilityTrendsPanel.svelte";
   import TaskRunWorkspace from "./TaskRunWorkspace.svelte";
+  import { buildTaskRunsUrl, hydrateTaskRunsStateFromUrl } from "$lib/taskRunsUrlState.js";
 
   export let facets = { runners: [] };
   export let outcomeTaxonomy = null;
@@ -497,82 +498,53 @@
     }
   }
 
-  function toDateInputValue(value) {
-    if (!value) return "";
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return "";
-    const year = date.getUTCFullYear();
-    const month = String(date.getUTCMonth() + 1).padStart(2, "0");
-    const day = String(date.getUTCDate()).padStart(2, "0");
-    return `${year}-${month}-${day}`;
-  }
-
-  function getStringParam(params, key, fallback = "") {
-    const value = params.get(key);
-    return value == null ? fallback : value;
-  }
-
-  function getEnumParam(params, key, allowed, fallback) {
-    const value = params.get(key);
-    return value && allowed.includes(value) ? value : fallback;
-  }
-
-  function getBooleanParam(params, key, fallback = false) {
-    const value = params.get(key);
-    if (value === "true") return true;
-    if (value === "false") return false;
-    return fallback;
-  }
-
   function hydrateStateFromUrl() {
-    const params = new URLSearchParams(window.location.search);
+    const nextState = hydrateTaskRunsStateFromUrl(window.location.search, {
+      taskRunStatusFilter,
+      taskRunRunnerFilter,
+      taskRunQuery,
+      taskRunCanonicalOutcomeFilter,
+      taskRunFailureModeFilter,
+      taskRunFailureSubtypeFilter,
+      taskRunHumanInterventionFilter,
+      taskRunNeedsLabelingOnly,
+      reliabilityKpiCompareMode,
+      reliabilityKpiComparePreset
+    });
 
-    taskRunStatusFilter = getStringParam(params, "tr_status", taskRunStatusFilter) || "all";
-    taskRunRunnerFilter = getStringParam(params, "tr_runner", taskRunRunnerFilter) || "all";
-    taskRunQuery = getStringParam(params, "tr_query", taskRunQuery);
-    taskRunCanonicalOutcomeFilter = getStringParam(params, "tr_canonical_outcome", taskRunCanonicalOutcomeFilter) || "all";
-    taskRunFailureModeFilter = getStringParam(params, "tr_failure_mode", taskRunFailureModeFilter) || "all";
-    taskRunFailureSubtypeFilter = getStringParam(params, "tr_failure_subtype", taskRunFailureSubtypeFilter) || "all";
-    taskRunHumanInterventionFilter = getStringParam(params, "tr_human_intervention", taskRunHumanInterventionFilter) || "all";
-    taskRunNeedsLabelingOnly = getBooleanParam(params, "tr_needs_labeling", taskRunNeedsLabelingOnly);
-
-    reliabilityKpiCompareMode = getEnumParam(params, "cmp_mode", ["preset", "custom"], reliabilityKpiCompareMode);
-    reliabilityKpiComparePreset = getEnumParam(params, "cmp_preset", ["7", "14", "30"], reliabilityKpiComparePreset);
-
-    reliabilityKpiComparePeriodAFrom = toDateInputValue(getStringParam(params, "cmp_a_from"));
-    reliabilityKpiComparePeriodATo = toDateInputValue(getStringParam(params, "cmp_a_to"));
-    reliabilityKpiComparePeriodBFrom = toDateInputValue(getStringParam(params, "cmp_b_from"));
-    reliabilityKpiComparePeriodBTo = toDateInputValue(getStringParam(params, "cmp_b_to"));
+    taskRunStatusFilter = nextState.taskRunStatusFilter;
+    taskRunRunnerFilter = nextState.taskRunRunnerFilter;
+    taskRunQuery = nextState.taskRunQuery;
+    taskRunCanonicalOutcomeFilter = nextState.taskRunCanonicalOutcomeFilter;
+    taskRunFailureModeFilter = nextState.taskRunFailureModeFilter;
+    taskRunFailureSubtypeFilter = nextState.taskRunFailureSubtypeFilter;
+    taskRunHumanInterventionFilter = nextState.taskRunHumanInterventionFilter;
+    taskRunNeedsLabelingOnly = nextState.taskRunNeedsLabelingOnly;
+    reliabilityKpiCompareMode = nextState.reliabilityKpiCompareMode;
+    reliabilityKpiComparePreset = nextState.reliabilityKpiComparePreset;
+    reliabilityKpiComparePeriodAFrom = nextState.reliabilityKpiComparePeriodAFrom;
+    reliabilityKpiComparePeriodATo = nextState.reliabilityKpiComparePeriodATo;
+    reliabilityKpiComparePeriodBFrom = nextState.reliabilityKpiComparePeriodBFrom;
+    reliabilityKpiComparePeriodBTo = nextState.reliabilityKpiComparePeriodBTo;
   }
 
   function syncStateToUrl() {
-    const params = new URLSearchParams(window.location.search);
-
-    const setOrDelete = (key, value, shouldPersist = Boolean(value)) => {
-      if (shouldPersist) params.set(key, String(value));
-      else params.delete(key);
-    };
-
-    setOrDelete("tr_source", "derived_attempt", true);
-    setOrDelete("tab", "task-runs", true);
-    setOrDelete("tr_status", taskRunStatusFilter, taskRunStatusFilter !== "all");
-    setOrDelete("tr_runner", taskRunRunnerFilter, taskRunRunnerFilter !== "all");
-    setOrDelete("tr_query", taskRunQuery, !!taskRunQuery);
-    setOrDelete("tr_canonical_outcome", taskRunCanonicalOutcomeFilter, taskRunCanonicalOutcomeFilter !== "all");
-    setOrDelete("tr_failure_mode", taskRunFailureModeFilter, taskRunFailureModeFilter !== "all");
-    setOrDelete("tr_failure_subtype", taskRunFailureSubtypeFilter, taskRunFailureSubtypeFilter !== "all");
-    setOrDelete("tr_human_intervention", taskRunHumanInterventionFilter, taskRunHumanInterventionFilter !== "all");
-    setOrDelete("tr_needs_labeling", taskRunNeedsLabelingOnly, taskRunNeedsLabelingOnly);
-
-    setOrDelete("cmp_mode", reliabilityKpiCompareMode, reliabilityKpiCompareMode !== "preset");
-    setOrDelete("cmp_preset", reliabilityKpiComparePreset, reliabilityKpiCompareMode === "preset");
-    setOrDelete("cmp_a_from", reliabilityKpiComparePeriodAFrom, reliabilityKpiCompareMode === "custom" && !!reliabilityKpiComparePeriodAFrom);
-    setOrDelete("cmp_a_to", reliabilityKpiComparePeriodATo, reliabilityKpiCompareMode === "custom" && !!reliabilityKpiComparePeriodATo);
-    setOrDelete("cmp_b_from", reliabilityKpiComparePeriodBFrom, reliabilityKpiCompareMode === "custom" && !!reliabilityKpiComparePeriodBFrom);
-    setOrDelete("cmp_b_to", reliabilityKpiComparePeriodBTo, reliabilityKpiCompareMode === "custom" && !!reliabilityKpiComparePeriodBTo);
-
-    const query = params.toString();
-    const nextUrl = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash || ""}`;
+    const nextUrl = buildTaskRunsUrl(window.location.search, window.location.pathname, window.location.hash, {
+      taskRunStatusFilter,
+      taskRunRunnerFilter,
+      taskRunQuery,
+      taskRunCanonicalOutcomeFilter,
+      taskRunFailureModeFilter,
+      taskRunFailureSubtypeFilter,
+      taskRunHumanInterventionFilter,
+      taskRunNeedsLabelingOnly,
+      reliabilityKpiCompareMode,
+      reliabilityKpiComparePreset,
+      reliabilityKpiComparePeriodAFrom,
+      reliabilityKpiComparePeriodATo,
+      reliabilityKpiComparePeriodBFrom,
+      reliabilityKpiComparePeriodBTo
+    });
     window.history.replaceState({}, "", nextUrl);
   }
 
