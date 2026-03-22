@@ -14,6 +14,18 @@
     saveTaskRunOutcomeAction,
     viewTaskRunAction
   } from "$lib/taskRunActions.js";
+  import {
+    clearFailureFieldsIfOutcomeNotRequired,
+    handleTaskRunCanonicalOutcomeFilterChangeState,
+    handleTaskRunFailureModeFilterChangeState,
+    handleTaskRunHumanInterventionFilterChangeState,
+    normalizeFailureSubtypeForOutcome,
+    normalizeTaskRunFailureSubtypeFilterState,
+    openNeedsLabelingQueueState,
+    toggleNeedsLabelingQueueState,
+    toggleNoCanonicalFilterState,
+    toggleRequiresHumanFilterState
+  } from "$lib/taskRunsFilterState.js";
   import { deriveTaskRunsUiOptions } from "$lib/taskRunsOptions.js";
   import { buildTaskRunsUrl, hydrateTaskRunsStateFromUrl } from "$lib/taskRunsUrlState.js";
 
@@ -147,6 +159,18 @@
     taskRunAfterActionReportCache = nextCache;
   }
 
+  function applyTaskRunFilterPatch(patch) {
+    if (!patch) return;
+    if (patch.taskRunStatusFilter !== undefined) taskRunStatusFilter = patch.taskRunStatusFilter;
+    if (patch.taskRunRunnerFilter !== undefined) taskRunRunnerFilter = patch.taskRunRunnerFilter;
+    if (patch.taskRunQuery !== undefined) taskRunQuery = patch.taskRunQuery;
+    if (patch.taskRunCanonicalOutcomeFilter !== undefined) taskRunCanonicalOutcomeFilter = patch.taskRunCanonicalOutcomeFilter;
+    if (patch.taskRunFailureModeFilter !== undefined) taskRunFailureModeFilter = patch.taskRunFailureModeFilter;
+    if (patch.taskRunFailureSubtypeFilter !== undefined) taskRunFailureSubtypeFilter = patch.taskRunFailureSubtypeFilter;
+    if (patch.taskRunHumanInterventionFilter !== undefined) taskRunHumanInterventionFilter = patch.taskRunHumanInterventionFilter;
+    if (patch.taskRunNeedsLabelingOnly !== undefined) taskRunNeedsLabelingOnly = patch.taskRunNeedsLabelingOnly;
+  }
+
   async function loadTaskRuns(preparedFilters = null) {
     try {
       loadingTaskRuns = true;
@@ -221,59 +245,50 @@
   }
 
   function toggleNoCanonicalFilter() {
-    taskRunCanonicalOutcomeFilter = taskRunCanonicalOutcomeFilter === "none" ? "all" : "none";
-    if (taskRunCanonicalOutcomeFilter === "none") {
-      taskRunFailureModeFilter = "all";
-      taskRunFailureSubtypeFilter = "all";
-      taskRunHumanInterventionFilter = "all";
-    }
+    applyTaskRunFilterPatch(toggleNoCanonicalFilterState({
+      taskRunCanonicalOutcomeFilter
+    }));
   }
 
   function toggleRequiresHumanFilter() {
-    taskRunHumanInterventionFilter = taskRunHumanInterventionFilter === "true" ? "all" : "true";
-    if (taskRunHumanInterventionFilter === "true" && taskRunCanonicalOutcomeFilter === "none") {
-      taskRunCanonicalOutcomeFilter = "all";
-    }
+    applyTaskRunFilterPatch(toggleRequiresHumanFilterState({
+      taskRunHumanInterventionFilter,
+      taskRunCanonicalOutcomeFilter
+    }));
   }
 
   function normalizeTaskRunFailureSubtypeFilter() {
-    const values = taskRunFailureModeFilter !== "all"
-      ? (failureTaxonomy[taskRunFailureModeFilter] || [])
-      : [...new Set(Object.values(failureTaxonomy).flat())];
-    if (taskRunFailureSubtypeFilter !== "all" && !values.includes(taskRunFailureSubtypeFilter)) {
-      taskRunFailureSubtypeFilter = "all";
-    }
+    applyTaskRunFilterPatch(normalizeTaskRunFailureSubtypeFilterState({
+      taskRunFailureModeFilter,
+      taskRunFailureSubtypeFilter
+    }, failureTaxonomy));
   }
 
   function handleTaskRunCanonicalOutcomeFilterChange() {
-    if (taskRunCanonicalOutcomeFilter === "none") {
-      taskRunFailureModeFilter = "all";
-      taskRunFailureSubtypeFilter = "all";
-      taskRunHumanInterventionFilter = "all";
-    }
+    applyTaskRunFilterPatch(handleTaskRunCanonicalOutcomeFilterChangeState({
+      taskRunCanonicalOutcomeFilter
+    }));
   }
 
   function handleTaskRunFailureModeFilterChange() {
-    if (taskRunFailureModeFilter !== "all" && taskRunCanonicalOutcomeFilter === "none") {
-      taskRunCanonicalOutcomeFilter = "all";
-    }
-    normalizeTaskRunFailureSubtypeFilter();
+    applyTaskRunFilterPatch(handleTaskRunFailureModeFilterChangeState({
+      taskRunFailureModeFilter,
+      taskRunCanonicalOutcomeFilter,
+      taskRunFailureSubtypeFilter
+    }, failureTaxonomy));
   }
 
   function handleTaskRunHumanInterventionFilterChange() {
-    if (taskRunHumanInterventionFilter !== "all" && taskRunCanonicalOutcomeFilter === "none") {
-      taskRunCanonicalOutcomeFilter = "all";
-    }
+    applyTaskRunFilterPatch(handleTaskRunHumanInterventionFilterChangeState({
+      taskRunHumanInterventionFilter,
+      taskRunCanonicalOutcomeFilter
+    }));
   }
 
   function toggleNeedsLabelingQueue() {
-    taskRunNeedsLabelingOnly = !taskRunNeedsLabelingOnly;
-    if (taskRunNeedsLabelingOnly) {
-      taskRunCanonicalOutcomeFilter = "all";
-      taskRunFailureModeFilter = "all";
-      taskRunFailureSubtypeFilter = "all";
-      taskRunHumanInterventionFilter = "all";
-    }
+    applyTaskRunFilterPatch(toggleNeedsLabelingQueueState({
+      taskRunNeedsLabelingOnly
+    }));
   }
 
   function toggleTaskRunSelection(taskRunId) {
@@ -293,19 +308,12 @@
 
   function handleBulkOutcomeLabelChange() {
     const requiredFailureLabels = outcomeTaxonomy?.requires_failure_mode_for || fallbackRequiredFailureLabels;
-    if (!requiredFailureLabels.includes(bulkTaskRunOutcome.outcome_label)) {
-      bulkTaskRunOutcome = { ...bulkTaskRunOutcome, failure_mode: "", failure_subtype: "" };
-    }
+    bulkTaskRunOutcome = clearFailureFieldsIfOutcomeNotRequired(bulkTaskRunOutcome, requiredFailureLabels);
   }
 
   function handleBulkFailureModeChange() {
     const taxonomy = outcomeTaxonomy?.failure_taxonomy || fallbackFailureTaxonomy;
-    const allowedSubtypes = bulkTaskRunOutcome.failure_mode
-      ? (taxonomy[bulkTaskRunOutcome.failure_mode] || [])
-      : [];
-    if (!allowedSubtypes.includes(bulkTaskRunOutcome.failure_subtype)) {
-      bulkTaskRunOutcome = { ...bulkTaskRunOutcome, failure_subtype: "" };
-    }
+    bulkTaskRunOutcome = normalizeFailureSubtypeForOutcome(bulkTaskRunOutcome, taxonomy);
   }
 
   async function applyBulkTaskRunOutcome() {
@@ -367,11 +375,7 @@
   }
 
   function openNeedsLabelingQueue() {
-    taskRunNeedsLabelingOnly = true;
-    taskRunCanonicalOutcomeFilter = "all";
-    taskRunFailureModeFilter = "all";
-    taskRunFailureSubtypeFilter = "all";
-    taskRunHumanInterventionFilter = "all";
+    applyTaskRunFilterPatch(openNeedsLabelingQueueState());
   }
 
   function resetOutcomeForm() {
@@ -380,19 +384,12 @@
 
   function handleOutcomeLabelChange() {
     const requiredFailureLabels = outcomeTaxonomy?.requires_failure_mode_for || fallbackRequiredFailureLabels;
-    if (!requiredFailureLabels.includes(taskRunOutcome.outcome_label)) {
-      taskRunOutcome = { ...taskRunOutcome, failure_mode: "", failure_subtype: "" };
-    }
+    taskRunOutcome = clearFailureFieldsIfOutcomeNotRequired(taskRunOutcome, requiredFailureLabels);
   }
 
   function handleFailureModeChange() {
     const taxonomy = outcomeTaxonomy?.failure_taxonomy || fallbackFailureTaxonomy;
-    const allowedSubtypes = taskRunOutcome.failure_mode
-      ? (taxonomy[taskRunOutcome.failure_mode] || [])
-      : [];
-    if (!allowedSubtypes.includes(taskRunOutcome.failure_subtype)) {
-      taskRunOutcome = { ...taskRunOutcome, failure_subtype: "" };
-    }
+    taskRunOutcome = normalizeFailureSubtypeForOutcome(taskRunOutcome, taxonomy);
   }
 
   async function saveTaskRunOutcome() {
