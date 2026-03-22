@@ -197,6 +197,12 @@ async function run() {
     assert.equal(result.response.status, 200, 'has_canonical_outcome=false filter should succeed');
     assert.equal(result.body.total, 2, 'all runs should initially require labeling');
 
+    result = await request(`/task-runs/${smokeTaskRunId}/after-action-report`);
+    assert.equal(result.response.status, 200, 'after-action report should be available for task run');
+    assert.equal(result.body.status, 'insufficient_evidence', 'report should flag missing canonical outcome');
+    assert.ok(result.body.sections && Array.isArray(result.body.sections.variance_vs_expected), 'report should include structured sections');
+    assert.ok(typeof result.body.markdown === 'string' && result.body.markdown.includes('After-Action Report'), 'report should include markdown output');
+
     result = await request('/facets');
     assert.equal(result.response.status, 200, 'facets should include attempts');
     assert.ok(Array.isArray(result.body.attempts), 'facets.attempts should be an array');
@@ -283,6 +289,12 @@ async function run() {
     assert.ok(result.body.totals.with_canonical_outcome >= 1, 'summary should include canonical outcomes');
     assert.ok(result.body.by_outcome_label.some((row) => row.value === 'failure'), 'summary should include failure outcome bucket');
     assert.ok(result.body.by_failure_mode.some((row) => row.value === 'execution_failure'), 'summary should include failure mode bucket');
+
+    result = await request(`/task-runs/${smokeTaskRunId}/after-action-report`);
+    assert.equal(result.response.status, 200, 'after-action report should succeed after labeling');
+    assert.equal(result.body.status, 'ready', 'report should be ready when canonical outcome is present');
+    assert.equal(result.body.canonical_outcome?.outcome_label, 'failure', 'report should include canonical outcome');
+    assert.ok(Array.isArray(result.body.sections?.risks), 'report should include risks section');
 
     result = await request('/reliability/kpis?runner=smoke-runner&source=derived_attempt');
     assert.equal(result.response.status, 200, 'reliability KPI endpoint should succeed');

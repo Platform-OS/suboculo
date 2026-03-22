@@ -306,6 +306,16 @@ export async function getTaskRun(id) {
   return response.json();
 }
 
+export async function getTaskRunAfterActionReport(id) {
+  const response = await fetch(`${API_BASE}/task-runs/${id}/after-action-report`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch task run after-action report');
+  }
+
+  return response.json();
+}
+
 export async function getTaskRunOutcomeSummary(filters = {}) {
   const params = new URLSearchParams();
 

@@ -94,6 +94,49 @@ const server = new McpServer({
   version: '0.1.0',
 });
 
+const suboculoPort = process.env.SUBOCULO_PORT || '3000';
+
+function buildQueryParams(input, allowedKeys) {
+  const params = new URLSearchParams();
+  for (const key of allowedKeys) {
+    const value = input?.[key];
+    if (value === undefined || value === null || value === '') continue;
+    params.set(key, String(value));
+  }
+  return params;
+}
+
+async function callBackendJson(path, { method = 'GET', query = null, body = null } = {}) {
+  const queryString = query ? `?${query.toString()}` : '';
+  const url = `http://127.0.0.1:${suboculoPort}${path}${queryString}`;
+  const options = {
+    method,
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  };
+
+  const response = await fetch(url, options);
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = { error: await response.text() };
+  }
+
+  if (!response.ok) {
+    const msg = payload?.error || response.statusText || 'Request failed';
+    throw new Error(`${method} ${path} failed (${response.status}): ${msg}`);
+  }
+  return payload;
+}
+
+function toMcpText(obj, heading) {
+  const text = heading
+    ? `${heading}\n\n${JSON.stringify(obj, null, 2)}`
+    : JSON.stringify(obj, null, 2);
+  return { content: [{ type: 'text', text }] };
+}
+
 // ── Tool 1: suboculo_get_facets ─────────────────────────────────────────────
 
 server.tool(
@@ -687,6 +730,149 @@ server.tool(
           text: `Failed to save analysis: ${err.message}. Make sure the Suboculo web server is running (node .suboculo/backend/server.js).`
         }]
       };
+    }
+  }
+);
+
+// ── Tool 9: suboculo_get_reliability_kpis ───────────────────────────────────
+
+server.tool(
+  'suboculo_get_reliability_kpis',
+  'Get reliability KPI snapshot over task runs (success, retry, intervention, cost, duration) with optional filters.',
+  {
+    runner: z.string().optional().describe('Filter by runner'),
+    source: z.string().optional().describe('Filter by task run source (e.g. "derived_attempt")'),
+    status: z.string().optional().describe('Filter by task run status'),
+    canonical_outcome_label: z.string().optional().describe('Filter by canonical outcome label'),
+    failure_mode: z.string().optional().describe('Filter by canonical failure mode'),
+    failure_subtype: z.string().optional().describe('Filter by canonical failure subtype'),
+    requires_human_intervention: z.enum(['true', 'false']).optional().describe('Filter by canonical intervention flag'),
+    from: z.string().optional().describe('Lower timestamp bound (ISO)'),
+    to: z.string().optional().describe('Upper timestamp bound (ISO)'),
+  },
+  async (input) => {
+    try {
+      const query = buildQueryParams(input, [
+        'runner', 'source', 'status', 'canonical_outcome_label',
+        'failure_mode', 'failure_subtype', 'requires_human_intervention',
+        'from', 'to'
+      ]);
+      const payload = await callBackendJson('/api/reliability/kpis', { query });
+      return toMcpText(payload, '=== Reliability KPIs ===');
+    } catch (err) {
+      return { content: [{ type: 'text', text: `Failed to fetch reliability KPIs: ${err.message}` }] };
+    }
+  }
+);
+
+// ── Tool 10: suboculo_get_reliability_trends ────────────────────────────────
+
+server.tool(
+  'suboculo_get_reliability_trends',
+  'Get time-bucketed reliability trends and trend insights. Includes by-runner breakdown and significance guards.',
+  {
+    runner: z.string().optional().describe('Filter by runner'),
+    source: z.string().optional().describe('Filter by task run source (e.g. "derived_attempt")'),
+    status: z.string().optional().describe('Filter by task run status'),
+    canonical_outcome_label: z.string().optional().describe('Filter by canonical outcome label'),
+    from: z.string().optional().describe('Lower timestamp bound (ISO)'),
+    to: z.string().optional().describe('Upper timestamp bound (ISO)'),
+    bucket: z.enum(['day', 'week']).default('day').describe('Trend bucket size'),
+    window_days: z.number().min(1).max(365).default(30).describe('Default lookback window in days'),
+  },
+  async (input) => {
+    try {
+      const query = buildQueryParams(input, [
+        'runner', 'source', 'status', 'canonical_outcome_label',
+        'from', 'to', 'bucket', 'window_days'
+      ]);
+      const [trends, insights] = await Promise.all([
+        callBackendJson('/api/reliability/trends', { query }),
+        callBackendJson('/api/reliability/trends/insights', { query })
+      ]);
+      return toMcpText({ trends, insights }, '=== Reliability Trends ===');
+    } catch (err) {
+      return { content: [{ type: 'text', text: `Failed to fetch reliability trends: ${err.message}` }] };
+    }
+  }
+);
+
+// ── Tool 11: suboculo_get_failure_mode_trends ───────────────────────────────
+
+server.tool(
+  'suboculo_get_failure_mode_trends',
+  'Get time-bucketed canonical failure-mode mix trends, including top modes per bucket.',
+  {
+    runner: z.string().optional().describe('Filter by runner'),
+    source: z.string().optional().describe('Filter by task run source (e.g. "derived_attempt")'),
+    status: z.string().optional().describe('Filter by task run status'),
+    from: z.string().optional().describe('Lower timestamp bound (ISO)'),
+    to: z.string().optional().describe('Upper timestamp bound (ISO)'),
+    bucket: z.enum(['day', 'week']).default('day').describe('Trend bucket size'),
+    window_days: z.number().min(1).max(365).default(30).describe('Default lookback window in days'),
+  },
+  async (input) => {
+    try {
+      const query = buildQueryParams(input, [
+        'runner', 'source', 'status', 'from', 'to', 'bucket', 'window_days'
+      ]);
+      const payload = await callBackendJson('/api/reliability/trends/failure-modes', { query });
+      return toMcpText(payload, '=== Failure Mode Trends ===');
+    } catch (err) {
+      return { content: [{ type: 'text', text: `Failed to fetch failure-mode trends: ${err.message}` }] };
+    }
+  }
+);
+
+// ── Tool 12: suboculo_get_task_run_after_action_report ──────────────────────
+
+server.tool(
+  'suboculo_get_task_run_after_action_report',
+  'Generate and return an after-action report for a specific task run ID.',
+  {
+    task_run_id: z.number().int().positive().describe('Task run ID'),
+  },
+  async ({ task_run_id }) => {
+    try {
+      const payload = await callBackendJson(`/api/task-runs/${task_run_id}/after-action-report`);
+      return toMcpText(payload, `=== After-Action Report (task_run_id=${task_run_id}) ===`);
+    } catch (err) {
+      return { content: [{ type: 'text', text: `Failed to fetch after-action report: ${err.message}` }] };
+    }
+  }
+);
+
+// ── Tool 13: suboculo_record_task_run_outcome ───────────────────────────────
+
+server.tool(
+  'suboculo_record_task_run_outcome',
+  'Record an outcome for a task run (supports canonical outcomes and failure taxonomy fields).',
+  {
+    task_run_id: z.number().int().positive().describe('Task run ID'),
+    evaluation_type: z.enum(['human', 'rule_based', 'llm_judge', 'benchmark_checker']).describe('Evaluation source'),
+    outcome_label: z.enum(['success', 'partial_success', 'failure', 'unsafe_success', 'interrupted', 'abandoned', 'unknown']).describe('Outcome label'),
+    correctness_score: z.number().min(0).max(1).optional(),
+    safety_score: z.number().min(0).max(1).optional(),
+    efficiency_score: z.number().min(0).max(1).optional(),
+    reproducibility_score: z.number().min(0).max(1).optional(),
+    requires_human_intervention: z.boolean().optional(),
+    failure_mode: z.string().optional(),
+    failure_subtype: z.string().optional(),
+    notes: z.string().optional(),
+    evaluator: z.string().optional(),
+    evidence: z.any().optional(),
+    is_canonical: z.boolean().optional(),
+  },
+  async (input) => {
+    try {
+      const { task_run_id, ...payload } = input;
+      const result = await callBackendJson(`/api/task-runs/${task_run_id}/outcomes`, {
+        method: 'POST',
+        body: payload
+      });
+      return toMcpText(result, `Outcome recorded for task run ${task_run_id}`);
+    } catch (err) {
+      return { content: [{ type: 'text', text: `Failed to record outcome: ${err.message}` }] };
     }
   }
 );
