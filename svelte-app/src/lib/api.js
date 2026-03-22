@@ -470,6 +470,39 @@ export async function getReliabilityReview(filters = {}) {
   return response.json();
 }
 
+export async function acknowledgeReliabilityReview(payload) {
+  const response = await fetch(`${API_BASE}/reliability/review/acknowledge`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.error || 'Failed to acknowledge reliability review');
+  }
+
+  return response.json();
+}
+
+export async function getReliabilityReviewAcknowledgements(filters = {}) {
+  const params = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== null && value !== '') {
+      params.append(key, value);
+    }
+  }
+
+  const response = await fetch(`${API_BASE}/reliability/review/acknowledgements?${params}`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch reliability review acknowledgements');
+  }
+
+  return response.json();
+}
+
 export async function createOutcome(taskRunId, outcome) {
   const response = await fetch(`${API_BASE}/task-runs/${taskRunId}/outcomes`, {
     method: 'POST',
