@@ -7,6 +7,13 @@
   import KpiSummaryPanel from "./KpiSummaryPanel.svelte";
   import ReliabilityTrendsPanel from "./ReliabilityTrendsPanel.svelte";
   import TaskRunWorkspace from "./TaskRunWorkspace.svelte";
+  import {
+    applyBulkTaskRunOutcomeAction,
+    copyTaskRunAfterActionReportMarkdownAction,
+    generateTaskRunAfterActionReportAction,
+    saveTaskRunOutcomeAction,
+    viewTaskRunAction
+  } from "$lib/taskRunActions.js";
   import { deriveTaskRunsUiOptions } from "$lib/taskRunsOptions.js";
   import { buildTaskRunsUrl, hydrateTaskRunsStateFromUrl } from "$lib/taskRunsUrlState.js";
 
@@ -302,55 +309,19 @@
   }
 
   async function applyBulkTaskRunOutcome() {
-    if (selectedTaskRunIds.size === 0) {
-      alert("Select at least one task run.");
-      return;
-    }
-
     const requiredFailureLabels = outcomeTaxonomy?.requires_failure_mode_for || fallbackRequiredFailureLabels;
-    const requiresFailure = requiredFailureLabels.includes(bulkTaskRunOutcome.outcome_label);
-    if (requiresFailure && !bulkTaskRunOutcome.failure_mode) {
-      alert("Failure mode is required for this outcome label.");
-      return;
-    }
-
-    try {
-      savingBulkOutcomes = true;
-      const items = [...selectedTaskRunIds].map((taskRunId) => ({
-        task_run_id: taskRunId,
-        evaluation_type: bulkTaskRunOutcome.evaluation_type,
-        outcome_label: bulkTaskRunOutcome.outcome_label,
-        correctness_score: bulkTaskRunOutcome.correctness_score === "" ? null : Number(bulkTaskRunOutcome.correctness_score),
-        safety_score: bulkTaskRunOutcome.safety_score === "" ? null : Number(bulkTaskRunOutcome.safety_score),
-        efficiency_score: bulkTaskRunOutcome.efficiency_score === "" ? null : Number(bulkTaskRunOutcome.efficiency_score),
-        reproducibility_score: bulkTaskRunOutcome.reproducibility_score === "" ? null : Number(bulkTaskRunOutcome.reproducibility_score),
-        requires_human_intervention: bulkTaskRunOutcome.requires_human_intervention,
-        failure_mode: bulkTaskRunOutcome.failure_mode || undefined,
-        failure_subtype: bulkTaskRunOutcome.failure_subtype || undefined,
-        notes: bulkTaskRunOutcome.notes || undefined,
-        evaluator: bulkTaskRunOutcome.evaluator || undefined,
-        is_canonical: bulkTaskRunOutcome.is_canonical
-      }));
-
-      const result = await api.createOutcomesBatch(items);
-      showNotice(
-        `Bulk outcomes: ${result.success_count} succeeded, ${result.failure_count} failed.`,
-        result.failure_count > 0 ? "error" : "success"
-      );
-
-      await loadTaskRuns();
-      if (selectedTaskRun?.id && selectedTaskRunIds.has(selectedTaskRun.id)) {
-        selectedTaskRun = await api.getTaskRun(selectedTaskRun.id);
-      }
-      if (result.failure_count === 0) {
-        clearSelectedTaskRuns();
-      }
-    } catch (err) {
-      console.error("Failed to apply bulk outcomes:", err);
-      alert("Failed to apply bulk outcomes");
-    } finally {
-      savingBulkOutcomes = false;
-    }
+    await applyBulkTaskRunOutcomeAction({
+      selectedTaskRunIds,
+      bulkTaskRunOutcome,
+      requiredFailureLabels,
+      setSavingBulkOutcomes: (value) => { savingBulkOutcomes = value; },
+      api,
+      showNotice,
+      loadTaskRuns,
+      selectedTaskRun,
+      setSelectedTaskRun: (value) => { selectedTaskRun = value; },
+      clearSelectedTaskRuns
+    });
   }
 
   async function deriveTaskRunsNow() {
@@ -367,62 +338,32 @@
   }
 
   async function viewTaskRun(id) {
-    try {
-      selectedTaskRun = await api.getTaskRun(id);
-      onOpenTaskRun(id);
-      const cached = taskRunAfterActionReportCache.get(id) || null;
-      taskRunAfterActionReport = cached;
-      if (!cached) {
-        try {
-          const persisted = await api.getTaskRunAfterActionReport(id);
-          taskRunAfterActionReport = persisted;
-          setTaskRunAarCache(id, persisted);
-        } catch (reportErr) {
-          console.warn("Failed to load persisted after-action report:", reportErr);
-          taskRunAfterActionReport = null;
-        }
-      }
-    } catch (err) {
-      console.error('Failed to load task run:', err);
-      alert('Failed to load task run');
-    }
+    await viewTaskRunAction({
+      id,
+      api,
+      onOpenTaskRun,
+      taskRunAfterActionReportCache,
+      setSelectedTaskRun: (value) => { selectedTaskRun = value; },
+      setTaskRunAfterActionReport: (value) => { taskRunAfterActionReport = value; },
+      setTaskRunAarCache
+    });
   }
 
   async function generateTaskRunAfterActionReport() {
-    if (!selectedTaskRun?.id) return;
-    try {
-      loadingTaskRunAfterActionReport = true;
-      const report = await api.getTaskRunAfterActionReport(selectedTaskRun.id);
-      taskRunAfterActionReport = report;
-      setTaskRunAarCache(selectedTaskRun.id, report);
-    } catch (err) {
-      console.error('Failed to generate after-action report:', err);
-      alert('Failed to generate after-action report');
-    } finally {
-      loadingTaskRunAfterActionReport = false;
-    }
+    await generateTaskRunAfterActionReportAction({
+      selectedTaskRun,
+      api,
+      setLoadingTaskRunAfterActionReport: (value) => { loadingTaskRunAfterActionReport = value; },
+      setTaskRunAfterActionReport: (value) => { taskRunAfterActionReport = value; },
+      setTaskRunAarCache
+    });
   }
 
   async function copyTaskRunAfterActionReportMarkdown() {
-    if (!taskRunAfterActionReport?.markdown) return;
-    try {
-      if (navigator?.clipboard?.writeText) {
-        await navigator.clipboard.writeText(taskRunAfterActionReport.markdown);
-      } else {
-        const textarea = document.createElement('textarea');
-        textarea.value = taskRunAfterActionReport.markdown;
-        textarea.style.position = 'fixed';
-        textarea.style.left = '-9999px';
-        document.body.appendChild(textarea);
-        textarea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textarea);
-      }
-      showNotice('After-action report copied to clipboard', 'success');
-    } catch (err) {
-      console.error('Failed to copy after-action report:', err);
-      showNotice('Failed to copy after-action report', 'error');
-    }
+    await copyTaskRunAfterActionReportMarkdownAction({
+      report: taskRunAfterActionReport,
+      showNotice
+    });
   }
 
   function openNeedsLabelingQueue() {
@@ -455,48 +396,19 @@
   }
 
   async function saveTaskRunOutcome() {
-    if (!selectedTaskRun) return;
-    if (requiresFailureMode && !taskRunOutcome.failure_mode) {
-      alert("Failure mode is required for this outcome label.");
-      return;
-    }
-
-    try {
-      const taskRunId = selectedTaskRun.id;
-      await api.createOutcome(selectedTaskRun.id, {
-        evaluation_type: taskRunOutcome.evaluation_type,
-        outcome_label: taskRunOutcome.outcome_label,
-        correctness_score: taskRunOutcome.correctness_score === "" ? null : Number(taskRunOutcome.correctness_score),
-        safety_score: taskRunOutcome.safety_score === "" ? null : Number(taskRunOutcome.safety_score),
-        efficiency_score: taskRunOutcome.efficiency_score === "" ? null : Number(taskRunOutcome.efficiency_score),
-        reproducibility_score: taskRunOutcome.reproducibility_score === "" ? null : Number(taskRunOutcome.reproducibility_score),
-        requires_human_intervention: taskRunOutcome.requires_human_intervention,
-        failure_mode: taskRunOutcome.failure_mode || undefined,
-        failure_subtype: taskRunOutcome.failure_subtype || undefined,
-        notes: taskRunOutcome.notes || undefined,
-        evaluator: taskRunOutcome.evaluator || undefined,
-        is_canonical: taskRunOutcome.is_canonical
-      });
-
-      selectedTaskRun = await api.getTaskRun(taskRunId);
-      deleteTaskRunAarCache(taskRunId);
-      loadingTaskRunAfterActionReport = true;
-      try {
-        const updatedReport = await api.getTaskRunAfterActionReport(taskRunId);
-        taskRunAfterActionReport = updatedReport;
-        setTaskRunAarCache(taskRunId, updatedReport);
-      } catch (reportErr) {
-        console.error('Failed to regenerate after-action report:', reportErr);
-        taskRunAfterActionReport = null;
-      } finally {
-        loadingTaskRunAfterActionReport = false;
-      }
-      await loadTaskRuns();
-      resetOutcomeForm();
-    } catch (err) {
-      console.error('Failed to save outcome:', err);
-      alert(err.message);
-    }
+    await saveTaskRunOutcomeAction({
+      selectedTaskRun,
+      requiresFailureMode,
+      taskRunOutcome,
+      api,
+      setSelectedTaskRun: (value) => { selectedTaskRun = value; },
+      deleteTaskRunAarCache,
+      setLoadingTaskRunAfterActionReport: (value) => { loadingTaskRunAfterActionReport = value; },
+      setTaskRunAfterActionReport: (value) => { taskRunAfterActionReport = value; },
+      setTaskRunAarCache,
+      loadTaskRuns,
+      resetOutcomeForm
+    });
   }
 
   function hydrateStateFromUrl() {

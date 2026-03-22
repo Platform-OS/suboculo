@@ -49,15 +49,16 @@ assert.ok(saveOutcomeMatch, "TaskRunsTab.svelte must define saveTaskRunOutcome()
 const saveOutcomeBody = saveOutcomeMatch[1];
 
 assert.ok(
-  /api\.createOutcome\(/.test(saveOutcomeBody),
-  "saveTaskRunOutcome() should create outcome"
+  /api\.createOutcome\(/.test(saveOutcomeBody) || /saveTaskRunOutcomeAction\(/.test(saveOutcomeBody),
+  "saveTaskRunOutcome() should create outcome (directly or via action helper)"
 );
 assert.ok(
-  /api\.getTaskRunAfterActionReport\(\s*taskRunId\s*\)/.test(saveOutcomeBody),
+  /api\.getTaskRunAfterActionReport\(\s*taskRunId\s*\)/.test(saveOutcomeBody) || /saveTaskRunOutcomeAction\(/.test(saveOutcomeBody),
   "saveTaskRunOutcome() should regenerate AAR for the same task run"
 );
 assert.ok(
-  /taskRunAfterActionReport\s*=\s*updatedReport/.test(saveOutcomeBody),
+  /taskRunAfterActionReport\s*=\s*updatedReport/.test(saveOutcomeBody) ||
+    /setTaskRunAfterActionReport:\s*\(value\)\s*=>\s*\{\s*taskRunAfterActionReport\s*=\s*value;\s*\}/.test(saveOutcomeBody),
   "saveTaskRunOutcome() should persist regenerated AAR in component state"
 );
 
