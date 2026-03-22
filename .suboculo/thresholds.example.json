@@ -1,0 +1,26 @@
+{
+  "success_rate": {
+    "min": 0.85,
+    "severity": "high"
+  },
+  "first_pass_rate": {
+    "min": 0.7,
+    "severity": "medium"
+  },
+  "retry_rate": {
+    "max": 0.2,
+    "severity": "medium"
+  },
+  "intervention_rate": {
+    "max": 0.1,
+    "severity": "high"
+  },
+  "unsafe_success_rate": {
+    "max": 0.02,
+    "severity": "high"
+  },
+  "cost_per_success": {
+    "max": 0.5,
+    "severity": "low"
+  }
+}

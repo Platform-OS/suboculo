@@ -877,6 +877,33 @@ server.tool(
   }
 );
 
+// ── Tool 14: suboculo_get_reliability_review ────────────────────────────────
+
+server.tool(
+  'suboculo_get_reliability_review',
+  'Generate a period reliability review (KPI snapshot, anomalies, trends, failure modes, labeling backlog, top failing runs).',
+  {
+    runner: z.string().optional().describe('Filter by runner'),
+    source: z.string().optional().describe('Filter by task run source (e.g. "derived_attempt")'),
+    status: z.string().optional().describe('Filter by task run status'),
+    from: z.string().optional().describe('Lower timestamp bound (ISO)'),
+    to: z.string().optional().describe('Upper timestamp bound (ISO)'),
+    week_of: z.string().optional().describe('Week anchor date (ISO) if from/to not provided'),
+    bucket: z.enum(['day', 'week']).optional().describe('Bucket size for trend snippets inside review'),
+  },
+  async (input) => {
+    try {
+      const query = buildQueryParams(input, [
+        'runner', 'source', 'status', 'from', 'to', 'week_of', 'bucket'
+      ]);
+      const payload = await callBackendJson('/api/reliability/review', { query });
+      return toMcpText(payload, '=== Reliability Review ===');
+    } catch (err) {
+      return { content: [{ type: 'text', text: `Failed to fetch reliability review: ${err.message}` }] };
+    }
+  }
+);
+
 // ── Start server ────────────────────────────────────────────────────────────
 
 async function main() {

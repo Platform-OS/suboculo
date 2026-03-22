@@ -110,6 +110,7 @@
   let reliabilityTrends = null;
   let reliabilityTrendInsights = null;
   let reliabilityFailureModeTrends = null;
+  let reliabilityReview = null;
   let taskRunAfterActionReport = null;
   let loadingTaskRunAfterActionReport = false;
   let kpiDefinitions = null;
@@ -265,7 +266,7 @@
         requires_human_intervention: taskRunHumanInterventionFilter === "all" ? undefined : taskRunHumanInterventionFilter
       };
 
-      const [result, summary, kpis, kpisByRunner, trends, trendInsights, failureModeTrends] = await Promise.all([
+      const [result, summary, kpis, kpisByRunner, trends, trendInsights, failureModeTrends, review] = await Promise.all([
         api.getTaskRuns(filters),
         api.getTaskRunOutcomeSummary(filters),
         api.getReliabilityKpis(filters),
@@ -284,6 +285,10 @@
           ...filters,
           bucket: reliabilityTrendBucket,
           window_days: reliabilityTrendWindowDays
+        }),
+        api.getReliabilityReview({
+          ...filters,
+          bucket: reliabilityTrendBucket
         })
       ]);
       taskRuns = result.taskRuns;
@@ -297,6 +302,7 @@
       reliabilityTrends = trends;
       reliabilityTrendInsights = trendInsights;
       reliabilityFailureModeTrends = failureModeTrends;
+      reliabilityReview = review;
 
       if (selectedTaskRun?.id) {
         const updated = result.taskRuns.find(run => run.id === selectedTaskRun.id);
@@ -312,6 +318,7 @@
       reliabilityTrends = null;
       reliabilityTrendInsights = null;
       reliabilityFailureModeTrends = null;
+      reliabilityReview = null;
     } finally {
       loadingTaskRuns = false;
     }
@@ -531,6 +538,36 @@
       console.error('Failed to copy after-action report:', err);
       showNotice('Failed to copy after-action report', 'error');
     }
+  }
+
+  async function copyReliabilityReviewMarkdown() {
+    if (!reliabilityReview?.markdown) return;
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(reliabilityReview.markdown);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = reliabilityReview.markdown;
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      showNotice('Reliability review copied to clipboard', 'success');
+    } catch (err) {
+      console.error('Failed to copy reliability review:', err);
+      showNotice('Failed to copy reliability review', 'error');
+    }
+  }
+
+  function openNeedsLabelingQueue() {
+    taskRunNeedsLabelingOnly = true;
+    taskRunCanonicalOutcomeFilter = "all";
+    taskRunFailureModeFilter = "all";
+    taskRunFailureSubtypeFilter = "all";
+    taskRunHumanInterventionFilter = "all";
   }
 
   function resetOutcomeForm() {
@@ -1952,6 +1989,89 @@ ${analysisResult.analysis}
                 Needs labeling queue
               </Button>
             </div>
+          </CardContent>
+        </Card>
+
+        <Card class="rounded-2xl shadow-sm">
+          <CardContent class="p-4 md:p-5 space-y-4">
+            <div class="flex items-center justify-between gap-2">
+              <div class="text-base font-semibold">Reliability Review</div>
+              <Button variant="outline" size="sm" on:click={copyReliabilityReviewMarkdown} disabled={!reliabilityReview?.markdown}>
+                Copy markdown
+              </Button>
+            </div>
+
+            {#if reliabilityReview}
+              <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div class="rounded-xl border p-3 bg-muted/10">
+                  <div class="text-xs text-muted-foreground">Task runs</div>
+                  <div class="text-xl font-semibold">{reliabilityReview.kpis?.counts?.task_runs ?? 0}</div>
+                </div>
+                <div class="rounded-xl border p-3 bg-muted/10">
+                  <div class="text-xs text-muted-foreground">Success rate</div>
+                  <div class="text-xl font-semibold">{formatPercent(reliabilityReview.kpis?.rates?.success_rate)}</div>
+                </div>
+                <div class="rounded-xl border p-3 bg-muted/10">
+                  <div class="text-xs text-muted-foreground">Retry rate</div>
+                  <div class="text-xl font-semibold">{formatPercent(reliabilityReview.kpis?.rates?.retry_rate)}</div>
+                </div>
+                <div class="rounded-xl border p-3 bg-muted/10">
+                  <div class="text-xs text-muted-foreground">Cost per success</div>
+                  <div class="text-xl font-semibold">{formatMoney(reliabilityReview.kpis?.cost?.cost_per_success)}</div>
+                </div>
+              </div>
+
+              <div class="rounded-xl border p-3 space-y-2">
+                <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Anomalies</div>
+                {#if reliabilityReview.anomalies?.length}
+                  <div class="flex flex-wrap gap-1">
+                    {#each reliabilityReview.anomalies as anomaly (`review-${anomaly.code}`)}
+                      <Badge variant={anomaly.severity === "high" ? "destructive" : "outline"} title={anomaly.message}>
+                        {formatLabel(anomaly.code)}
+                      </Badge>
+                    {/each}
+                  </div>
+                {:else}
+                  <div class="text-sm text-muted-foreground">No anomaly flags in current scope.</div>
+                {/if}
+              </div>
+
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  class="rounded-xl border p-3 text-left hover:bg-muted/20 transition-colors"
+                  on:click={openNeedsLabelingQueue}
+                >
+                  <div class="text-xs text-muted-foreground">Needs labeling</div>
+                  <div class="text-2xl font-semibold">{reliabilityReview.labeling_backlog?.no_canonical_outcome_runs ?? 0}</div>
+                  <div class="text-xs text-muted-foreground mt-1">Click to open labeling queue</div>
+                </button>
+
+                <div class="rounded-xl border p-3 space-y-2">
+                  <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Top failing runs</div>
+                  {#if reliabilityReview.top_failing_runs?.length}
+                    <div class="space-y-1">
+                      {#each reliabilityReview.top_failing_runs as run (`review-run-${run.id}`)}
+                        <button
+                          type="button"
+                          class="w-full text-left text-sm rounded px-2 py-1 hover:bg-muted/20"
+                          on:click={() => viewTaskRun(run.id)}
+                        >
+                          <div class="font-mono truncate">{run.task_key}</div>
+                          <div class="text-xs text-muted-foreground">
+                            {run.canonical_outcome_label || "unknown"} · errors {run.error_count} · {formatMoney(run.estimated_cost)}
+                          </div>
+                        </button>
+                      {/each}
+                    </div>
+                  {:else}
+                    <div class="text-sm text-muted-foreground">No failing runs in current scope.</div>
+                  {/if}
+                </div>
+              </div>
+            {:else}
+              <div class="text-sm text-muted-foreground">No review data in current scope.</div>
+            {/if}
           </CardContent>
         </Card>
 

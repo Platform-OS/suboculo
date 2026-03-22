@@ -42,12 +42,18 @@ async function request(pathname, options = {}) {
 async function run() {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'suboculo-smoke-'));
   const dbPath = path.join(tmpDir, 'events.db');
+  const thresholdsPath = path.join(tmpDir, 'thresholds.json');
+  fs.writeFileSync(thresholdsPath, JSON.stringify({
+    retry_rate: { max: 0.1, severity: 'high' },
+    success_rate: { min: 0.6, severity: 'medium' }
+  }, null, 2));
   const server = spawn(process.execPath, ['server.js'], {
     cwd: path.join(__dirname, '..'),
     env: {
       ...process.env,
       SUBOCULO_PORT: String(PORT),
       SUBOCULO_DB_PATH: dbPath,
+      SUBOCULO_THRESHOLDS_PATH: thresholdsPath,
       SUBOCULO_LOG_LEVEL: 'warn'
     },
     stdio: ['ignore', 'pipe', 'pipe']
@@ -228,6 +234,14 @@ async function run() {
     assert.equal(smokeRunnerKpiBeforeOutcomes.rates.success_rate, null, 'success rate should be null without canonical outcomes');
     assert.equal(smokeRunnerKpiBeforeOutcomes.cost.cost_per_success, null, 'cost per success should be null without successful runs');
     assert.ok(smokeRunnerKpiBeforeOutcomes.anomalies.some((a) => a.code === 'no_canonical_outcomes'), 'should flag missing canonical outcomes');
+    assert.ok(smokeRunnerKpiBeforeOutcomes.anomalies.some((a) => a.code === 'above_target_retry_rate'), 'configured threshold should flag high retry rate');
+
+    result = await request('/reliability/review?runner=smoke-runner&source=derived_attempt&bucket=week');
+    assert.equal(result.response.status, 200, 'reliability review endpoint should succeed before outcomes');
+    assert.ok(result.body.kpis && result.body.kpis.counts, 'review should include kpi snapshot');
+    assert.ok(result.body.labeling_backlog?.no_canonical_outcome_runs >= 1, 'review should include labeling backlog');
+    assert.ok(result.body.thresholds?.targets?.retry_rate, 'review should include configured thresholds');
+    assert.ok(typeof result.body.markdown === 'string' && result.body.markdown.includes('Reliability Review'), 'review should include markdown output');
 
     result = await request('/task-runs/outcomes/batch', {
       method: 'POST',
@@ -295,6 +309,11 @@ async function run() {
     assert.equal(result.body.status, 'ready', 'report should be ready when canonical outcome is present');
     assert.equal(result.body.canonical_outcome?.outcome_label, 'failure', 'report should include canonical outcome');
     assert.ok(Array.isArray(result.body.sections?.risks), 'report should include risks section');
+
+    result = await request('/reliability/review?runner=smoke-runner&source=derived_attempt&bucket=week');
+    assert.equal(result.response.status, 200, 'reliability review endpoint should succeed after outcomes');
+    assert.ok(Array.isArray(result.body.top_failing_runs), 'review should include top failing runs list');
+    assert.ok(result.body.anomalies.some((a) => a.code === 'above_target_retry_rate'), 'review should include threshold anomaly');
 
     result = await request('/reliability/kpis?runner=smoke-runner&source=derived_attempt');
     assert.equal(result.response.status, 200, 'reliability KPI endpoint should succeed');

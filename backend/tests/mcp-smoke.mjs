@@ -165,6 +165,7 @@ async function run() {
       'suboculo_get_reliability_kpis',
       'suboculo_get_reliability_trends',
       'suboculo_get_failure_mode_trends',
+      'suboculo_get_reliability_review',
       'suboculo_get_task_run_after_action_report',
       'suboculo_record_task_run_outcome'
     ]) {
@@ -182,6 +183,10 @@ async function run() {
     assertCallResult(
       await client.callTool({ name: 'suboculo_get_failure_mode_trends', arguments: { runner: 'mcp-smoke', bucket: 'day', window_days: 7 } }),
       'suboculo_get_failure_mode_trends'
+    );
+    assertCallResult(
+      await client.callTool({ name: 'suboculo_get_reliability_review', arguments: { runner: 'mcp-smoke', source: 'derived_attempt', bucket: 'week' } }),
+      'suboculo_get_reliability_review'
     );
     assertCallResult(
       await client.callTool({ name: 'suboculo_get_task_run_after_action_report', arguments: { task_run_id: taskRunId } }),

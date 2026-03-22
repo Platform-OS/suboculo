@@ -434,6 +434,24 @@ export async function getReliabilityFailureModeTrends(filters = {}) {
   return response.json();
 }
 
+export async function getReliabilityReview(filters = {}) {
+  const params = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== null && value !== '') {
+      params.append(key, value);
+    }
+  }
+
+  const response = await fetch(`${API_BASE}/reliability/review?${params}`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch reliability review');
+  }
+
+  return response.json();
+}
+
 export async function createOutcome(taskRunId, outcome) {
   const response = await fetch(`${API_BASE}/task-runs/${taskRunId}/outcomes`, {
     method: 'POST',

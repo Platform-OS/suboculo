@@ -92,6 +92,9 @@ patch_port_in_file "$SUBOCULO_DIR/backend/server.js" "process.env.SUBOCULO_PORT 
 cp "$SCRIPT_DIR/backend/cep-processor.js" "$SUBOCULO_DIR/backend/"
 cp -r "$SCRIPT_DIR/svelte-app/dist/"* "$SUBOCULO_DIR/frontend/"
 cp "$SCRIPT_DIR/integrations/claude-code/hooks/package.json" "$SUBOCULO_DIR/"
+if [ -f "$SCRIPT_DIR/.suboculo/thresholds.example.json" ]; then
+  cp "$SCRIPT_DIR/.suboculo/thresholds.example.json" "$SUBOCULO_DIR/thresholds.example.json"
+fi
 
 # Install dependencies
 echo "📦 Installing dependencies..."
