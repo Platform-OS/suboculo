@@ -315,6 +315,17 @@ async function run() {
     assert.ok(result.body.deltas.some((d) => d.insufficient_sample === true), 'trend insights should flag insufficient sample for sparse buckets');
     assert.ok(result.body.insights && typeof result.body.insights === 'object', 'trend insights should include grouped insights');
 
+    result = await request('/reliability/trends/failure-modes?runner=smoke-runner&source=derived_attempt&bucket=day&window_days=7');
+    assert.equal(result.response.status, 200, 'reliability failure-mode trends endpoint should succeed');
+    assert.equal(result.body.bucket, 'day', 'failure-mode trend bucket should match query');
+    assert.ok(Array.isArray(result.body.series), 'failure-mode trend series should be an array');
+    assert.ok(result.body.series.some((row) => row.with_failure_mode >= 1), 'failure-mode trends should include at least one failure-mode bucket');
+    assert.ok(
+      result.body.series.some((row) => Array.isArray(row.by_mode) && row.by_mode.some((modeRow) => modeRow.failure_mode === 'execution_failure')),
+      'failure-mode trends should include execution_failure mode'
+    );
+    assert.ok(Array.isArray(result.body.insufficient_evidence), 'failure-mode trends should include insufficient evidence notes');
+
     result = await request('/task-runs?pageSize=10&runner=smoke-runner&canonical_outcome_label=failure&failure_mode=execution_failure');
     assert.equal(result.response.status, 200, 'task run filters by canonical outcome and failure mode should succeed');
     assert.ok(result.body.total >= 1, 'filtered task runs should include the smoke run');

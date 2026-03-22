@@ -406,6 +406,24 @@ export async function getReliabilityTrendInsights(filters = {}) {
   return response.json();
 }
 
+export async function getReliabilityFailureModeTrends(filters = {}) {
+  const params = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== null && value !== '') {
+      params.append(key, value);
+    }
+  }
+
+  const response = await fetch(`${API_BASE}/reliability/trends/failure-modes?${params}`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch reliability failure-mode trends');
+  }
+
+  return response.json();
+}
+
 export async function createOutcome(taskRunId, outcome) {
   const response = await fetch(`${API_BASE}/task-runs/${taskRunId}/outcomes`, {
     method: 'POST',

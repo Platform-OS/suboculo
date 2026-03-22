@@ -742,6 +742,143 @@ function buildReliabilityTrendsData(query = {}) {
   };
 }
 
+function createFailureModeTrendBucket(startDate) {
+  return {
+    bucket_start: startDate.toISOString(),
+    bucket_end: null,
+    task_runs: 0,
+    with_canonical_outcome: 0,
+    with_failure_mode: 0,
+    mode_counts: new Map()
+  };
+}
+
+function finalizeFailureModeTrendBucket(bucket) {
+  const modes = [...bucket.mode_counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([failure_mode, count]) => ({
+      failure_mode,
+      count,
+      failure_mode_share: ratioOrNull(count, bucket.with_failure_mode),
+      canonical_share: ratioOrNull(count, bucket.with_canonical_outcome)
+    }));
+
+  return {
+    bucket_start: bucket.bucket_start,
+    bucket_end: bucket.bucket_end,
+    task_runs: bucket.task_runs,
+    with_canonical_outcome: bucket.with_canonical_outcome,
+    with_failure_mode: bucket.with_failure_mode,
+    top_failure_mode: modes.length ? modes[0].failure_mode : null,
+    by_mode: modes
+  };
+}
+
+function buildFailureModeTrendsData(query = {}) {
+  const bucket = query.bucket === 'week' ? 'week' : 'day';
+  const parsedWindowDays = Number.parseInt(String(query.window_days || ''), 10);
+  const windowDays = Number.isFinite(parsedWindowDays) && parsedWindowDays > 0 ? parsedWindowDays : 30;
+
+  const scopedQuery = { ...query };
+  if (!scopedQuery.from && !scopedQuery.to) {
+    scopedQuery.from = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString();
+  }
+
+  const { whereSql, params } = buildTaskRunsWhereClause(scopedQuery, 'tr');
+  const rows = db.prepare(`
+    SELECT
+      tr.runner,
+      tr.started_at,
+      (
+        SELECT o.outcome_label
+        FROM outcomes o
+        WHERE o.task_run_id = tr.id
+          AND o.is_canonical = 1
+        ORDER BY o.evaluated_at DESC, o.id DESC
+        LIMIT 1
+      ) AS canonical_outcome_label,
+      (
+        SELECT o.failure_mode
+        FROM outcomes o
+        WHERE o.task_run_id = tr.id
+          AND o.is_canonical = 1
+        ORDER BY o.evaluated_at DESC, o.id DESC
+        LIMIT 1
+      ) AS canonical_failure_mode
+    FROM task_runs tr
+    WHERE ${whereSql}
+      AND tr.started_at IS NOT NULL
+    ORDER BY tr.started_at ASC
+  `).all(...params);
+
+  const buckets = new Map();
+  const byRunner = new Map();
+
+  function upsertBucket(map, key, startDate) {
+    if (!map.has(key)) {
+      const base = createFailureModeTrendBucket(startDate);
+      base.bucket_end = addBucketSpan(startDate, bucket).toISOString();
+      map.set(key, base);
+    }
+    return map.get(key);
+  }
+
+  for (const row of rows) {
+    const start = floorToBucketStart(row.started_at, bucket);
+    if (!start) continue;
+    const key = start.toISOString();
+    const runnerName = row.runner || 'unknown';
+
+    const globalBucket = upsertBucket(buckets, key, start);
+    if (!byRunner.has(runnerName)) byRunner.set(runnerName, new Map());
+    const runnerBucket = upsertBucket(byRunner.get(runnerName), key, start);
+
+    for (const target of [globalBucket, runnerBucket]) {
+      target.task_runs += 1;
+      if (row.canonical_outcome_label) {
+        target.with_canonical_outcome += 1;
+      }
+      if (row.canonical_failure_mode) {
+        target.with_failure_mode += 1;
+        const prev = target.mode_counts.get(row.canonical_failure_mode) || 0;
+        target.mode_counts.set(row.canonical_failure_mode, prev + 1);
+      }
+    }
+  }
+
+  const series = [...buckets.values()]
+    .sort((a, b) => a.bucket_start.localeCompare(b.bucket_start))
+    .map(finalizeFailureModeTrendBucket);
+
+  const by_runner = {};
+  for (const [runner, runnerBuckets] of byRunner.entries()) {
+    by_runner[runner] = [...runnerBuckets.values()]
+      .sort((a, b) => a.bucket_start.localeCompare(b.bucket_start))
+      .map(finalizeFailureModeTrendBucket);
+  }
+
+  const insufficient_evidence = series
+    .filter((row) => row.with_canonical_outcome > 0 && row.with_canonical_outcome < KPI_MIN_CANONICAL_SAMPLE)
+    .map((row) => ({
+      bucket_start: row.bucket_start,
+      reason: `with_canonical_outcome < ${KPI_MIN_CANONICAL_SAMPLE}`
+    }))
+    .slice(-6);
+
+  return {
+    bucket,
+    window_days: windowDays,
+    from: scopedQuery.from || null,
+    to: scopedQuery.to || null,
+    thresholds: {
+      min_canonical_sample: KPI_MIN_CANONICAL_SAMPLE
+    },
+    series,
+    by_runner,
+    insufficient_evidence
+  };
+}
+
 function summarizeReliabilityKpis(rows) {
   const totalRuns = rows.length;
   const withCanonical = rows.filter(r => !!r.canonical_outcome_label);
@@ -1898,6 +2035,15 @@ app.get('/api/reliability/trends/insights', (req, res) => {
     });
   } catch (error) {
     console.error('Reliability trend insights error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/reliability/trends/failure-modes', (req, res) => {
+  try {
+    res.json(buildFailureModeTrendsData(req.query));
+  } catch (error) {
+    console.error('Reliability failure-mode trends error:', error);
     res.status(500).json({ error: error.message });
   }
 });

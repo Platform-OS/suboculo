@@ -109,6 +109,7 @@
   let reliabilityKpisByRunner = null;
   let reliabilityTrends = null;
   let reliabilityTrendInsights = null;
+  let reliabilityFailureModeTrends = null;
   let kpiDefinitions = null;
   let showKpiDefinitions = false;
   let reliabilityTrendBucket = "day";
@@ -262,7 +263,7 @@
         requires_human_intervention: taskRunHumanInterventionFilter === "all" ? undefined : taskRunHumanInterventionFilter
       };
 
-      const [result, summary, kpis, kpisByRunner, trends, trendInsights] = await Promise.all([
+      const [result, summary, kpis, kpisByRunner, trends, trendInsights, failureModeTrends] = await Promise.all([
         api.getTaskRuns(filters),
         api.getTaskRunOutcomeSummary(filters),
         api.getReliabilityKpis(filters),
@@ -273,6 +274,11 @@
           window_days: reliabilityTrendWindowDays
         }),
         api.getReliabilityTrendInsights({
+          ...filters,
+          bucket: reliabilityTrendBucket,
+          window_days: reliabilityTrendWindowDays
+        }),
+        api.getReliabilityFailureModeTrends({
           ...filters,
           bucket: reliabilityTrendBucket,
           window_days: reliabilityTrendWindowDays
@@ -288,6 +294,7 @@
       reliabilityKpisByRunner = kpisByRunner;
       reliabilityTrends = trends;
       reliabilityTrendInsights = trendInsights;
+      reliabilityFailureModeTrends = failureModeTrends;
 
       if (selectedTaskRun?.id) {
         const updated = result.taskRuns.find(run => run.id === selectedTaskRun.id);
@@ -302,6 +309,7 @@
       reliabilityKpisByRunner = null;
       reliabilityTrends = null;
       reliabilityTrendInsights = null;
+      reliabilityFailureModeTrends = null;
     } finally {
       loadingTaskRuns = false;
     }
@@ -842,6 +850,14 @@
     const pct = value * 100;
     const sign = pct > 0 ? "+" : "";
     return `${sign}${pct.toFixed(1)}%`;
+  }
+
+  function formatFailureModeRow(bucketRow) {
+    if (!bucketRow?.by_mode?.length) return "—";
+    return bucketRow.by_mode
+      .slice(0, 3)
+      .map((modeRow) => `${modeRow.failure_mode} ${modeRow.count} (${formatPercent(modeRow.failure_mode_share)})`)
+      .join(", ");
   }
 
   function selectEntry(key) {
@@ -2068,6 +2084,41 @@ ${analysisResult.analysis}
                     {/each}
                   </tbody>
                 </table>
+              </div>
+
+              <div class="rounded-xl border p-3 space-y-2">
+                <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Failure Mode Trends</div>
+                {#if reliabilityFailureModeTrends?.series?.some((row) => row.with_failure_mode > 0)}
+                  <div class="overflow-auto rounded-xl border">
+                    <table class="min-w-full text-sm">
+                      <thead class="bg-muted/20 text-xs text-muted-foreground uppercase tracking-wide">
+                        <tr>
+                          <th class="px-3 py-2 text-left">Bucket</th>
+                          <th class="px-3 py-2 text-right">Canonical</th>
+                          <th class="px-3 py-2 text-right">With failure mode</th>
+                          <th class="px-3 py-2 text-left">Top modes</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {#each [...reliabilityFailureModeTrends.series].reverse() as modeBucket (modeBucket.bucket_start)}
+                          <tr class="border-t">
+                            <td class="px-3 py-2">{formatBucketStart(modeBucket.bucket_start, reliabilityFailureModeTrends.bucket)}</td>
+                            <td class="px-3 py-2 text-right">{modeBucket.with_canonical_outcome}</td>
+                            <td class="px-3 py-2 text-right">{modeBucket.with_failure_mode}</td>
+                            <td class="px-3 py-2">{formatFailureModeRow(modeBucket)}</td>
+                          </tr>
+                        {/each}
+                      </tbody>
+                    </table>
+                  </div>
+                {:else}
+                  <div class="text-xs text-muted-foreground">No failure mode data in current scope.</div>
+                {/if}
+                {#if reliabilityFailureModeTrends?.insufficient_evidence?.length}
+                  <div class="text-xs text-muted-foreground">
+                    Guardrail: canonical sample should be at least {reliabilityFailureModeTrends?.thresholds?.min_canonical_sample ?? "—"} per bucket for stable mode trends.
+                  </div>
+                {/if}
               </div>
 
               {#if Object.keys(reliabilityTrends.by_runner || {}).length}
