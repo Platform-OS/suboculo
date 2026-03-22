@@ -69,6 +69,10 @@ This installs Suboculo into:
 What tools have I used most?
 Show me events from the last hour
 Analyze my Read vs Edit ratio
+Show reliability KPIs for source=derived_attempt
+Show reliability trends for the last 30 days, bucketed by week
+Show failure mode trends for runner=claude-code
+Generate an after-action report for task run 42
 ```
 
 **4. Visual monitoring (optional):**
@@ -91,6 +95,10 @@ Then open http://localhost:3000 (port is set during installation)
 What tools have I used most?
 Show me events from the last hour
 Compare OpenCode vs Claude Code tool usage
+Show reliability KPIs for runner=opencode and source=derived_attempt
+Show reliability trends for runner=opencode over the last 30 days
+Show failure mode trends for runner=opencode by week
+Generate an after-action report for task run 42
 ```
 
 **4. Visual monitoring (optional):**
@@ -101,6 +109,31 @@ node .suboculo/backend/server.js
 Then open http://localhost:3000 (port is set during installation)
 
 **Multi-Runner Analysis:** The shared database enables comparing behavior across different AI coding agents (Claude Code and OpenCode) using the same CEP event format with `runner` field differentiation.
+
+### MCP Reliability Workflows
+
+Use these as repeatable analyst playbooks in Claude Code/OpenCode:
+
+1. **Weekly triage (single runner)**
+```
+Show reliability KPIs for runner=claude-code and source=derived_attempt
+Show reliability trends for runner=claude-code, bucket=week, window_days=60
+Show failure mode trends for runner=claude-code, bucket=week, window_days=60
+```
+
+2. **Runner comparison (same project)**
+```
+Show reliability KPIs for source=derived_attempt
+Show reliability trends for runner=claude-code, bucket=week, window_days=30
+Show reliability trends for runner=opencode, bucket=week, window_days=30
+```
+
+3. **Postmortem on one failed attempt**
+```
+List task runs with canonical_outcome_label=failure for runner=opencode
+Generate an after-action report for task run <id>
+Record a corrected canonical outcome if needed
+```
 
 ## What It Does
 
@@ -131,7 +164,7 @@ Monitor and analyze AI agent activity in real-time:
 - Multi-runner support (Claude Code and OpenCode share same database)
 
 ### Analysis & Querying
-- **MCP tools** for CLI queries via Claude (7 tools)
+- **MCP tools** for CLI queries via Claude (13 tools, including reliability KPIs/trends/AAR)
 - **Web UI** for visual filtering and exploration
 - **LLM analysis** with custom prompts (API or CLI)
 - **CLI bridge** - Select in UI, analyze in Claude Code, save back to UI
