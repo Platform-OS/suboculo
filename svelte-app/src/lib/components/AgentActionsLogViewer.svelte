@@ -110,6 +110,8 @@
   let reliabilityTrends = null;
   let reliabilityTrendInsights = null;
   let reliabilityFailureModeTrends = null;
+  let taskRunAfterActionReport = null;
+  let loadingTaskRunAfterActionReport = false;
   let kpiDefinitions = null;
   let showKpiDefinitions = false;
   let reliabilityTrendBucket = "day";
@@ -489,9 +491,45 @@
   async function viewTaskRun(id) {
     try {
       selectedTaskRun = await api.getTaskRun(id);
+      taskRunAfterActionReport = null;
     } catch (err) {
       console.error('Failed to load task run:', err);
       alert('Failed to load task run');
+    }
+  }
+
+  async function generateTaskRunAfterActionReport() {
+    if (!selectedTaskRun?.id) return;
+    try {
+      loadingTaskRunAfterActionReport = true;
+      taskRunAfterActionReport = await api.getTaskRunAfterActionReport(selectedTaskRun.id);
+    } catch (err) {
+      console.error('Failed to generate after-action report:', err);
+      alert('Failed to generate after-action report');
+    } finally {
+      loadingTaskRunAfterActionReport = false;
+    }
+  }
+
+  async function copyTaskRunAfterActionReportMarkdown() {
+    if (!taskRunAfterActionReport?.markdown) return;
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(taskRunAfterActionReport.markdown);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = taskRunAfterActionReport.markdown;
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      showNotice('After-action report copied to clipboard', 'success');
+    } catch (err) {
+      console.error('Failed to copy after-action report:', err);
+      showNotice('Failed to copy after-action report', 'error');
     }
   }
 
@@ -540,6 +578,7 @@
       });
 
       selectedTaskRun = await api.getTaskRun(selectedTaskRun.id);
+      taskRunAfterActionReport = null;
       await loadTaskRuns();
       resetOutcomeForm();
     } catch (err) {
@@ -2387,7 +2426,7 @@ ${analysisResult.analysis}
                   </div>
                 </div>
                 {#if selectedTaskRun}
-                  <Button variant="ghost" on:click={() => selectedTaskRun = null} class="h-8 w-8 p-0">
+                  <Button variant="ghost" on:click={() => { selectedTaskRun = null; taskRunAfterActionReport = null; }} class="h-8 w-8 p-0">
                     <X class="w-4 h-4" />
                   </Button>
                 {/if}
@@ -2450,6 +2489,85 @@ ${analysisResult.analysis}
                           <Badge variant="outline" class="font-mono text-xs">{toolName}</Badge>
                         {/each}
                       </div>
+                    </div>
+                  {/if}
+                </div>
+
+                <Separator />
+
+                <div class="space-y-3">
+                  <div class="flex items-center justify-between">
+                    <div class="font-medium">After-Action Report</div>
+                    <div class="flex gap-2">
+                      <Button variant="outline" size="sm" on:click={generateTaskRunAfterActionReport} disabled={loadingTaskRunAfterActionReport}>
+                        {loadingTaskRunAfterActionReport ? "Generating..." : "Generate report"}
+                      </Button>
+                      <Button variant="outline" size="sm" on:click={copyTaskRunAfterActionReportMarkdown} disabled={!taskRunAfterActionReport?.markdown}>
+                        Copy markdown
+                      </Button>
+                    </div>
+                  </div>
+
+                  {#if taskRunAfterActionReport}
+                    <div class="rounded-xl border p-3 space-y-3 bg-muted/10">
+                      <div class="flex items-center gap-2">
+                        <Badge variant={taskRunAfterActionReport.status === "ready" ? "secondary" : "outline"}>
+                          {taskRunAfterActionReport.status}
+                        </Badge>
+                        {#if taskRunAfterActionReport.canonical_outcome}
+                          <Badge variant="outline">
+                            {taskRunAfterActionReport.canonical_outcome.outcome_label}
+                          </Badge>
+                        {/if}
+                      </div>
+
+                      {#if taskRunAfterActionReport.sections?.what_happened?.length}
+                        <div>
+                          <div class="text-xs uppercase tracking-wide text-muted-foreground mb-1">What happened</div>
+                          <div class="space-y-1">
+                            {#each taskRunAfterActionReport.sections.what_happened as item, idx (`aar-wh-${idx}`)}
+                              <div class="text-sm">• {item}</div>
+                            {/each}
+                          </div>
+                        </div>
+                      {/if}
+
+                      {#if taskRunAfterActionReport.sections?.variance_vs_expected?.length}
+                        <div>
+                          <div class="text-xs uppercase tracking-wide text-muted-foreground mb-1">Variance vs expected</div>
+                          <div class="space-y-1">
+                            {#each taskRunAfterActionReport.sections.variance_vs_expected as item, idx (`aar-var-${idx}`)}
+                              <div class="text-sm">• {item}</div>
+                            {/each}
+                          </div>
+                        </div>
+                      {/if}
+
+                      {#if taskRunAfterActionReport.sections?.risks?.length}
+                        <div>
+                          <div class="text-xs uppercase tracking-wide text-muted-foreground mb-1">Top risks</div>
+                          <div class="space-y-1">
+                            {#each taskRunAfterActionReport.sections.risks as item, idx (`aar-risk-${idx}`)}
+                              <div class="text-sm">• {item}</div>
+                            {/each}
+                          </div>
+                        </div>
+                      {/if}
+
+                      {#if taskRunAfterActionReport.sections?.remediation?.length}
+                        <div>
+                          <div class="text-xs uppercase tracking-wide text-muted-foreground mb-1">Remediation</div>
+                          <div class="space-y-1">
+                            {#each taskRunAfterActionReport.sections.remediation as item, idx (`aar-rem-${idx}`)}
+                              <div class="text-sm">• {item}</div>
+                            {/each}
+                          </div>
+                        </div>
+                      {/if}
+                    </div>
+                  {:else}
+                    <div class="text-sm text-muted-foreground">
+                      Generate a structured post-run report from task telemetry and canonical outcome.
                     </div>
                   {/if}
                 </div>

@@ -75,6 +75,7 @@ npm run provenance:check
 - `GET /api/reliability/trends/failure-modes` - Time-bucketed canonical failure mode mix and top modes
 
 ### Task Runs
+- `GET /api/task-runs/:id/after-action-report` - Generate structured after-action report for a task run
 - `POST /api/task-runs/:id/outcomes` - Record single outcome for a task run
 - `POST /api/task-runs/outcomes/batch` - Record outcomes for multiple task runs in one request
 

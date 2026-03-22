@@ -1406,6 +1406,286 @@ function getTaskRunById(taskRunId) {
   `).get(taskRunId);
 }
 
+function formatTaskRunAfterActionReportMarkdown(report) {
+  const summary = report.summary || {};
+  const outcome = report.canonical_outcome;
+  const sections = report.sections || {};
+  const evidence = report.evidence || {};
+
+  const lines = [
+    '# After-Action Report',
+    '',
+    `- Task run: \`${report.task_run_id}\``,
+    `- Status: ${report.status}`,
+    `- Generated at: ${report.generated_at}`,
+    '',
+    '## Summary',
+    '',
+    `- Title: ${summary.title || '—'}`,
+    `- Task key: \`${summary.task_key || '—'}\``,
+    `- Attempt: ${summary.attempt_number ?? '—'}`,
+    `- Runner: ${summary.runner || '—'}`,
+    `- Model: ${summary.model || '—'}`,
+    `- Runner version: ${summary.runner_version || '—'}`,
+    `- Started: ${summary.started_at || '—'}`,
+    `- Ended: ${summary.ended_at || '—'}`,
+    `- Duration: ${summary.total_duration_ms ?? 0} ms`,
+    `- Tool calls: ${summary.total_tool_calls ?? 0}`,
+    `- Errors: ${summary.error_count ?? 0}`,
+    `- Interrupts: ${summary.interrupt_count ?? 0}`,
+    ''
+  ];
+
+  lines.push('## Canonical Outcome', '');
+  if (!outcome) {
+    lines.push('- Missing canonical outcome.');
+  } else {
+    lines.push(`- Label: ${outcome.outcome_label}`);
+    lines.push(`- Evaluation type: ${outcome.evaluation_type}`);
+    lines.push(`- Evaluator: ${outcome.evaluator || '—'}`);
+    lines.push(`- Failure mode: ${outcome.failure_mode || '—'}`);
+    lines.push(`- Failure subtype: ${outcome.failure_subtype || '—'}`);
+    lines.push(`- Human intervention: ${outcome.requires_human_intervention ? 'yes' : 'no'}`);
+    if (outcome.notes) lines.push(`- Notes: ${outcome.notes}`);
+  }
+  lines.push('');
+
+  const sectionSpecs = [
+    ['What Happened', sections.what_happened || []],
+    ['Variance Vs Expected', sections.variance_vs_expected || []],
+    ['Top Risks', sections.risks || []],
+    ['Remediation', sections.remediation || []]
+  ];
+  for (const [heading, items] of sectionSpecs) {
+    lines.push(`## ${heading}`, '');
+    if (!items.length) lines.push('- None.');
+    else {
+      for (const item of items) lines.push(`- ${item}`);
+    }
+    lines.push('');
+  }
+
+  lines.push('## Evidence', '');
+  const topTools = evidence.top_tools || [];
+  if (topTools.length) {
+    lines.push('- Top tools:');
+    for (const tool of topTools) lines.push(`  - ${tool.tool}: ${tool.count}`);
+  } else {
+    lines.push('- Top tools: none');
+  }
+  const keyEvents = evidence.key_events || [];
+  if (keyEvents.length) {
+    lines.push('- Key events:');
+    for (const event of keyEvents) {
+      const extra = [event.tool, event.status, event.agentType, event.reason].filter(Boolean).join(' | ');
+      lines.push(`  - ${event.ts} ${event.event}${extra ? ` (${extra})` : ''}`);
+    }
+  } else {
+    lines.push('- Key events: none');
+  }
+
+  return lines.join('\n').trim();
+}
+
+function buildTaskRunAfterActionReport(taskRunId) {
+  const taskRun = getTaskRunById(taskRunId);
+  if (!taskRun) return null;
+
+  const canonicalOutcome = db.prepare(`
+    SELECT *
+    FROM outcomes
+    WHERE task_run_id = ?
+      AND is_canonical = 1
+    ORDER BY evaluated_at DESC, id DESC
+    LIMIT 1
+  `).get(taskRunId);
+
+  const eventRows = db.prepare(`
+    SELECT e.key, e.ts, e.event, e.data
+    FROM task_run_events tre
+    JOIN entries e ON e.key = tre.entry_key
+    WHERE tre.task_run_id = ?
+    ORDER BY e.ts ASC, e.id ASC
+  `).all(taskRunId);
+
+  const events = eventRows.map((row) => ({
+    key: row.key,
+    ts: row.ts,
+    event: row.event,
+    data: parseJSONSafe(row.data, {})
+  }));
+  const metadata = parseJSONSafe(taskRun.metadata, null) || {};
+  const attemptMatch = String(taskRun.task_key || '').match(/::attempt:(\d+)$/);
+  const attemptNumber = attemptMatch ? Number.parseInt(attemptMatch[1], 10) : null;
+
+  const eventCounts = {};
+  const toolCounts = new Map();
+  for (const event of events) {
+    eventCounts[event.event] = (eventCounts[event.event] || 0) + 1;
+    if (event.event === 'tool.end') {
+      const toolName = event?.data?.tool || 'unknown';
+      toolCounts.set(toolName, (toolCounts.get(toolName) || 0) + 1);
+    }
+  }
+
+  const topTools = [...toolCounts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 5)
+    .map(([tool, count]) => ({ tool, count }));
+
+  const keyEvents = [];
+  const eventSelectors = [
+    (e) => e.event === 'session.start',
+    (e) => e.event === 'tool.start',
+    (e) => e.event === 'tool.end' && e?.data?.status === 'error',
+    (e) => e.event === 'error',
+    (e) => e.event === 'session.end'
+  ];
+  for (const selector of eventSelectors) {
+    const match = events.find(selector);
+    if (!match) continue;
+    keyEvents.push({
+      ts: match.ts,
+      event: match.event,
+      tool: match?.data?.tool || null,
+      status: match?.data?.status || null,
+      agentType: match?.data?.agentType || null,
+      reason: match?.data?.reason || null
+    });
+  }
+
+  const sections = {
+    what_happened: [
+      `Run processed ${taskRun.total_events || 0} events and ${taskRun.total_tool_calls || 0} tool calls.`,
+      `Distinct tools used: ${taskRun.distinct_tools || 0}.`,
+      `Retries observed: ${taskRun.retry_count || 0}.`
+    ],
+    variance_vs_expected: [],
+    risks: [],
+    remediation: []
+  };
+
+  if (!canonicalOutcome) {
+    sections.what_happened.push('Canonical outcome is missing, so reliability judgment is incomplete.');
+    sections.variance_vs_expected.push('Expected vs actual cannot be resolved without canonical outcome labeling.');
+    sections.remediation.push('Record a canonical outcome label for this run before using this report for KPI decisions.');
+
+    const insufficientReport = {
+      task_run_id: taskRun.id,
+      status: 'insufficient_evidence',
+      generated_at: new Date().toISOString(),
+      summary: {
+        task_key: taskRun.task_key,
+        title: taskRun.title || null,
+        attempt_number: attemptNumber,
+        runner: taskRun.runner || null,
+        model: taskRun.model || null,
+        runner_version: taskRun.agent_system_version || taskRun.toolchain_version || metadata.runnerVersion || null,
+        started_at: taskRun.started_at || null,
+        ended_at: taskRun.ended_at || null,
+        total_duration_ms: taskRun.total_duration_ms || 0,
+        total_tool_calls: taskRun.total_tool_calls || 0,
+        error_count: taskRun.error_count || 0,
+        interrupt_count: taskRun.interrupt_count || 0
+      },
+      canonical_outcome: null,
+      sections,
+      evidence: {
+        event_counts: eventCounts,
+        top_tools: topTools,
+        key_events: keyEvents
+      }
+    };
+    insufficientReport.markdown = formatTaskRunAfterActionReportMarkdown(insufficientReport);
+    return insufficientReport;
+  }
+
+  const normalizedOutcome = {
+    id: canonicalOutcome.id,
+    outcome_label: canonicalOutcome.outcome_label,
+    evaluation_type: canonicalOutcome.evaluation_type,
+    failure_mode: canonicalOutcome.failure_mode || null,
+    failure_subtype: canonicalOutcome.failure_subtype || null,
+    requires_human_intervention: !!canonicalOutcome.requires_human_intervention,
+    evaluator: canonicalOutcome.evaluator || null,
+    notes: canonicalOutcome.notes || null,
+    evaluated_at: canonicalOutcome.evaluated_at
+  };
+
+  if (normalizedOutcome.outcome_label === 'success') {
+    sections.variance_vs_expected.push('Outcome is labeled success; execution matched expected completion criteria.');
+  } else if (normalizedOutcome.outcome_label === 'partial_success') {
+    sections.variance_vs_expected.push('Outcome is partial_success; expected completion was only partially met.');
+  } else if (normalizedOutcome.outcome_label === 'failure') {
+    sections.variance_vs_expected.push('Outcome is failure; expected completion was not achieved.');
+  } else {
+    sections.variance_vs_expected.push(`Outcome is ${normalizedOutcome.outcome_label}; completion state requires contextual interpretation.`);
+  }
+  if (normalizedOutcome.failure_mode) {
+    sections.variance_vs_expected.push(`Primary failure mode: ${normalizedOutcome.failure_mode}.`);
+  }
+  if (normalizedOutcome.failure_subtype) {
+    sections.variance_vs_expected.push(`Failure subtype: ${normalizedOutcome.failure_subtype}.`);
+  }
+
+  if (taskRun.error_count > 0) sections.risks.push(`Observed ${taskRun.error_count} error events.`);
+  if (taskRun.interrupt_count > 0) sections.risks.push(`Observed ${taskRun.interrupt_count} interrupt signals.`);
+  if ((taskRun.retry_count || 0) > 0) sections.risks.push(`Retry pressure present (${taskRun.retry_count} retries).`);
+  if (normalizedOutcome.failure_mode) sections.risks.push(`Canonical failure mode is ${normalizedOutcome.failure_mode}.`);
+  if (normalizedOutcome.requires_human_intervention) sections.risks.push('Human intervention was required.');
+
+  const remediationByFailureMode = {
+    planning_failure: 'Tighten plan decomposition and add explicit acceptance checks before execution.',
+    execution_failure: 'Add stronger tool-result validation and stop-on-error guardrails before continuing.',
+    validation_failure: 'Require explicit verification steps and expected-output assertions before declaring completion.',
+    safety_failure: 'Add preflight safety checks and stricter gating for potentially unsafe operations.',
+    environment_failure: 'Capture environment/runtime prerequisites and fail fast on missing dependencies.',
+    integration_failure: 'Stabilize API contracts and add compatibility checks for runner/integration versions.'
+  };
+
+  if (normalizedOutcome.failure_mode && remediationByFailureMode[normalizedOutcome.failure_mode]) {
+    sections.remediation.push(remediationByFailureMode[normalizedOutcome.failure_mode]);
+  }
+  if ((taskRun.retry_count || 0) > 0) {
+    sections.remediation.push('Reduce retries by adding explicit intermediate checkpoints and tighter success criteria per step.');
+  }
+  if (taskRun.error_count > 0) {
+    sections.remediation.push('Capture failing tool invocations as reusable regression scenarios in benchmarks.');
+  }
+  if (!sections.remediation.length) {
+    sections.remediation.push('No immediate remediation required; continue monitoring for trend regressions.');
+  }
+
+  const report = {
+    task_run_id: taskRun.id,
+    status: 'ready',
+    generated_at: new Date().toISOString(),
+    summary: {
+      task_key: taskRun.task_key,
+      title: taskRun.title || null,
+      attempt_number: attemptNumber,
+      runner: taskRun.runner || null,
+      model: taskRun.model || null,
+      runner_version: taskRun.agent_system_version || taskRun.toolchain_version || metadata.runnerVersion || null,
+      started_at: taskRun.started_at || null,
+      ended_at: taskRun.ended_at || null,
+      total_duration_ms: taskRun.total_duration_ms || 0,
+      total_tool_calls: taskRun.total_tool_calls || 0,
+      error_count: taskRun.error_count || 0,
+      interrupt_count: taskRun.interrupt_count || 0
+    },
+    canonical_outcome: normalizedOutcome,
+    sections,
+    evidence: {
+      event_counts: eventCounts,
+      top_tools: topTools,
+      key_events: keyEvents
+    }
+  };
+  report.markdown = formatTaskRunAfterActionReportMarkdown(report);
+  return report;
+}
+
 function backfillAllTaskRuns() {
   const rows = db.prepare(`
     SELECT DISTINCT COALESCE(rootSessionID, sessionID) AS rootSessionId
@@ -2084,6 +2364,19 @@ app.get('/api/task-runs/:id', (req, res) => {
     });
   } catch (error) {
     console.error('Get task run error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/task-runs/:id/after-action-report', (req, res) => {
+  try {
+    const report = buildTaskRunAfterActionReport(req.params.id);
+    if (!report) {
+      return res.status(404).json({ error: 'Task run not found' });
+    }
+    res.json(report);
+  } catch (error) {
+    console.error('Task run after-action report error:', error);
     res.status(500).json({ error: error.message });
   }
 });
