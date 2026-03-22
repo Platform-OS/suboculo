@@ -278,6 +278,40 @@ async function run() {
     assert.ok(result.body.labeling_backlog?.no_canonical_outcome_runs >= 1, 'review should include labeling backlog');
     assert.ok(result.body.thresholds?.targets?.retry_rate, 'review should include configured thresholds');
     assert.ok(typeof result.body.markdown === 'string' && result.body.markdown.includes('Reliability Review'), 'review should include markdown output');
+    assert.equal(result.body.acknowledgement?.acknowledged, false, 'review should default to unacknowledged');
+    const reviewPeriodFrom = result.body.period?.from;
+    const reviewPeriodTo = result.body.period?.to;
+    assert.ok(reviewPeriodFrom && reviewPeriodTo, 'review should expose explicit period bounds');
+
+    result = await request('/reliability/review/acknowledge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        period_from: reviewPeriodFrom,
+        period_to: reviewPeriodTo,
+        runner: 'smoke-runner',
+        reviewer: 'smoke-suite',
+        notes: 'weekly review complete'
+      })
+    });
+    assert.equal(result.response.status, 200, 'review acknowledge should succeed');
+    assert.equal(result.body.success, true, 'review acknowledge should return success');
+
+    result = await request(`/reliability/review/acknowledgements?period_from=${encodeURIComponent(reviewPeriodFrom)}&period_to=${encodeURIComponent(reviewPeriodTo)}&runner=smoke-runner`);
+    assert.equal(result.response.status, 200, 'review acknowledgements endpoint should succeed');
+    assert.ok(Array.isArray(result.body.acknowledgements), 'review acknowledgements should be an array');
+    assert.ok(result.body.acknowledgements.length >= 1, 'review acknowledgements should include inserted row');
+    assert.equal(result.body.acknowledgements[0].reviewer, 'smoke-suite', 'review acknowledgement reviewer should match');
+
+    result = await request('/reliability/review/acknowledge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        period_from: reviewPeriodFrom,
+        period_to: reviewPeriodTo
+      })
+    });
+    assert.equal(result.response.status, 400, 'review acknowledge should reject missing reviewer');
 
     result = await request('/task-runs/outcomes/batch', {
       method: 'POST',
@@ -372,6 +406,7 @@ async function run() {
     assert.equal(result.response.status, 200, 'reliability review endpoint should succeed after outcomes');
     assert.ok(Array.isArray(result.body.top_failing_runs), 'review should include top failing runs list');
     assert.ok(Array.isArray(result.body.anomalies), 'review should include anomaly list');
+    assert.equal(result.body.acknowledgement?.acknowledged, true, 'review should include latest acknowledgement');
 
     // Re-derive should not overwrite existing human canonical outcomes
     result = await request('/task-runs/derive', { method: 'POST' });

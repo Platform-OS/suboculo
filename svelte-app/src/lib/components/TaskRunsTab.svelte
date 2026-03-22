@@ -32,6 +32,12 @@
   let reliabilityTrendInsights = null;
   let reliabilityFailureModeTrends = null;
   let reliabilityReview = null;
+  let weeklyReviewHistory = [];
+  let showWeeklyReviewHistory = false;
+  let loadingWeeklyReviewHistory = false;
+  let acknowledgingReview = false;
+  let reviewAcknowledgeReviewer = "web-ui";
+  let reviewAcknowledgeNotes = "";
   let taskRunAfterActionReport = null;
   let taskRunAfterActionReportCache = new Map();
   let loadingTaskRunAfterActionReport = false;
@@ -152,18 +158,7 @@
   async function loadTaskRuns() {
     try {
       loadingTaskRuns = true;
-      const filters = {
-        pageSize: 100,
-        source: "derived_attempt",
-        status: taskRunStatusFilter !== "all" ? taskRunStatusFilter : undefined,
-        runner: taskRunRunnerFilter !== "all" ? taskRunRunnerFilter : undefined,
-        query: taskRunQuery || undefined,
-        canonical_outcome_label: taskRunCanonicalOutcomeFilter !== "all" ? taskRunCanonicalOutcomeFilter : undefined,
-        has_canonical_outcome: taskRunNeedsLabelingOnly ? "false" : undefined,
-        failure_mode: taskRunFailureModeFilter !== "all" ? taskRunFailureModeFilter : undefined,
-        failure_subtype: taskRunFailureSubtypeFilter !== "all" ? taskRunFailureSubtypeFilter : undefined,
-        requires_human_intervention: taskRunHumanInterventionFilter === "all" ? undefined : taskRunHumanInterventionFilter
-      };
+      const filters = getTaskRunFilters();
 
       const compareFilters = buildKpiCompareFilters(filters);
       const [result, summary, kpis, kpisByRunner, kpiCompare, trends, trendInsights, failureModeTrends, review] = await Promise.all([
@@ -206,6 +201,9 @@
       reliabilityTrendInsights = trendInsights;
       reliabilityFailureModeTrends = failureModeTrends;
       reliabilityReview = review;
+      if (showWeeklyReviewHistory) {
+        await loadWeeklyReviewHistory();
+      }
 
       if (selectedTaskRun?.id) {
         const updated = result.taskRuns.find(run => run.id === selectedTaskRun.id);
@@ -223,8 +221,61 @@
       reliabilityTrendInsights = null;
       reliabilityFailureModeTrends = null;
       reliabilityReview = null;
+      weeklyReviewHistory = [];
     } finally {
       loadingTaskRuns = false;
+    }
+  }
+
+  function getTaskRunFilters() {
+    return {
+      pageSize: 100,
+      source: "derived_attempt",
+      status: taskRunStatusFilter !== "all" ? taskRunStatusFilter : undefined,
+      runner: taskRunRunnerFilter !== "all" ? taskRunRunnerFilter : undefined,
+      query: taskRunQuery || undefined,
+      canonical_outcome_label: taskRunCanonicalOutcomeFilter !== "all" ? taskRunCanonicalOutcomeFilter : undefined,
+      has_canonical_outcome: taskRunNeedsLabelingOnly ? "false" : undefined,
+      failure_mode: taskRunFailureModeFilter !== "all" ? taskRunFailureModeFilter : undefined,
+      failure_subtype: taskRunFailureSubtypeFilter !== "all" ? taskRunFailureSubtypeFilter : undefined,
+      requires_human_intervention: taskRunHumanInterventionFilter === "all" ? undefined : taskRunHumanInterventionFilter
+    };
+  }
+
+  function getWeekStartIso(weeksAgo = 0) {
+    const now = new Date();
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const day = d.getUTCDay();
+    const delta = day === 0 ? 6 : day - 1; // Monday start
+    d.setUTCDate(d.getUTCDate() - delta - (weeksAgo * 7));
+    d.setUTCHours(0, 0, 0, 0);
+    return d.toISOString();
+  }
+
+  async function loadWeeklyReviewHistory() {
+    try {
+      loadingWeeklyReviewHistory = true;
+      const baseFilters = getTaskRunFilters();
+      const requests = [0, 1, 2, 3].map((weeksAgo) => (
+        api.getReliabilityReview({
+          ...baseFilters,
+          bucket: "week",
+          week_of: getWeekStartIso(weeksAgo)
+        })
+      ));
+      weeklyReviewHistory = await Promise.all(requests);
+    } catch (err) {
+      console.error("Failed to load weekly review history:", err);
+      weeklyReviewHistory = [];
+    } finally {
+      loadingWeeklyReviewHistory = false;
+    }
+  }
+
+  async function toggleWeeklyReviewHistory() {
+    showWeeklyReviewHistory = !showWeeklyReviewHistory;
+    if (showWeeklyReviewHistory && weeklyReviewHistory.length === 0) {
+      await loadWeeklyReviewHistory();
     }
   }
 
@@ -459,6 +510,60 @@
     } catch (err) {
       console.error('Failed to copy reliability review:', err);
       showNotice('Failed to copy reliability review', 'error');
+    }
+  }
+
+  async function downloadReliabilityReviewMarkdown() {
+    if (!reliabilityReview?.markdown) return;
+    try {
+      const from = reliabilityReview?.period?.from ? new Date(reliabilityReview.period.from).toISOString().slice(0, 10) : "unknown";
+      const to = reliabilityReview?.period?.to ? new Date(reliabilityReview.period.to).toISOString().slice(0, 10) : "unknown";
+      const runner = reliabilityReview?.filters?.runner || "all-runners";
+      const filename = `reliability-review-${runner}-${from}-to-${to}.md`;
+      const blob = new Blob([reliabilityReview.markdown], { type: "text/markdown" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      showNotice("Reliability review downloaded", "success");
+    } catch (err) {
+      console.error("Failed to download reliability review:", err);
+      showNotice("Failed to download reliability review", "error");
+    }
+  }
+
+  async function acknowledgeCurrentReview() {
+    if (!reliabilityReview?.period?.from || !reliabilityReview?.period?.to) {
+      showNotice("Cannot acknowledge review without explicit period", "error");
+      return;
+    }
+    try {
+      acknowledgingReview = true;
+      await api.acknowledgeReliabilityReview({
+        period_from: reliabilityReview.period.from,
+        period_to: reliabilityReview.period.to,
+        runner: reliabilityReview?.filters?.runner || undefined,
+        reviewer: reviewAcknowledgeReviewer || "web-ui",
+        notes: reviewAcknowledgeNotes || undefined
+      });
+      reviewAcknowledgeNotes = "";
+      reliabilityReview = await api.getReliabilityReview({
+        ...getTaskRunFilters(),
+        bucket: reliabilityTrendBucket,
+        from: reliabilityReview.period.from,
+        to: reliabilityReview.period.to
+      });
+      if (showWeeklyReviewHistory) {
+        await loadWeeklyReviewHistory();
+      }
+      showNotice("Review acknowledged", "success");
+    } catch (err) {
+      console.error("Failed to acknowledge review:", err);
+      showNotice("Failed to acknowledge review", "error");
+    } finally {
+      acknowledgingReview = false;
     }
   }
 
@@ -1039,12 +1144,36 @@
           <CardContent class="p-4 md:p-5 space-y-4">
             <div class="flex items-center justify-between gap-2">
               <div class="text-base font-semibold">Reliability Review</div>
-              <Button variant="outline" size="sm" on:click={copyReliabilityReviewMarkdown} disabled={!reliabilityReview?.markdown}>
-                Copy markdown
-              </Button>
+              <div class="flex items-center gap-2">
+                <Button variant="outline" size="sm" on:click={toggleWeeklyReviewHistory}>
+                  {showWeeklyReviewHistory ? "Hide last 4 weeks" : "Show last 4 weeks"}
+                </Button>
+                <Button variant="outline" size="sm" on:click={copyReliabilityReviewMarkdown} disabled={!reliabilityReview?.markdown}>
+                  Copy markdown
+                </Button>
+                <Button variant="outline" size="sm" on:click={downloadReliabilityReviewMarkdown} disabled={!reliabilityReview?.markdown}>
+                  Download
+                </Button>
+              </div>
             </div>
 
             {#if reliabilityReview}
+              <div class="rounded-xl border p-3 bg-muted/10 flex items-center justify-between gap-3 flex-wrap">
+                <div class="text-sm">
+                  <span class="text-muted-foreground">Period:</span>
+                  <span class="font-medium ml-1">{formatPeriodRange(reliabilityReview.period)}</span>
+                </div>
+                <div class="flex items-center gap-2">
+                  {#if reliabilityReview.acknowledgement?.acknowledged}
+                    <Badge variant="outline">
+                      Reviewed by {reliabilityReview.acknowledgement.reviewer} on {formatTs(reliabilityReview.acknowledgement.acknowledged_at)}
+                    </Badge>
+                  {:else}
+                    <Badge variant="secondary">Not reviewed</Badge>
+                  {/if}
+                </div>
+              </div>
+
               <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
                 <div class="rounded-xl border p-3 bg-muted/10">
                   <div class="text-xs text-muted-foreground">Task runs</div>
@@ -1112,6 +1241,79 @@
                   {/if}
                 </div>
               </div>
+
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div class="rounded-xl border p-3 space-y-2">
+                  <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Trend delta (latest)</div>
+                  {#if reliabilityReview.trends?.delta_from_previous_bucket}
+                    <div class="text-sm flex items-center justify-between">
+                      <span>Success rate</span>
+                      <span>{formatSignedPercentDelta(reliabilityReview.trends.delta_from_previous_bucket.success_rate_delta)}</span>
+                    </div>
+                    <div class="text-sm flex items-center justify-between">
+                      <span>Retry rate</span>
+                      <span>{formatSignedPercentDelta(reliabilityReview.trends.delta_from_previous_bucket.retry_rate_delta)}</span>
+                    </div>
+                    <div class="text-sm flex items-center justify-between">
+                      <span>Cost per success</span>
+                      <span>{formatSignedNumberDelta(reliabilityReview.trends.delta_from_previous_bucket.cost_per_success_delta, 4)}</span>
+                    </div>
+                  {:else}
+                    <div class="text-sm text-muted-foreground">No previous bucket to compare.</div>
+                  {/if}
+                </div>
+                <div class="rounded-xl border p-3 space-y-2">
+                  <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Failure modes (latest)</div>
+                  {#if reliabilityReview.failure_modes?.latest_bucket?.by_mode?.length}
+                    {#each reliabilityReview.failure_modes.latest_bucket.by_mode.slice(0, 4) as mode (`review-mode-${mode.failure_mode}`)}
+                      <div class="text-sm flex items-center justify-between">
+                        <span>{mode.failure_mode}</span>
+                        <span class="text-muted-foreground">{mode.count} ({formatPercent(mode.failure_mode_share)})</span>
+                      </div>
+                    {/each}
+                  {:else}
+                    <div class="text-sm text-muted-foreground">No failure modes in this period.</div>
+                  {/if}
+                </div>
+              </div>
+
+              <div class="rounded-xl border p-3 space-y-3">
+                <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Review Acknowledgement</div>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
+                  <Input bind:value={reviewAcknowledgeReviewer} placeholder="Reviewer (e.g. web-ui)" />
+                  <Input bind:value={reviewAcknowledgeNotes} placeholder="Optional notes" class="md:col-span-2" />
+                </div>
+                <div class="flex items-center gap-2">
+                  <Button size="sm" on:click={acknowledgeCurrentReview} disabled={acknowledgingReview || !reviewAcknowledgeReviewer}>
+                    {acknowledgingReview ? "Marking..." : "Mark reviewed"}
+                  </Button>
+                  {#if reliabilityReview.acknowledgement?.notes}
+                    <span class="text-xs text-muted-foreground">Last note: {reliabilityReview.acknowledgement.notes}</span>
+                  {/if}
+                </div>
+              </div>
+
+              {#if showWeeklyReviewHistory}
+                <div class="rounded-xl border p-3 space-y-2">
+                  <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Last 4 weeks</div>
+                  {#if loadingWeeklyReviewHistory}
+                    <div class="text-sm text-muted-foreground">Loading weekly snapshots...</div>
+                  {:else if weeklyReviewHistory.length}
+                    <div class="space-y-1">
+                      {#each weeklyReviewHistory as item (`weekly-${item.period?.from || item.generated_at}`)}
+                        <div class="text-sm flex items-center justify-between">
+                          <span>{formatPeriodRange(item.period)}</span>
+                          <span class="text-muted-foreground">
+                            {item.kpis?.counts?.task_runs ?? 0} runs · {formatPercent(item.kpis?.rates?.success_rate)} success
+                          </span>
+                        </div>
+                      {/each}
+                    </div>
+                  {:else}
+                    <div class="text-sm text-muted-foreground">No weekly history available.</div>
+                  {/if}
+                </div>
+              {/if}
             {:else}
               <div class="text-sm text-muted-foreground">No review data in current scope.</div>
             {/if}

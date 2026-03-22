@@ -348,6 +348,21 @@ function initDatabase() {
       FOREIGN KEY (task_run_id) REFERENCES task_runs(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS review_acknowledgements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      period_from TEXT NOT NULL,
+      period_to TEXT NOT NULL,
+      runner TEXT,
+      reviewer TEXT NOT NULL,
+      acknowledged_at TEXT NOT NULL,
+      notes TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_review_ack_period ON review_acknowledgements(period_from, period_to);
+    CREATE INDEX IF NOT EXISTS idx_review_ack_runner ON review_acknowledgements(runner);
+    CREATE INDEX IF NOT EXISTS idx_review_ack_acknowledged_at ON review_acknowledgements(acknowledged_at);
+
     CREATE TABLE IF NOT EXISTS benchmarks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
@@ -1403,6 +1418,40 @@ function buildReliabilityReviewMarkdown(review) {
   return lines.join('\n').trim();
 }
 
+function normalizeIsoTimestampOrNull(value) {
+  const str = normalizeOptionalString(value);
+  if (!str) return null;
+  const parsed = new Date(str);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
+}
+
+function getLatestReviewAcknowledgement({ periodFrom, periodTo, runner }) {
+  if (!periodFrom || !periodTo) return null;
+  const normalizedRunner = normalizeOptionalString(runner);
+  if (normalizedRunner) {
+    return db.prepare(`
+      SELECT id, period_from, period_to, runner, reviewer, acknowledged_at, notes
+      FROM review_acknowledgements
+      WHERE period_from = ?
+        AND period_to = ?
+        AND runner = ?
+      ORDER BY acknowledged_at DESC, id DESC
+      LIMIT 1
+    `).get(periodFrom, periodTo, normalizedRunner) || null;
+  }
+
+  return db.prepare(`
+    SELECT id, period_from, period_to, runner, reviewer, acknowledged_at, notes
+    FROM review_acknowledgements
+    WHERE period_from = ?
+      AND period_to = ?
+      AND runner IS NULL
+    ORDER BY acknowledged_at DESC, id DESC
+    LIMIT 1
+  `).get(periodFrom, periodTo) || null;
+}
+
 function buildReliabilityReviewData(query = {}) {
   const scopedQuery = { ...query };
   if (scopedQuery.week_of && !scopedQuery.from && !scopedQuery.to) {
@@ -1416,6 +1465,9 @@ function buildReliabilityReviewData(query = {}) {
   }
   if (!scopedQuery.from && !scopedQuery.to) {
     scopedQuery.from = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    scopedQuery.to = new Date().toISOString();
+  } else if (scopedQuery.from && !scopedQuery.to) {
+    scopedQuery.to = new Date().toISOString();
   }
 
   const rows = fetchReliabilityRows(scopedQuery);
@@ -1529,6 +1581,20 @@ function buildReliabilityReviewData(query = {}) {
     },
     top_failing_runs: topFailingRuns
   };
+  const latestAck = getLatestReviewAcknowledgement({
+    periodFrom: review.period.from,
+    periodTo: review.period.to,
+    runner: review.filters.runner
+  });
+  review.acknowledgement = latestAck
+    ? {
+      acknowledged: true,
+      id: latestAck.id,
+      reviewer: latestAck.reviewer,
+      acknowledged_at: latestAck.acknowledged_at,
+      notes: latestAck.notes || null
+    }
+    : { acknowledged: false };
   review.markdown = buildReliabilityReviewMarkdown(review);
   return review;
 }
@@ -2884,6 +2950,89 @@ app.get('/api/reliability/review', (req, res) => {
     res.json(buildReliabilityReviewData(req.query));
   } catch (error) {
     console.error('Reliability review error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/reliability/review/acknowledge', (req, res) => {
+  try {
+    const periodFrom = normalizeIsoTimestampOrNull(req.body?.period_from);
+    const periodTo = normalizeIsoTimestampOrNull(req.body?.period_to);
+    const reviewer = normalizeOptionalString(req.body?.reviewer);
+    const notes = normalizeOptionalString(req.body?.notes);
+    const runner = normalizeOptionalString(req.body?.runner);
+
+    if (!periodFrom || !periodTo) {
+      return res.status(400).json({ error: 'period_from and period_to are required ISO timestamps' });
+    }
+    if (new Date(periodFrom).getTime() >= new Date(periodTo).getTime()) {
+      return res.status(400).json({ error: 'period_from must be earlier than period_to' });
+    }
+    if (!reviewer) {
+      return res.status(400).json({ error: 'reviewer is required' });
+    }
+
+    const acknowledgedAt = new Date().toISOString();
+    const result = db.prepare(`
+      INSERT INTO review_acknowledgements (
+        period_from, period_to, runner, reviewer, acknowledged_at, notes
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `).run(periodFrom, periodTo, runner, reviewer, acknowledgedAt, notes);
+
+    res.json({
+      success: true,
+      acknowledgement: {
+        id: result.lastInsertRowid,
+        period_from: periodFrom,
+        period_to: periodTo,
+        runner: runner || null,
+        reviewer,
+        acknowledged_at: acknowledgedAt,
+        notes: notes || null
+      }
+    });
+  } catch (error) {
+    console.error('Reliability review acknowledge error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/reliability/review/acknowledgements', (req, res) => {
+  try {
+    const periodFrom = normalizeIsoTimestampOrNull(req.query?.period_from);
+    const periodTo = normalizeIsoTimestampOrNull(req.query?.period_to);
+    const runner = normalizeOptionalString(req.query?.runner);
+    const limit = Math.min(Math.max(parseInt(req.query?.limit || '20', 10) || 20, 1), 100);
+
+    const where = ['1=1'];
+    const params = [];
+
+    if (periodFrom) {
+      where.push('period_from = ?');
+      params.push(periodFrom);
+    }
+    if (periodTo) {
+      where.push('period_to = ?');
+      params.push(periodTo);
+    }
+    if (runner) {
+      where.push('runner = ?');
+      params.push(runner);
+    } else if (req.query?.runner === '') {
+      where.push('runner IS NULL');
+    }
+
+    const rows = db.prepare(`
+      SELECT id, period_from, period_to, runner, reviewer, acknowledged_at, notes
+      FROM review_acknowledgements
+      WHERE ${where.join(' AND ')}
+      ORDER BY acknowledged_at DESC, id DESC
+      LIMIT ?
+    `).all(...params, limit);
+
+    res.json({ acknowledgements: rows, total: rows.length });
+  } catch (error) {
+    console.error('Reliability review acknowledgements error:', error);
     res.status(500).json({ error: error.message });
   }
 });
