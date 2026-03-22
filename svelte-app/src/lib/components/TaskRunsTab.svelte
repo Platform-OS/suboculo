@@ -7,6 +7,7 @@
   import KpiSummaryPanel from "./KpiSummaryPanel.svelte";
   import ReliabilityTrendsPanel from "./ReliabilityTrendsPanel.svelte";
   import TaskRunWorkspace from "./TaskRunWorkspace.svelte";
+  import { deriveTaskRunsUiOptions } from "$lib/taskRunsOptions.js";
   import { buildTaskRunsUrl, hydrateTaskRunsStateFromUrl } from "$lib/taskRunsUrlState.js";
 
   export let facets = { runners: [] };
@@ -548,95 +549,37 @@
     window.history.replaceState({}, "", nextUrl);
   }
 
-  $: taskRunStatusOptions = [
-    { value: "all", label: "All statuses" },
-    { value: "running", label: "Running" },
-    { value: "completed", label: "Completed" },
-    { value: "failed", label: "Failed" },
-    { value: "cancelled", label: "Cancelled" },
-    { value: "timed_out", label: "Timed out" },
-  ];
-
-  $: taskRunRunnerOptions = [
-    { value: "all", label: "All runners" },
-    ...facets.runners.map((r) => ({ value: r, label: r })),
-  ];
-
-  $: evaluationTypes = outcomeTaxonomy?.evaluation_types || fallbackEvaluationTypes;
-  $: outcomeLabels = outcomeTaxonomy?.outcome_labels || fallbackOutcomeLabels;
-  $: failureTaxonomy = outcomeTaxonomy?.failure_taxonomy || fallbackFailureTaxonomy;
-  $: failureModes = outcomeTaxonomy?.failure_modes || fallbackFailureModes;
-  $: requiredFailureLabels = outcomeTaxonomy?.requires_failure_mode_for || fallbackRequiredFailureLabels;
-  $: requiresFailureMode = requiredFailureLabels.includes(taskRunOutcome.outcome_label);
-  $: shouldShowFailureFields = requiresFailureMode || !!taskRunOutcome.failure_mode || !!taskRunOutcome.failure_subtype;
-  $: selectedFailureSubtypes = taskRunOutcome.failure_mode
-    ? (failureTaxonomy[taskRunOutcome.failure_mode] || [])
-    : [];
-
-  $: outcomeLabelOptions = [
-    ...outcomeLabels.map((value) => ({
-      value,
-      label: value.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase())
-    }))
-  ];
-
-  $: evaluationTypeOptions = [
-    ...evaluationTypes.map((value) => ({
-      value,
-      label: value.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase())
-    })),
-  ];
-
-  $: failureModeOptions = [
-    { value: "", label: "Select failure mode" },
-    ...failureModes.map((value) => ({
-      value,
-      label: value.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase())
-    })),
-  ];
-
-  $: failureSubtypeOptions = [
-    { value: "", label: "Select failure subtype" },
-    ...selectedFailureSubtypes.map((value) => ({
-      value,
-      label: value.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase())
-    })),
-  ];
-
-  $: taskRunCanonicalOutcomeOptions = [
-    { value: "all", label: "All canonical outcomes" },
-    { value: "none", label: "No canonical outcome" },
-    ...outcomeLabels.map((value) => ({
-      value,
-      label: value.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase())
-    }))
-  ];
-
-  $: taskRunFailureModeOptions = [
-    { value: "all", label: "All failure modes" },
-    ...failureModes.map((value) => ({
-      value,
-      label: value.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase())
-    }))
-  ];
-
-  $: taskRunFailureSubtypeValues = taskRunFailureModeFilter !== "all"
-    ? (failureTaxonomy[taskRunFailureModeFilter] || [])
-    : [...new Set(Object.values(failureTaxonomy).flat())].sort();
-
-  $: taskRunFailureSubtypeOptions = [
-    { value: "all", label: "All failure subtypes" },
-    ...taskRunFailureSubtypeValues.map((value) => ({
-      value,
-      label: value.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase())
-    }))
-  ];
-
-  $: taskRunHumanInterventionOptions = [
-    { value: "all", label: "All human intervention states" },
-    { value: "true", label: "Requires human intervention" },
-    { value: "false", label: "Does not require intervention" }
-  ];
+  $: ({
+    taskRunStatusOptions,
+    taskRunRunnerOptions,
+    evaluationTypes,
+    outcomeLabels,
+    failureTaxonomy,
+    failureModes,
+    requiredFailureLabels,
+    requiresFailureMode,
+    shouldShowFailureFields,
+    selectedFailureSubtypes,
+    outcomeLabelOptions,
+    evaluationTypeOptions,
+    failureModeOptions,
+    failureSubtypeOptions,
+    taskRunCanonicalOutcomeOptions,
+    taskRunFailureModeOptions,
+    taskRunFailureSubtypeValues,
+    taskRunFailureSubtypeOptions,
+    taskRunHumanInterventionOptions
+  } = deriveTaskRunsUiOptions({
+    facets,
+    outcomeTaxonomy,
+    fallbackEvaluationTypes,
+    fallbackOutcomeLabels,
+    fallbackFailureTaxonomy,
+    fallbackFailureModes,
+    fallbackRequiredFailureLabels,
+    taskRunOutcome,
+    taskRunFailureModeFilter
+  }));
 
   $: if (hasHydratedStateFromUrl && (
     taskRunStatusFilter ||
