@@ -105,6 +105,20 @@ async function run() {
         }
       },
       {
+        ts: '2026-03-19T10:00:01.030Z',
+        event: 'usage',
+        runner: 'smoke-runner',
+        sessionId: 'smoke-session-1',
+        data: {
+          model: 'smoke-model',
+          inputTokens: 12,
+          outputTokens: 8,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 0,
+          cost: 0
+        }
+      },
+      {
         ts: '2026-03-19T10:00:02.000Z',
         event: 'session.end',
         runner: 'smoke-runner',
@@ -162,7 +176,7 @@ async function run() {
       body: JSON.stringify(batchEvents)
     });
     assert.equal(result.response.status, 200, 'batch ingest should succeed');
-    assert.equal(result.body.count, 6);
+    assert.equal(result.body.count, 7);
 
     result = await request('/ingest', {
       method: 'POST',
@@ -173,7 +187,7 @@ async function run() {
 
     result = await request('/entries?pageSize=10&runner=smoke-runner');
     assert.equal(result.response.status, 200, 'entries fetch should succeed');
-    assert.equal(result.body.total, 7);
+    assert.equal(result.body.total, 8);
     const firstKey = result.body.entries[0].__key;
 
     result = await request('/meta/outcome-taxonomy');
@@ -220,6 +234,13 @@ async function run() {
     assert.equal(result.body.status, 'insufficient_evidence', 'report should flag missing canonical outcome');
     assert.ok(result.body.sections && Array.isArray(result.body.sections.variance_vs_expected), 'report should include structured sections');
     assert.ok(typeof result.body.markdown === 'string' && result.body.markdown.includes('After-Action Report'), 'report should include markdown output');
+    assert.equal(result.body.cache?.source, 'generated', 'first report request should generate and persist report');
+    const initialAarGeneratedAt = result.body.generated_at;
+
+    result = await request(`/task-runs/${smokeTaskRunId}/after-action-report`);
+    assert.equal(result.response.status, 200, 'cached after-action report should be available');
+    assert.equal(result.body.cache?.source, 'db', 'second report request should come from persisted cache');
+    assert.equal(result.body.generated_at, initialAarGeneratedAt, 'cached report should preserve generated_at');
 
     result = await request('/facets');
     assert.equal(result.response.status, 200, 'facets should include attempts');
@@ -243,6 +264,7 @@ async function run() {
     const smokeRunnerKpiBeforeOutcomes = result.body.by_runner.find((row) => row.runner === 'smoke-runner');
     assert.ok(smokeRunnerKpiBeforeOutcomes, 'KPI by-runner should include smoke-runner before outcomes');
     assert.ok(smokeRunnerKpiBeforeOutcomes.counts.with_canonical_outcome >= 1, 'auto-labeling should provide at least one canonical outcome');
+    assert.ok(smokeRunnerKpiBeforeOutcomes.counts.successful_runs_with_known_cost >= 1, 'known-cost success counter should be populated');
     assert.ok(smokeRunnerKpiBeforeOutcomes.rates.success_rate != null, 'success rate should be computable with auto-labeling');
     assert.ok(smokeRunnerKpiBeforeOutcomes.cost.cost_per_success != null, 'cost per success should be computed when auto-labeled success exists');
     assert.ok(smokeRunnerKpiBeforeOutcomes.anomalies.some((a) => a.code === 'unstable_cost_per_success'), 'small success sample should flag unstable cost-per-success');
@@ -320,6 +342,14 @@ async function run() {
     assert.equal(result.body.status, 'ready', 'report should be ready when canonical outcome is present');
     assert.equal(result.body.canonical_outcome?.outcome_label, 'failure', 'report should include canonical outcome');
     assert.ok(Array.isArray(result.body.sections?.risks), 'report should include risks section');
+    assert.equal(result.body.cache?.source, 'generated', 'report should regenerate after outcome change');
+    const labeledAarGeneratedAt = result.body.generated_at;
+    assert.notEqual(labeledAarGeneratedAt, initialAarGeneratedAt, 'regenerated report should have a new generated_at');
+
+    result = await request(`/task-runs/${smokeTaskRunId}/after-action-report`);
+    assert.equal(result.response.status, 200, 'cached labeled after-action report should be available');
+    assert.equal(result.body.cache?.source, 'db', 'labeled report should persist in DB cache');
+    assert.equal(result.body.generated_at, labeledAarGeneratedAt, 'cached labeled report should preserve generated_at');
 
     result = await request('/reliability/review?runner=smoke-runner&source=derived_attempt&bucket=week');
     assert.equal(result.response.status, 200, 'reliability review endpoint should succeed after outcomes');
@@ -340,6 +370,7 @@ async function run() {
     assert.equal(result.response.status, 200, 'reliability KPI endpoint should succeed');
     assert.equal(result.body.counts.task_runs, 2, 'KPI counts should include two attempt task runs');
     assert.ok(result.body.counts.with_canonical_outcome >= 1, 'KPI counts should include canonical outcomes');
+    assert.ok(result.body.counts.runs_with_known_cost >= 1, 'KPI counts should include known-cost runs');
     assert.ok(result.body.rates.retry_rate != null, 'KPI retry rate should be present');
     assert.ok(result.body.cost.total_estimated_cost >= 0, 'KPI cost aggregate should be non-negative');
 
@@ -429,7 +460,7 @@ async function run() {
 
     result = await request('/stats');
     assert.equal(result.response.status, 200, 'stats fetch should succeed');
-    assert.equal(result.body.total, 7);
+    assert.equal(result.body.total, 8);
 
     result = await request('/tags', {
       method: 'POST',
