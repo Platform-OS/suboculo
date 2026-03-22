@@ -70,6 +70,7 @@ What tools have I used most?
 Show me events from the last hour
 Analyze my Read vs Edit ratio
 Show reliability KPIs for source=derived_attempt
+Compare reliability KPIs for the last 7 days vs previous 7 days
 Show reliability trends for the last 30 days, bucketed by week
 Show failure mode trends for runner=claude-code
 Generate a reliability review for runner=claude-code, week_of=2026-03-16
@@ -97,6 +98,7 @@ What tools have I used most?
 Show me events from the last hour
 Compare OpenCode vs Claude Code tool usage
 Show reliability KPIs for runner=opencode and source=derived_attempt
+Compare reliability KPIs for runner=opencode over the last 14 days vs previous 14 days
 Show reliability trends for runner=opencode over the last 30 days
 Show failure mode trends for runner=opencode by week
 Generate a reliability review for runner=opencode, week_of=2026-03-16

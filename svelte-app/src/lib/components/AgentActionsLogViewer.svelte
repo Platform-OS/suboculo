@@ -107,6 +107,7 @@
   let taskRunOutcomeSummary = null;
   let reliabilityKpis = null;
   let reliabilityKpisByRunner = null;
+  let reliabilityKpiCompare = null;
   let reliabilityTrends = null;
   let reliabilityTrendInsights = null;
   let reliabilityFailureModeTrends = null;
@@ -117,6 +118,7 @@
   let showKpiDefinitions = false;
   let reliabilityTrendBucket = "day";
   let reliabilityTrendWindowDays = "30";
+  let reliabilityKpiComparePreset = "7";
   let outcomeTaxonomy = null;
   let taskRunStatusFilter = "all";
   let taskRunRunnerFilter = "all";
@@ -152,6 +154,11 @@
     { value: "14", label: "14 days" },
     { value: "30", label: "30 days" },
     { value: "60", label: "60 days" }
+  ];
+  const reliabilityKpiComparePresetOptions = [
+    { value: "7", label: "Last 7 vs previous 7" },
+    { value: "14", label: "Last 14 vs previous 14" },
+    { value: "30", label: "Last 30 vs previous 30" }
   ];
 
   function createDefaultOutcomeForm() {
@@ -266,11 +273,15 @@
         requires_human_intervention: taskRunHumanInterventionFilter === "all" ? undefined : taskRunHumanInterventionFilter
       };
 
-      const [result, summary, kpis, kpisByRunner, trends, trendInsights, failureModeTrends, review] = await Promise.all([
+      const [result, summary, kpis, kpisByRunner, kpiCompare, trends, trendInsights, failureModeTrends, review] = await Promise.all([
         api.getTaskRuns(filters),
         api.getTaskRunOutcomeSummary(filters),
         api.getReliabilityKpis(filters),
         api.getReliabilityKpisByRunner(filters),
+        api.getReliabilityKpiCompare({
+          ...filters,
+          period_days: reliabilityKpiComparePreset
+        }),
         api.getReliabilityTrends({
           ...filters,
           bucket: reliabilityTrendBucket,
@@ -299,6 +310,7 @@
       taskRunOutcomeSummary = summary;
       reliabilityKpis = kpis;
       reliabilityKpisByRunner = kpisByRunner;
+      reliabilityKpiCompare = kpiCompare;
       reliabilityTrends = trends;
       reliabilityTrendInsights = trendInsights;
       reliabilityFailureModeTrends = failureModeTrends;
@@ -315,6 +327,7 @@
       taskRunOutcomeSummary = null;
       reliabilityKpis = null;
       reliabilityKpisByRunner = null;
+      reliabilityKpiCompare = null;
       reliabilityTrends = null;
       reliabilityTrendInsights = null;
       reliabilityFailureModeTrends = null;
@@ -928,6 +941,12 @@
     return `${sign}${pct.toFixed(1)}%`;
   }
 
+  function formatSignedNumberDelta(value, precision = 0) {
+    if (value == null || Number.isNaN(value)) return "—";
+    const sign = value > 0 ? "+" : "";
+    return `${sign}${Number(value).toFixed(precision)}`;
+  }
+
   function formatFailureModeRow(bucketRow) {
     if (!bucketRow?.by_mode?.length) return "—";
     return bucketRow.by_mode
@@ -1266,6 +1285,7 @@ ${analysisResult.analysis}
     taskRunFailureSubtypeFilter ||
     taskRunHumanInterventionFilter ||
     taskRunNeedsLabelingOnly ||
+    reliabilityKpiComparePreset ||
     reliabilityTrendBucket ||
     reliabilityTrendWindowDays
   ) {
@@ -2071,6 +2091,100 @@ ${analysisResult.analysis}
               </div>
             {:else}
               <div class="text-sm text-muted-foreground">No review data in current scope.</div>
+            {/if}
+          </CardContent>
+        </Card>
+
+        <Card class="rounded-2xl shadow-sm">
+          <CardContent class="p-4 md:p-5 space-y-4">
+            <div class="flex items-center justify-between gap-3 flex-wrap">
+              <div class="text-base font-semibold">KPI Compare</div>
+              <Select bind:value={reliabilityKpiComparePreset} options={reliabilityKpiComparePresetOptions} />
+            </div>
+
+            {#if reliabilityKpiCompare}
+              <div class="overflow-auto rounded-xl border">
+                <table class="min-w-full text-sm">
+                  <thead class="bg-muted/20 text-xs text-muted-foreground uppercase tracking-wide">
+                    <tr>
+                      <th class="px-3 py-2 text-left">Metric</th>
+                      <th class="px-3 py-2 text-right">Current</th>
+                      <th class="px-3 py-2 text-right">Previous</th>
+                      <th class="px-3 py-2 text-right">Delta</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr class="border-t">
+                      <td class="px-3 py-2">Success rate</td>
+                      <td class="px-3 py-2 text-right">{formatPercent(reliabilityKpiCompare.period_a?.rates?.success_rate)}</td>
+                      <td class="px-3 py-2 text-right">{formatPercent(reliabilityKpiCompare.period_b?.rates?.success_rate)}</td>
+                      <td class="px-3 py-2 text-right">{formatSignedPercentDelta(reliabilityKpiCompare.deltas?.rates?.success_rate)}</td>
+                    </tr>
+                    <tr class="border-t">
+                      <td class="px-3 py-2">First-pass rate</td>
+                      <td class="px-3 py-2 text-right">{formatPercent(reliabilityKpiCompare.period_a?.rates?.first_pass_rate)}</td>
+                      <td class="px-3 py-2 text-right">{formatPercent(reliabilityKpiCompare.period_b?.rates?.first_pass_rate)}</td>
+                      <td class="px-3 py-2 text-right">{formatSignedPercentDelta(reliabilityKpiCompare.deltas?.rates?.first_pass_rate)}</td>
+                    </tr>
+                    <tr class="border-t">
+                      <td class="px-3 py-2">Retry rate</td>
+                      <td class="px-3 py-2 text-right">{formatPercent(reliabilityKpiCompare.period_a?.rates?.retry_rate)}</td>
+                      <td class="px-3 py-2 text-right">{formatPercent(reliabilityKpiCompare.period_b?.rates?.retry_rate)}</td>
+                      <td class="px-3 py-2 text-right">{formatSignedPercentDelta(reliabilityKpiCompare.deltas?.rates?.retry_rate)}</td>
+                    </tr>
+                    <tr class="border-t">
+                      <td class="px-3 py-2">Intervention rate</td>
+                      <td class="px-3 py-2 text-right">{formatPercent(reliabilityKpiCompare.period_a?.rates?.intervention_rate)}</td>
+                      <td class="px-3 py-2 text-right">{formatPercent(reliabilityKpiCompare.period_b?.rates?.intervention_rate)}</td>
+                      <td class="px-3 py-2 text-right">{formatSignedPercentDelta(reliabilityKpiCompare.deltas?.rates?.intervention_rate)}</td>
+                    </tr>
+                    <tr class="border-t">
+                      <td class="px-3 py-2">Cost per success</td>
+                      <td class="px-3 py-2 text-right">{formatMoney(reliabilityKpiCompare.period_a?.cost?.cost_per_success)}</td>
+                      <td class="px-3 py-2 text-right">{formatMoney(reliabilityKpiCompare.period_b?.cost?.cost_per_success)}</td>
+                      <td class="px-3 py-2 text-right">{formatSignedNumberDelta(reliabilityKpiCompare.deltas?.cost?.cost_per_success, 4)}</td>
+                    </tr>
+                    <tr class="border-t">
+                      <td class="px-3 py-2">Task runs</td>
+                      <td class="px-3 py-2 text-right">{reliabilityKpiCompare.period_a?.counts?.task_runs ?? 0}</td>
+                      <td class="px-3 py-2 text-right">{reliabilityKpiCompare.period_b?.counts?.task_runs ?? 0}</td>
+                      <td class="px-3 py-2 text-right">{formatSignedNumberDelta(reliabilityKpiCompare.deltas?.counts?.task_runs, 0)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div class="rounded-xl border p-3 space-y-2">
+                  <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Current period flags</div>
+                  {#if reliabilityKpiCompare.period_a?.anomalies?.length}
+                    <div class="flex flex-wrap gap-1">
+                      {#each reliabilityKpiCompare.period_a.anomalies as anomaly (`cmp-a-${anomaly.code}`)}
+                        <Badge variant={anomaly.severity === "high" ? "destructive" : "outline"} title={anomaly.message}>
+                          {formatLabel(anomaly.code)}
+                        </Badge>
+                      {/each}
+                    </div>
+                  {:else}
+                    <div class="text-xs text-muted-foreground">No flags.</div>
+                  {/if}
+                </div>
+                <div class="rounded-xl border p-3 space-y-2">
+                  <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Previous period flags</div>
+                  {#if reliabilityKpiCompare.period_b?.anomalies?.length}
+                    <div class="flex flex-wrap gap-1">
+                      {#each reliabilityKpiCompare.period_b.anomalies as anomaly (`cmp-b-${anomaly.code}`)}
+                        <Badge variant={anomaly.severity === "high" ? "destructive" : "outline"} title={anomaly.message}>
+                          {formatLabel(anomaly.code)}
+                        </Badge>
+                      {/each}
+                    </div>
+                  {:else}
+                    <div class="text-xs text-muted-foreground">No flags.</div>
+                  {/if}
+                </div>
+              </div>
+            {:else}
+              <div class="text-sm text-muted-foreground">No KPI comparison data in current scope.</div>
             {/if}
           </CardContent>
         </Card>

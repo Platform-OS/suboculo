@@ -380,6 +380,24 @@ export async function getReliabilityKpisByRunner(filters = {}) {
   return response.json();
 }
 
+export async function getReliabilityKpiCompare(filters = {}) {
+  const params = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== null && value !== '') {
+      params.append(key, value);
+    }
+  }
+
+  const response = await fetch(`${API_BASE}/reliability/kpis/compare?${params}`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch reliability KPI compare');
+  }
+
+  return response.json();
+}
+
 export async function getReliabilityTrends(filters = {}) {
   const params = new URLSearchParams();
 

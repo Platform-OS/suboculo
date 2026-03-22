@@ -68,6 +68,7 @@ npm run provenance:check
 
 ### Reliability
 - `GET /api/reliability/kpis` - Aggregate KPI snapshot over filtered task runs
+- `GET /api/reliability/kpis/compare` - Compare KPI snapshots between two periods (`period_days` or explicit period_a/period_b ranges)
 - `GET /api/reliability/kpi-definitions` - KPI formulas, denominator rules, and guardrail thresholds
 - `GET /api/reliability/kpis/by-runner` - KPI snapshot split by runner over filtered task runs
 - `GET /api/reliability/trends` - Time-bucketed KPI trends (`bucket=day|week`, `window_days=N`)
