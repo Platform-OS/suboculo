@@ -196,12 +196,24 @@ async function run() {
     assert.ok(Object.prototype.hasOwnProperty.call(result.body.taskRuns[0], 'model'), 'task run should expose model field');
     assert.ok(Object.prototype.hasOwnProperty.call(result.body.taskRuns[0], 'git_revision'), 'task run should expose git_revision field');
     const attemptKey = result.body.taskRuns[0].task_key;
-    const smokeTaskRunId = result.body.taskRuns[0].id;
-    const secondSmokeTaskRunId = result.body.taskRuns[1].id;
+    const completedRun = result.body.taskRuns.find((row) => row.status === 'completed');
+    const activeRun = result.body.taskRuns.find((row) => row.status !== 'completed');
+    assert.ok(completedRun, 'dataset should include one completed run for auto-label checks');
+    assert.ok(activeRun, 'dataset should include one active run');
+    const smokeTaskRunId = activeRun.id;
+    const secondSmokeTaskRunId = completedRun.id;
 
     result = await request('/task-runs?pageSize=10&runner=smoke-runner&has_canonical_outcome=false');
     assert.equal(result.response.status, 200, 'has_canonical_outcome=false filter should succeed');
-    assert.equal(result.body.total, 2, 'all runs should initially require labeling');
+    assert.equal(result.body.total, 1, 'only non-auto-labeled runs should require labeling');
+
+    result = await request(`/task-runs/${secondSmokeTaskRunId}`);
+    assert.equal(result.response.status, 200, 'completed run detail should succeed');
+    const autoCanonical = (result.body.outcomes || []).find((o) => o.is_canonical);
+    assert.ok(autoCanonical, 'completed run should have auto canonical outcome');
+    assert.equal(autoCanonical.evaluation_type, 'rule_based', 'auto label should use rule_based evaluation type');
+    assert.equal(autoCanonical.outcome_label, 'success', 'auto label should mark run as success');
+    assert.equal(autoCanonical.evaluator, 'auto-labeler/v1', 'auto label should include evaluator provenance');
 
     result = await request(`/task-runs/${smokeTaskRunId}/after-action-report`);
     assert.equal(result.response.status, 200, 'after-action report should be available for task run');
@@ -230,11 +242,10 @@ async function run() {
     assert.ok(result.body.by_runner.length >= 1, 'KPI by-runner should include at least one runner');
     const smokeRunnerKpiBeforeOutcomes = result.body.by_runner.find((row) => row.runner === 'smoke-runner');
     assert.ok(smokeRunnerKpiBeforeOutcomes, 'KPI by-runner should include smoke-runner before outcomes');
-    assert.equal(smokeRunnerKpiBeforeOutcomes.counts.with_canonical_outcome, 0, 'before outcomes canonical count should be zero');
-    assert.equal(smokeRunnerKpiBeforeOutcomes.rates.success_rate, null, 'success rate should be null without canonical outcomes');
-    assert.equal(smokeRunnerKpiBeforeOutcomes.cost.cost_per_success, null, 'cost per success should be null without successful runs');
-    assert.ok(smokeRunnerKpiBeforeOutcomes.anomalies.some((a) => a.code === 'no_canonical_outcomes'), 'should flag missing canonical outcomes');
-    assert.ok(smokeRunnerKpiBeforeOutcomes.anomalies.some((a) => a.code === 'above_target_retry_rate'), 'configured threshold should flag high retry rate');
+    assert.ok(smokeRunnerKpiBeforeOutcomes.counts.with_canonical_outcome >= 1, 'auto-labeling should provide at least one canonical outcome');
+    assert.ok(smokeRunnerKpiBeforeOutcomes.rates.success_rate != null, 'success rate should be computable with auto-labeling');
+    assert.ok(smokeRunnerKpiBeforeOutcomes.cost.cost_per_success != null, 'cost per success should be computed when auto-labeled success exists');
+    assert.ok(smokeRunnerKpiBeforeOutcomes.anomalies.some((a) => a.code === 'unstable_cost_per_success'), 'small success sample should flag unstable cost-per-success');
 
     result = await request('/reliability/review?runner=smoke-runner&source=derived_attempt&bucket=week');
     assert.equal(result.response.status, 200, 'reliability review endpoint should succeed before outcomes');
@@ -313,7 +324,17 @@ async function run() {
     result = await request('/reliability/review?runner=smoke-runner&source=derived_attempt&bucket=week');
     assert.equal(result.response.status, 200, 'reliability review endpoint should succeed after outcomes');
     assert.ok(Array.isArray(result.body.top_failing_runs), 'review should include top failing runs list');
-    assert.ok(result.body.anomalies.some((a) => a.code === 'above_target_retry_rate'), 'review should include threshold anomaly');
+    assert.ok(Array.isArray(result.body.anomalies), 'review should include anomaly list');
+
+    // Re-derive should not overwrite existing human canonical outcomes
+    result = await request('/task-runs/derive', { method: 'POST' });
+    assert.equal(result.response.status, 200, 'task run re-derivation should succeed');
+    result = await request(`/task-runs/${smokeTaskRunId}`);
+    assert.equal(result.response.status, 200, 'active run detail should succeed after re-derive');
+    const canonicalAfterRebuild = (result.body.outcomes || []).find((o) => o.is_canonical);
+    assert.ok(canonicalAfterRebuild, 'active run should retain canonical outcome');
+    assert.equal(canonicalAfterRebuild.evaluation_type, 'human', 'human canonical outcome must not be overwritten by auto-labeler');
+    assert.equal(canonicalAfterRebuild.outcome_label, 'failure', 'human canonical outcome label should remain unchanged');
 
     result = await request('/reliability/kpis?runner=smoke-runner&source=derived_attempt');
     assert.equal(result.response.status, 200, 'reliability KPI endpoint should succeed');

@@ -80,6 +80,10 @@ KPI target thresholds are loaded from:
 - `SUBOCULO_THRESHOLDS_PATH` (if set), otherwise
 - `.suboculo/thresholds.json` relative to current working directory
 
+Auto-labeling:
+- enabled by default with conservative rule-based labeling on derived runs
+- disable via `SUBOCULO_AUTO_LABEL=false`
+
 ### Task Runs
 - `GET /api/task-runs/:id/after-action-report` - Generate structured after-action report for a task run
 - `POST /api/task-runs/:id/outcomes` - Record single outcome for a task run
