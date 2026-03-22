@@ -39,6 +39,11 @@
   let reliabilityTrendBucket = "day";
   let reliabilityTrendWindowDays = "30";
   let reliabilityKpiComparePreset = "7";
+  let reliabilityKpiCompareMode = "preset";
+  let reliabilityKpiComparePeriodAFrom = "";
+  let reliabilityKpiComparePeriodATo = "";
+  let reliabilityKpiComparePeriodBFrom = "";
+  let reliabilityKpiComparePeriodBTo = "";
   let taskRunStatusFilter = "all";
   let taskRunRunnerFilter = "all";
   let taskRunQuery = "";
@@ -79,6 +84,10 @@
     { value: "7", label: "Last 7 vs previous 7" },
     { value: "14", label: "Last 14 vs previous 14" },
     { value: "30", label: "Last 30 vs previous 30" }
+  ];
+  const reliabilityKpiCompareModeOptions = [
+    { value: "preset", label: "Preset window" },
+    { value: "custom", label: "Custom A/B ranges" }
   ];
 
   function createDefaultOutcomeForm() {
@@ -153,15 +162,13 @@
         requires_human_intervention: taskRunHumanInterventionFilter === "all" ? undefined : taskRunHumanInterventionFilter
       };
 
+      const compareFilters = buildKpiCompareFilters(filters);
       const [result, summary, kpis, kpisByRunner, kpiCompare, trends, trendInsights, failureModeTrends, review] = await Promise.all([
         api.getTaskRuns(filters),
         api.getTaskRunOutcomeSummary(filters),
         api.getReliabilityKpis(filters),
         api.getReliabilityKpisByRunner(filters),
-        api.getReliabilityKpiCompare({
-          ...filters,
-          period_days: reliabilityKpiComparePreset
-        }),
+        api.getReliabilityKpiCompare(compareFilters),
         api.getReliabilityTrends({
           ...filters,
           bucket: reliabilityTrendBucket,
@@ -571,6 +578,83 @@
     return `${sign}${Number(value).toFixed(precision)}`;
   }
 
+  function toIsoStartOfDay(dateInput) {
+    if (!dateInput) return null;
+    const value = new Date(`${dateInput}T00:00:00`);
+    if (Number.isNaN(value.getTime())) return null;
+    return value.toISOString();
+  }
+
+  function toIsoEndOfDay(dateInput) {
+    if (!dateInput) return null;
+    const value = new Date(`${dateInput}T23:59:59.999`);
+    if (Number.isNaN(value.getTime())) return null;
+    return value.toISOString();
+  }
+
+  function buildKpiCompareFilters(baseFilters) {
+    if (reliabilityKpiCompareMode === "custom") {
+      const aFrom = toIsoStartOfDay(reliabilityKpiComparePeriodAFrom);
+      const aTo = toIsoEndOfDay(reliabilityKpiComparePeriodATo);
+      const bFrom = toIsoStartOfDay(reliabilityKpiComparePeriodBFrom);
+      const bTo = toIsoEndOfDay(reliabilityKpiComparePeriodBTo);
+
+      if (aFrom && aTo && bFrom && bTo) {
+        return {
+          ...baseFilters,
+          period_a_from: aFrom,
+          period_a_to: aTo,
+          period_b_from: bFrom,
+          period_b_to: bTo
+        };
+      }
+    }
+
+    return {
+      ...baseFilters,
+      period_days: reliabilityKpiComparePreset
+    };
+  }
+
+  function formatPeriodRange(period) {
+    if (!period?.from || !period?.to) return "—";
+    const from = new Date(period.from);
+    const to = new Date(period.to);
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) return `${period.from} → ${period.to}`;
+    return `${from.toLocaleDateString()} → ${to.toLocaleDateString()}`;
+  }
+
+  function getDeltaTrend(metricKey, delta) {
+    if (delta == null || Number.isNaN(delta)) return { label: "Insufficient data", tone: "muted" };
+
+    const direction = delta > 0 ? "up" : delta < 0 ? "down" : "flat";
+    if (direction === "flat") return { label: "No change", tone: "muted" };
+
+    const higherIsBetter = metricKey === "success_rate" || metricKey === "first_pass_rate";
+    const lowerIsBetter = metricKey === "retry_rate" || metricKey === "intervention_rate" || metricKey === "cost_per_success";
+
+    if (higherIsBetter) {
+      return direction === "up"
+        ? { label: "Improving", tone: "good" }
+        : { label: "Degrading", tone: "bad" };
+    }
+    if (lowerIsBetter) {
+      return direction === "down"
+        ? { label: "Improving", tone: "good" }
+        : { label: "Degrading", tone: "bad" };
+    }
+
+    return direction === "up"
+      ? { label: "Higher", tone: "neutral" }
+      : { label: "Lower", tone: "neutral" };
+  }
+
+  function compareToneClass(tone) {
+    if (tone === "good") return "text-green-700";
+    if (tone === "bad") return "text-red-700";
+    return "text-muted-foreground";
+  }
+
   function formatFailureModeRow(bucketRow) {
     if (!bucketRow?.by_mode?.length) return "—";
     return bucketRow.by_mode
@@ -679,6 +763,11 @@
     taskRunHumanInterventionFilter ||
     taskRunNeedsLabelingOnly ||
     reliabilityKpiComparePreset ||
+    reliabilityKpiCompareMode ||
+    reliabilityKpiComparePeriodAFrom !== undefined ||
+    reliabilityKpiComparePeriodATo !== undefined ||
+    reliabilityKpiComparePeriodBFrom !== undefined ||
+    reliabilityKpiComparePeriodBTo !== undefined ||
     reliabilityTrendBucket ||
     reliabilityTrendWindowDays
   ) {
@@ -870,18 +959,64 @@
           <CardContent class="p-4 md:p-5 space-y-4">
             <div class="flex items-center justify-between gap-3 flex-wrap">
               <div class="text-base font-semibold">KPI Compare</div>
-              <Select bind:value={reliabilityKpiComparePreset} options={reliabilityKpiComparePresetOptions} />
+              <div class="flex items-center gap-2">
+                <Select bind:value={reliabilityKpiCompareMode} options={reliabilityKpiCompareModeOptions} />
+                {#if reliabilityKpiCompareMode === "preset"}
+                  <Select bind:value={reliabilityKpiComparePreset} options={reliabilityKpiComparePresetOptions} />
+                {/if}
+              </div>
             </div>
 
+            {#if reliabilityKpiCompareMode === "custom"}
+              <div class="rounded-xl border p-3 bg-muted/10 space-y-3">
+                <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Custom A/B ranges</div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div class="space-y-2">
+                    <div class="text-xs text-muted-foreground">Period A (current)</div>
+                    <div class="grid grid-cols-2 gap-2">
+                      <Input bind:value={reliabilityKpiComparePeriodAFrom} type="date" />
+                      <Input bind:value={reliabilityKpiComparePeriodATo} type="date" />
+                    </div>
+                  </div>
+                  <div class="space-y-2">
+                    <div class="text-xs text-muted-foreground">Period B (baseline)</div>
+                    <div class="grid grid-cols-2 gap-2">
+                      <Input bind:value={reliabilityKpiComparePeriodBFrom} type="date" />
+                      <Input bind:value={reliabilityKpiComparePeriodBTo} type="date" />
+                    </div>
+                  </div>
+                </div>
+                {#if !(reliabilityKpiComparePeriodAFrom && reliabilityKpiComparePeriodATo && reliabilityKpiComparePeriodBFrom && reliabilityKpiComparePeriodBTo)}
+                  <div class="text-xs text-muted-foreground">
+                    Fill all four dates to activate custom compare; otherwise preset window is used.
+                  </div>
+                {/if}
+              </div>
+            {/if}
+
             {#if reliabilityKpiCompare}
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div class="rounded-xl border p-3 bg-muted/10">
+                  <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Period A (current)</div>
+                  <div class="text-sm">{formatPeriodRange(reliabilityKpiCompare.period_a)}</div>
+                  <div class="text-xs text-muted-foreground mt-1">{reliabilityKpiCompare.period_a?.counts?.task_runs ?? 0} runs</div>
+                </div>
+                <div class="rounded-xl border p-3 bg-muted/10">
+                  <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Period B (baseline)</div>
+                  <div class="text-sm">{formatPeriodRange(reliabilityKpiCompare.period_b)}</div>
+                  <div class="text-xs text-muted-foreground mt-1">{reliabilityKpiCompare.period_b?.counts?.task_runs ?? 0} runs</div>
+                </div>
+              </div>
+
               <div class="overflow-auto rounded-xl border">
                 <table class="min-w-full text-sm">
                   <thead class="bg-muted/20 text-xs text-muted-foreground uppercase tracking-wide">
                     <tr>
                       <th class="px-3 py-2 text-left">Metric</th>
-                      <th class="px-3 py-2 text-right">Current</th>
-                      <th class="px-3 py-2 text-right">Previous</th>
+                      <th class="px-3 py-2 text-right">Period A</th>
+                      <th class="px-3 py-2 text-right">Period B</th>
                       <th class="px-3 py-2 text-right">Delta</th>
+                      <th class="px-3 py-2 text-right">Direction</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -890,36 +1025,54 @@
                       <td class="px-3 py-2 text-right">{formatPercent(reliabilityKpiCompare.period_a?.rates?.success_rate)}</td>
                       <td class="px-3 py-2 text-right">{formatPercent(reliabilityKpiCompare.period_b?.rates?.success_rate)}</td>
                       <td class="px-3 py-2 text-right">{formatSignedPercentDelta(reliabilityKpiCompare.deltas?.rates?.success_rate)}</td>
+                      <td class={`px-3 py-2 text-right ${compareToneClass(getDeltaTrend("success_rate", reliabilityKpiCompare.deltas?.rates?.success_rate).tone)}`}>
+                        {getDeltaTrend("success_rate", reliabilityKpiCompare.deltas?.rates?.success_rate).label}
+                      </td>
                     </tr>
                     <tr class="border-t">
                       <td class="px-3 py-2">First-pass rate</td>
                       <td class="px-3 py-2 text-right">{formatPercent(reliabilityKpiCompare.period_a?.rates?.first_pass_rate)}</td>
                       <td class="px-3 py-2 text-right">{formatPercent(reliabilityKpiCompare.period_b?.rates?.first_pass_rate)}</td>
                       <td class="px-3 py-2 text-right">{formatSignedPercentDelta(reliabilityKpiCompare.deltas?.rates?.first_pass_rate)}</td>
+                      <td class={`px-3 py-2 text-right ${compareToneClass(getDeltaTrend("first_pass_rate", reliabilityKpiCompare.deltas?.rates?.first_pass_rate).tone)}`}>
+                        {getDeltaTrend("first_pass_rate", reliabilityKpiCompare.deltas?.rates?.first_pass_rate).label}
+                      </td>
                     </tr>
                     <tr class="border-t">
                       <td class="px-3 py-2">Retry rate</td>
                       <td class="px-3 py-2 text-right">{formatPercent(reliabilityKpiCompare.period_a?.rates?.retry_rate)}</td>
                       <td class="px-3 py-2 text-right">{formatPercent(reliabilityKpiCompare.period_b?.rates?.retry_rate)}</td>
                       <td class="px-3 py-2 text-right">{formatSignedPercentDelta(reliabilityKpiCompare.deltas?.rates?.retry_rate)}</td>
+                      <td class={`px-3 py-2 text-right ${compareToneClass(getDeltaTrend("retry_rate", reliabilityKpiCompare.deltas?.rates?.retry_rate).tone)}`}>
+                        {getDeltaTrend("retry_rate", reliabilityKpiCompare.deltas?.rates?.retry_rate).label}
+                      </td>
                     </tr>
                     <tr class="border-t">
                       <td class="px-3 py-2">Intervention rate</td>
                       <td class="px-3 py-2 text-right">{formatPercent(reliabilityKpiCompare.period_a?.rates?.intervention_rate)}</td>
                       <td class="px-3 py-2 text-right">{formatPercent(reliabilityKpiCompare.period_b?.rates?.intervention_rate)}</td>
                       <td class="px-3 py-2 text-right">{formatSignedPercentDelta(reliabilityKpiCompare.deltas?.rates?.intervention_rate)}</td>
+                      <td class={`px-3 py-2 text-right ${compareToneClass(getDeltaTrend("intervention_rate", reliabilityKpiCompare.deltas?.rates?.intervention_rate).tone)}`}>
+                        {getDeltaTrend("intervention_rate", reliabilityKpiCompare.deltas?.rates?.intervention_rate).label}
+                      </td>
                     </tr>
                     <tr class="border-t">
                       <td class="px-3 py-2">Cost per success</td>
                       <td class="px-3 py-2 text-right">{formatMoney(reliabilityKpiCompare.period_a?.cost?.cost_per_success)}</td>
                       <td class="px-3 py-2 text-right">{formatMoney(reliabilityKpiCompare.period_b?.cost?.cost_per_success)}</td>
                       <td class="px-3 py-2 text-right">{formatSignedNumberDelta(reliabilityKpiCompare.deltas?.cost?.cost_per_success, 4)}</td>
+                      <td class={`px-3 py-2 text-right ${compareToneClass(getDeltaTrend("cost_per_success", reliabilityKpiCompare.deltas?.cost?.cost_per_success).tone)}`}>
+                        {getDeltaTrend("cost_per_success", reliabilityKpiCompare.deltas?.cost?.cost_per_success).label}
+                      </td>
                     </tr>
                     <tr class="border-t">
                       <td class="px-3 py-2">Task runs</td>
                       <td class="px-3 py-2 text-right">{reliabilityKpiCompare.period_a?.counts?.task_runs ?? 0}</td>
                       <td class="px-3 py-2 text-right">{reliabilityKpiCompare.period_b?.counts?.task_runs ?? 0}</td>
                       <td class="px-3 py-2 text-right">{formatSignedNumberDelta(reliabilityKpiCompare.deltas?.counts?.task_runs, 0)}</td>
+                      <td class={`px-3 py-2 text-right ${compareToneClass(getDeltaTrend("task_runs", reliabilityKpiCompare.deltas?.counts?.task_runs).tone)}`}>
+                        {getDeltaTrend("task_runs", reliabilityKpiCompare.deltas?.counts?.task_runs).label}
+                      </td>
                     </tr>
                   </tbody>
                 </table>
