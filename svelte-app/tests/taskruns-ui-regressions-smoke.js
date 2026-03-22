@@ -13,9 +13,12 @@ function assertPattern(pattern, message) {
 }
 
 // Regression 1: extraction dropped formatTs() and caused runtime ReferenceError.
-assertPattern(
-  /function\s+formatTs\s*\(\s*ts\s*\)\s*\{/,
-  "TaskRunsTab.svelte must define formatTs(ts)"
+// Accept either a local helper or shared formatter import.
+const hasLocalFormatTs = /function\s+formatTs\s*\(\s*ts\s*\)\s*\{/.test(source);
+const hasImportedFormatTs = /import\s*\{[\s\S]*\bformatTs\b[\s\S]*\}\s*from\s*["']\$lib\/formatters\.js["']/.test(source);
+assert.ok(
+  hasLocalFormatTs || hasImportedFormatTs,
+  "TaskRunsTab.svelte must define or import formatTs(ts)"
 );
 assertPattern(
   /formatTs\(\s*run\.started_at\s*\)/,
