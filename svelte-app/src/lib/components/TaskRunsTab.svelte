@@ -1,13 +1,7 @@
 <script>
   import { onDestroy, onMount } from "svelte";
   import * as api from "$lib/api.js";
-  import Card from "./ui/Card.svelte";
-  import CardContent from "./ui/CardContent.svelte";
-  import Button from "./ui/Button.svelte";
-  import Input from "./ui/Input.svelte";
-  import Label from "./ui/Label.svelte";
-  import Select from "./ui/Select.svelte";
-  import Separator from "./ui/Separator.svelte";
+  import TaskRunFiltersPanel from "./TaskRunFiltersPanel.svelte";
   import KpiComparePanel from "./KpiComparePanel.svelte";
   import ReliabilityReviewPanel from "./ReliabilityReviewPanel.svelte";
   import KpiSummaryPanel from "./KpiSummaryPanel.svelte";
@@ -698,102 +692,32 @@
   }
 </script>
 
-        <Card class="rounded-2xl shadow-sm">
-          <CardContent class="p-4 md:p-5 space-y-4">
-            <div class="flex items-center justify-between gap-4 flex-wrap">
-              <div>
-                <h2 class="text-lg font-semibold">Task Runs</h2>
-                <div class="text-sm text-muted-foreground">
-                  Derived from root sessions and used as the base unit for outcomes and benchmarks.
-                </div>
-              </div>
-              <div class="flex gap-2">
-                <Button variant="outline" size="sm" on:click={loadTaskRuns} disabled={loadingTaskRuns}>
-                  {loadingTaskRuns ? 'Loading...' : 'Refresh'}
-                </Button>
-                <Button variant="secondary" size="sm" on:click={deriveTaskRunsNow} disabled={loadingTaskRuns}>
-                  Derive from events
-                </Button>
-              </div>
-            </div>
-
-            <Separator />
-
-            <div class="grid grid-cols-1 md:grid-cols-12 gap-3">
-              <div class="md:col-span-5 space-y-1">
-                <Label>Search</Label>
-                <Input bind:value={taskRunQuery} placeholder="Search task key, title, description, root session..." />
-              </div>
-              <div class="md:col-span-3 space-y-1">
-                <Label>Status</Label>
-                <Select bind:value={taskRunStatusFilter} options={taskRunStatusOptions} />
-              </div>
-              <div class="md:col-span-4 space-y-1">
-                <Label>Runner</Label>
-                <Select bind:value={taskRunRunnerFilter} options={taskRunRunnerOptions} />
-              </div>
-            </div>
-
-            <div class="grid grid-cols-1 md:grid-cols-12 gap-3">
-              <div class="md:col-span-3 space-y-1">
-                <Label>Canonical outcome</Label>
-                <Select
-                  bind:value={taskRunCanonicalOutcomeFilter}
-                  options={taskRunCanonicalOutcomeOptions}
-                  on:change={handleTaskRunCanonicalOutcomeFilterChange}
-                />
-              </div>
-              <div class="md:col-span-3 space-y-1">
-                <Label>Failure mode</Label>
-                <Select
-                  bind:value={taskRunFailureModeFilter}
-                  options={taskRunFailureModeOptions}
-                  on:change={handleTaskRunFailureModeFilterChange}
-                />
-              </div>
-              <div class="md:col-span-3 space-y-1">
-                <Label>Failure subtype</Label>
-                <Select
-                  bind:value={taskRunFailureSubtypeFilter}
-                  options={taskRunFailureSubtypeOptions}
-                  on:change={normalizeTaskRunFailureSubtypeFilter}
-                />
-              </div>
-              <div class="md:col-span-3 space-y-1">
-                <Label>Human intervention</Label>
-                <Select
-                  bind:value={taskRunHumanInterventionFilter}
-                  options={taskRunHumanInterventionOptions}
-                  on:change={handleTaskRunHumanInterventionFilterChange}
-                />
-              </div>
-            </div>
-
-            <div class="flex gap-2 flex-wrap">
-              <Button
-                variant={taskRunCanonicalOutcomeFilter === "none" ? "default" : "outline"}
-                size="sm"
-                on:click={toggleNoCanonicalFilter}
-              >
-                No canonical outcome
-              </Button>
-              <Button
-                variant={taskRunHumanInterventionFilter === "true" ? "default" : "outline"}
-                size="sm"
-                on:click={toggleRequiresHumanFilter}
-              >
-                Requires human intervention
-              </Button>
-              <Button
-                variant={taskRunNeedsLabelingOnly ? "default" : "outline"}
-                size="sm"
-                on:click={toggleNeedsLabelingQueue}
-              >
-                Needs labeling queue
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+        <TaskRunFiltersPanel
+          {loadingTaskRuns}
+          bind:taskRunQuery
+          bind:taskRunStatusFilter
+          bind:taskRunRunnerFilter
+          bind:taskRunCanonicalOutcomeFilter
+          bind:taskRunFailureModeFilter
+          bind:taskRunFailureSubtypeFilter
+          bind:taskRunHumanInterventionFilter
+          bind:taskRunNeedsLabelingOnly
+          {taskRunStatusOptions}
+          {taskRunRunnerOptions}
+          {taskRunCanonicalOutcomeOptions}
+          {taskRunFailureModeOptions}
+          {taskRunFailureSubtypeOptions}
+          {taskRunHumanInterventionOptions}
+          onRefresh={loadTaskRuns}
+          onDeriveTaskRuns={deriveTaskRunsNow}
+          onTaskRunCanonicalOutcomeFilterChange={handleTaskRunCanonicalOutcomeFilterChange}
+          onTaskRunFailureModeFilterChange={handleTaskRunFailureModeFilterChange}
+          onNormalizeTaskRunFailureSubtypeFilter={normalizeTaskRunFailureSubtypeFilter}
+          onTaskRunHumanInterventionFilterChange={handleTaskRunHumanInterventionFilterChange}
+          onToggleNoCanonicalFilter={toggleNoCanonicalFilter}
+          onToggleRequiresHumanFilter={toggleRequiresHumanFilter}
+          onToggleNeedsLabelingQueue={toggleNeedsLabelingQueue}
+        />
 
         <ReliabilityReviewPanel
           filters={taskRunFiltersSignal}
