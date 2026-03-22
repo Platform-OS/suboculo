@@ -7,6 +7,10 @@
     "start": "node server.js",
     "dev": "node server.js",
     "smoke": "node tests/smoke-suite.js",
+    "smoke:sse": "node tests/sse-smoke.js",
+    "smoke:mcp": "node tests/mcp-smoke.mjs",
+    "smoke:installer": "node tests/installer-e2e-smoke.js",
+    "smoke:full": "npm run smoke && npm run smoke:sse && npm run smoke:mcp && npm run smoke:installer",
     "provenance:check": "node scripts/check-provenance.js",
     "cleanup:legacy-runs": "node scripts/cleanup-legacy-task-runs.js"
   },
