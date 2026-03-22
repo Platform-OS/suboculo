@@ -91,6 +91,9 @@ cp "$SCRIPT_DIR/backend/logger.js" "$SUBOCULO_DIR/backend/"
 patch_port_in_file "$SUBOCULO_DIR/backend/server.js" "process.env.SUBOCULO_PORT || 3000" "process.env.SUBOCULO_PORT || $PORT"
 cp "$SCRIPT_DIR/backend/cep-processor.js" "$SUBOCULO_DIR/backend/"
 cp -r "$SCRIPT_DIR/svelte-app/dist/"* "$SUBOCULO_DIR/frontend/" 2>/dev/null || echo "⚠️  Frontend not built yet (run 'cd svelte-app && npm run build')"
+if [ -f "$SCRIPT_DIR/.suboculo/thresholds.example.json" ]; then
+  cp "$SCRIPT_DIR/.suboculo/thresholds.example.json" "$SUBOCULO_DIR/thresholds.example.json"
+fi
 
 # Copy OpenCode plugin
 echo "📋 Copying OpenCode plugin..."

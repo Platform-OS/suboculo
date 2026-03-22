@@ -75,6 +75,10 @@ npm run provenance:check
 - `GET /api/reliability/trends/failure-modes` - Time-bucketed canonical failure mode mix and top modes
 - `GET /api/reliability/review` - Period review snapshot (KPIs, anomalies, failure modes, backlog, top failing runs, markdown)
 
+KPI target thresholds are loaded from:
+- `SUBOCULO_THRESHOLDS_PATH` (if set), otherwise
+- `.suboculo/thresholds.json` relative to current working directory
+
 ### Task Runs
 - `GET /api/task-runs/:id/after-action-report` - Generate structured after-action report for a task run
 - `POST /api/task-runs/:id/outcomes` - Record single outcome for a task run

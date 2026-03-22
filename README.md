@@ -112,6 +112,26 @@ Then open http://localhost:3000 (port is set during installation)
 
 **Multi-Runner Analysis:** The shared database enables comparing behavior across different AI coding agents (Claude Code and OpenCode) using the same CEP event format with `runner` field differentiation.
 
+### KPI Thresholds Configuration
+
+Suboculo can load KPI targets from a local file:
+
+```bash
+cp .suboculo/thresholds.example.json your-project/.suboculo/thresholds.json
+```
+
+Example:
+```json
+{
+  "success_rate": { "min": 0.85, "severity": "high" },
+  "retry_rate": { "max": 0.2, "severity": "medium" }
+}
+```
+
+Override precedence:
+- built-in defaults in backend
+- `.suboculo/thresholds.json` (or `SUBOCULO_THRESHOLDS_PATH`)
+
 ### MCP Reliability Workflows
 
 Use these as repeatable analyst playbooks in Claude Code/OpenCode:

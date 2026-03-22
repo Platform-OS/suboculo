@@ -240,6 +240,7 @@ async function run() {
     assert.equal(result.response.status, 200, 'reliability review endpoint should succeed before outcomes');
     assert.ok(result.body.kpis && result.body.kpis.counts, 'review should include kpi snapshot');
     assert.ok(result.body.labeling_backlog?.no_canonical_outcome_runs >= 1, 'review should include labeling backlog');
+    assert.ok(result.body.thresholds?.targets?.retry_rate, 'review should include configured thresholds');
     assert.ok(typeof result.body.markdown === 'string' && result.body.markdown.includes('Reliability Review'), 'review should include markdown output');
 
     result = await request('/task-runs/outcomes/batch', {
