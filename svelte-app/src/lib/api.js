@@ -324,6 +324,106 @@ export async function getTaskRunOutcomeSummary(filters = {}) {
   return response.json();
 }
 
+export async function getReliabilityKpis(filters = {}) {
+  const params = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== null) {
+      params.append(key, value);
+    }
+  }
+
+  const response = await fetch(`${API_BASE}/reliability/kpis?${params}`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch reliability KPIs');
+  }
+
+  return response.json();
+}
+
+export async function getKpiDefinitions() {
+  const response = await fetch(`${API_BASE}/reliability/kpi-definitions`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch KPI definitions');
+  }
+
+  return response.json();
+}
+
+export async function getReliabilityKpisByRunner(filters = {}) {
+  const params = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== null) {
+      params.append(key, value);
+    }
+  }
+
+  const response = await fetch(`${API_BASE}/reliability/kpis/by-runner?${params}`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch reliability KPIs by runner');
+  }
+
+  return response.json();
+}
+
+export async function getReliabilityTrends(filters = {}) {
+  const params = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== null && value !== '') {
+      params.append(key, value);
+    }
+  }
+
+  const response = await fetch(`${API_BASE}/reliability/trends?${params}`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch reliability trends');
+  }
+
+  return response.json();
+}
+
+export async function getReliabilityTrendInsights(filters = {}) {
+  const params = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== null && value !== '') {
+      params.append(key, value);
+    }
+  }
+
+  const response = await fetch(`${API_BASE}/reliability/trends/insights?${params}`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch reliability trend insights');
+  }
+
+  return response.json();
+}
+
+export async function getReliabilityFailureModeTrends(filters = {}) {
+  const params = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== null && value !== '') {
+      params.append(key, value);
+    }
+  }
+
+  const response = await fetch(`${API_BASE}/reliability/trends/failure-modes?${params}`);
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch reliability failure-mode trends');
+  }
+
+  return response.json();
+}
+
 export async function createOutcome(taskRunId, outcome) {
   const response = await fetch(`${API_BASE}/task-runs/${taskRunId}/outcomes`, {
     method: 'POST',
@@ -334,6 +434,21 @@ export async function createOutcome(taskRunId, outcome) {
   if (!response.ok) {
     const error = await response.json();
     throw new Error(error.error || 'Failed to create outcome');
+  }
+
+  return response.json();
+}
+
+export async function createOutcomesBatch(items) {
+  const response = await fetch(`${API_BASE}/task-runs/outcomes/batch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items })
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Failed to create outcomes batch');
   }
 
   return response.json();

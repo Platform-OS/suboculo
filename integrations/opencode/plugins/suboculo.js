@@ -168,8 +168,9 @@ export const SuboculoPlugin = async ({ project, client, directory, worktree }) =
   // Track tool execution start times for duration calculation
   const toolStartTimes = new Map();
 
-  // Cache parentSessionId per session (doesn't change)
-  const parentCache = new Map();
+  // Cache stable session metadata (doesn't change during one session)
+  // Shape: { parentSessionId, runnerVersion, model }
+  const sessionMetaCache = new Map();
 
   // Track cumulative token usage per session for delta calculation
   const lastUsageTotals = new Map();
@@ -183,14 +184,27 @@ export const SuboculoPlugin = async ({ project, client, directory, worktree }) =
   // Helper: Get session context (agent, parent, messages)
   async function getSessionContext(sessionID) {
     try {
-      // Get parentSessionId (cached - doesn't change)
+      // Get session metadata (cached - mostly stable)
       let parentSessionId = null;
-      if (parentCache.has(sessionID)) {
-        parentSessionId = parentCache.get(sessionID);
+      let runnerVersion = null;
+      let sessionModel = null;
+      if (sessionMetaCache.has(sessionID)) {
+        const cached = sessionMetaCache.get(sessionID) || {};
+        parentSessionId = cached.parentSessionId || null;
+        runnerVersion = cached.runnerVersion || null;
+        sessionModel = cached.model || null;
       } else {
         const sessionResp = await client.session.get({ path: { id: sessionID } });
         parentSessionId = sessionResp.data?.parentID || null;
-        parentCache.set(sessionID, parentSessionId);
+        runnerVersion = sessionResp.data?.version || null;
+        sessionModel =
+          sessionResp.data?.model ||
+          sessionResp.data?.modelID ||
+          sessionResp.data?.modelId ||
+          sessionResp.data?.providerModel ||
+          sessionResp.data?.provider?.model ||
+          null;
+        sessionMetaCache.set(sessionID, { parentSessionId, runnerVersion, model: sessionModel });
       }
 
       // Get messages (used for both agent detection and token usage)
@@ -209,10 +223,10 @@ export const SuboculoPlugin = async ({ project, client, directory, worktree }) =
         }
       }
 
-      return { agentId, parentSessionId, messages };
+      return { agentId, parentSessionId, messages, runnerVersion, sessionModel };
     } catch (err) {
       debugLog(`Failed to get session info for ${sessionID}: ${err.message}`);
-      return { agentId: null, parentSessionId: null, messages: [] };
+      return { agentId: null, parentSessionId: null, messages: [], runnerVersion: null, sessionModel: null };
     }
   }
 
@@ -220,6 +234,7 @@ export const SuboculoPlugin = async ({ project, client, directory, worktree }) =
   // Returns null if no new usage, otherwise returns the delta since last check
   function extractNewUsage(messages, sessionID) {
     let input = 0, output = 0, reasoning = 0, cacheRead = 0, cacheWrite = 0, cost = 0;
+    let lastModel = null;
 
     for (const msg of messages) {
       const info = msg.info;
@@ -231,6 +246,7 @@ export const SuboculoPlugin = async ({ project, client, directory, worktree }) =
         cacheRead += t.cache?.read || 0;
         cacheWrite += t.cache?.write || 0;
         cost += info.cost || 0;
+        lastModel = info.model || msg.model || msg.message?.model || lastModel;
       }
     }
 
@@ -243,6 +259,7 @@ export const SuboculoPlugin = async ({ project, client, directory, worktree }) =
       cacheRead: cacheRead - prev.cacheRead,
       cacheWrite: cacheWrite - prev.cacheWrite,
       cost: +(cost - prev.cost).toFixed(6),
+      model: lastModel || null
     };
 
     // Only emit if there's actual new usage
@@ -253,6 +270,57 @@ export const SuboculoPlugin = async ({ project, client, directory, worktree }) =
 
     lastUsageTotals.set(sessionID, { input, output, reasoning, cacheRead, cacheWrite, cost });
     return delta;
+  }
+
+  function extractLatestModel(messages) {
+    function collectStringCandidates(value, out, depth = 0) {
+      if (depth > 4 || value == null) return;
+      if (typeof value === 'string') {
+        if (value.length >= 3) out.push(value);
+        return;
+      }
+      if (Array.isArray(value)) {
+        for (const item of value) collectStringCandidates(item, out, depth + 1);
+        return;
+      }
+      if (typeof value === 'object') {
+        for (const [k, v] of Object.entries(value)) {
+          if (typeof v === 'string' && /model/i.test(k) && v.length >= 3) {
+            out.push(v);
+          }
+          collectStringCandidates(v, out, depth + 1);
+        }
+      }
+    }
+
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      const info = msg?.info || {};
+      const model =
+        info.model ||
+        info.modelID ||
+        info.modelId ||
+        info.providerModel ||
+        info.provider?.model ||
+        info.provider?.modelID ||
+        info.provider?.modelId ||
+        msg?.model ||
+        msg?.modelID ||
+        msg?.modelId ||
+        msg?.message?.model ||
+        msg?.message?.modelID ||
+        msg?.message?.modelId ||
+        null;
+      if (model) return model;
+
+      const candidates = [];
+      collectStringCandidates(msg, candidates);
+      const heuristic = candidates.find(v =>
+        /claude|gpt|gemini|llama|mistral|deepseek|qwen|sonnet|opus|haiku/i.test(v)
+      );
+      if (heuristic) return heuristic;
+    }
+    return null;
   }
 
   function resolveSessionId(payload = {}) {
@@ -357,17 +425,18 @@ export const SuboculoPlugin = async ({ project, client, directory, worktree }) =
     const parentSessionId = input.parentID || input.parentSessionID || input.parentSessionId || ctx.parentSessionId || null;
     const agentId = input.agent || input.agentId || input.data?.agentId || ctx.agentId || null;
 
-    insertCEPEvent({
-      ts,
-      event: 'session.start',
-      runner: 'opencode',
-      sessionId,
-      parentSessionId,
-      data: {
-        title: resolveSessionTitle(input),
-        directory
-      }
-    });
+        insertCEPEvent({
+          ts,
+          event: 'session.start',
+          runner: 'opencode',
+          sessionId,
+          parentSessionId,
+          data: {
+            title: resolveSessionTitle(input),
+            directory,
+            runnerVersion: ctx.runnerVersion || input?.properties?.info?.version || null
+          }
+        });
 
     maybeEmitSubagentSpawn(ts, sessionId, parentSessionId, agentId, input.agentType || input.data?.agentType || null);
   }
@@ -392,7 +461,8 @@ export const SuboculoPlugin = async ({ project, client, directory, worktree }) =
       parentSessionId,
       data: {
         title: resolveSessionTitle(input),
-        directory: input.directory || input.session?.directory || input.properties?.info?.directory || directory
+        directory: input.directory || input.session?.directory || input.properties?.info?.directory || directory,
+        runnerVersion: ctx.runnerVersion || input?.properties?.info?.version || input?.version || null
       }
     });
 
@@ -561,7 +631,9 @@ export const SuboculoPlugin = async ({ project, client, directory, worktree }) =
           response: output.error ? output.error : output.output,
           durationMs,
           agentId: ctx.agentId,
-          parentSessionId: ctx.parentSessionId
+          parentSessionId: ctx.parentSessionId,
+          runnerVersion: ctx.runnerVersion || null,
+          model: extractLatestModel(ctx.messages) || ctx.sessionModel || null
         };
 
         // Embed token usage delta directly in tool.end event
@@ -573,6 +645,9 @@ export const SuboculoPlugin = async ({ project, client, directory, worktree }) =
           eventData.cacheCreationTokens = usage.cacheWrite;
           eventData.cacheReadTokens = usage.cacheRead;
           eventData.cost = usage.cost;
+          if (usage.model) {
+            eventData.model = usage.model;
+          }
         }
 
         insertCEPEvent({

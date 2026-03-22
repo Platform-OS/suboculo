@@ -105,6 +105,15 @@
   let loadingTaskRuns = false;
   let taskRunsTotal = 0;
   let taskRunOutcomeSummary = null;
+  let reliabilityKpis = null;
+  let reliabilityKpisByRunner = null;
+  let reliabilityTrends = null;
+  let reliabilityTrendInsights = null;
+  let reliabilityFailureModeTrends = null;
+  let kpiDefinitions = null;
+  let showKpiDefinitions = false;
+  let reliabilityTrendBucket = "day";
+  let reliabilityTrendWindowDays = "30";
   let outcomeTaxonomy = null;
   let taskRunStatusFilter = "all";
   let taskRunRunnerFilter = "all";
@@ -113,6 +122,9 @@
   let taskRunFailureModeFilter = "all";
   let taskRunFailureSubtypeFilter = "all";
   let taskRunHumanInterventionFilter = "all";
+  let taskRunNeedsLabelingOnly = false;
+  let selectedTaskRunIds = new Set();
+  let savingBulkOutcomes = false;
 
   const fallbackEvaluationTypes = ["human", "rule_based", "llm_judge", "benchmark_checker"];
   const fallbackOutcomeLabels = ["success", "partial_success", "failure", "unsafe_success", "interrupted", "abandoned", "unknown"];
@@ -129,6 +141,15 @@
   };
   const fallbackFailureModes = Object.keys(fallbackFailureTaxonomy);
   const fallbackRequiredFailureLabels = ["failure", "unsafe_success", "interrupted", "abandoned"];
+  const reliabilityTrendBucketOptions = [
+    { value: "day", label: "Daily" },
+    { value: "week", label: "Weekly" }
+  ];
+  const reliabilityTrendWindowOptions = [
+    { value: "14", label: "14 days" },
+    { value: "30", label: "30 days" },
+    { value: "60", label: "60 days" }
+  ];
 
   function createDefaultOutcomeForm() {
     return {
@@ -147,6 +168,7 @@
     };
   }
   let taskRunOutcome = createDefaultOutcomeForm();
+  let bulkTaskRunOutcome = createDefaultOutcomeForm();
 
   const outcomeLabelHelp = {
     success: "Task completed to a reasonable engineering standard.",
@@ -162,6 +184,7 @@
   onMount(async () => {
     await loadData();
     await loadOutcomeTaxonomy();
+    await loadKpiDefinitions();
     await loadAnalyses();
     await loadTaskRuns();
 
@@ -234,18 +257,44 @@
         runner: taskRunRunnerFilter !== "all" ? taskRunRunnerFilter : undefined,
         query: taskRunQuery || undefined,
         canonical_outcome_label: taskRunCanonicalOutcomeFilter !== "all" ? taskRunCanonicalOutcomeFilter : undefined,
+        has_canonical_outcome: taskRunNeedsLabelingOnly ? "false" : undefined,
         failure_mode: taskRunFailureModeFilter !== "all" ? taskRunFailureModeFilter : undefined,
         failure_subtype: taskRunFailureSubtypeFilter !== "all" ? taskRunFailureSubtypeFilter : undefined,
         requires_human_intervention: taskRunHumanInterventionFilter === "all" ? undefined : taskRunHumanInterventionFilter
       };
 
-      const [result, summary] = await Promise.all([
+      const [result, summary, kpis, kpisByRunner, trends, trendInsights, failureModeTrends] = await Promise.all([
         api.getTaskRuns(filters),
-        api.getTaskRunOutcomeSummary(filters)
+        api.getTaskRunOutcomeSummary(filters),
+        api.getReliabilityKpis(filters),
+        api.getReliabilityKpisByRunner(filters),
+        api.getReliabilityTrends({
+          ...filters,
+          bucket: reliabilityTrendBucket,
+          window_days: reliabilityTrendWindowDays
+        }),
+        api.getReliabilityTrendInsights({
+          ...filters,
+          bucket: reliabilityTrendBucket,
+          window_days: reliabilityTrendWindowDays
+        }),
+        api.getReliabilityFailureModeTrends({
+          ...filters,
+          bucket: reliabilityTrendBucket,
+          window_days: reliabilityTrendWindowDays
+        })
       ]);
       taskRuns = result.taskRuns;
+      selectedTaskRunIds = new Set(
+        [...selectedTaskRunIds].filter((id) => result.taskRuns.some((run) => run.id === id))
+      );
       taskRunsTotal = result.total;
       taskRunOutcomeSummary = summary;
+      reliabilityKpis = kpis;
+      reliabilityKpisByRunner = kpisByRunner;
+      reliabilityTrends = trends;
+      reliabilityTrendInsights = trendInsights;
+      reliabilityFailureModeTrends = failureModeTrends;
 
       if (selectedTaskRun?.id) {
         const updated = result.taskRuns.find(run => run.id === selectedTaskRun.id);
@@ -256,6 +305,11 @@
     } catch (err) {
       console.error('Failed to load task runs:', err);
       taskRunOutcomeSummary = null;
+      reliabilityKpis = null;
+      reliabilityKpisByRunner = null;
+      reliabilityTrends = null;
+      reliabilityTrendInsights = null;
+      reliabilityFailureModeTrends = null;
     } finally {
       loadingTaskRuns = false;
     }
@@ -267,6 +321,15 @@
     } catch (err) {
       console.error("Failed to load outcome taxonomy:", err);
       outcomeTaxonomy = null;
+    }
+  }
+
+  async function loadKpiDefinitions() {
+    try {
+      kpiDefinitions = await api.getKpiDefinitions();
+    } catch (err) {
+      console.error("Failed to load KPI definitions:", err);
+      kpiDefinitions = null;
     }
   }
 
@@ -313,6 +376,100 @@
   function handleTaskRunHumanInterventionFilterChange() {
     if (taskRunHumanInterventionFilter !== "all" && taskRunCanonicalOutcomeFilter === "none") {
       taskRunCanonicalOutcomeFilter = "all";
+    }
+  }
+
+  function toggleNeedsLabelingQueue() {
+    taskRunNeedsLabelingOnly = !taskRunNeedsLabelingOnly;
+    if (taskRunNeedsLabelingOnly) {
+      taskRunCanonicalOutcomeFilter = "all";
+      taskRunFailureModeFilter = "all";
+      taskRunFailureSubtypeFilter = "all";
+      taskRunHumanInterventionFilter = "all";
+    }
+  }
+
+  function toggleTaskRunSelection(taskRunId) {
+    const next = new Set(selectedTaskRunIds);
+    if (next.has(taskRunId)) next.delete(taskRunId);
+    else next.add(taskRunId);
+    selectedTaskRunIds = next;
+  }
+
+  function selectAllVisibleTaskRuns() {
+    selectedTaskRunIds = new Set(taskRuns.map((run) => run.id));
+  }
+
+  function clearSelectedTaskRuns() {
+    selectedTaskRunIds = new Set();
+  }
+
+  function handleBulkOutcomeLabelChange() {
+    const requiredFailureLabels = outcomeTaxonomy?.requires_failure_mode_for || fallbackRequiredFailureLabels;
+    if (!requiredFailureLabels.includes(bulkTaskRunOutcome.outcome_label)) {
+      bulkTaskRunOutcome = { ...bulkTaskRunOutcome, failure_mode: "", failure_subtype: "" };
+    }
+  }
+
+  function handleBulkFailureModeChange() {
+    const taxonomy = outcomeTaxonomy?.failure_taxonomy || fallbackFailureTaxonomy;
+    const allowedSubtypes = bulkTaskRunOutcome.failure_mode
+      ? (taxonomy[bulkTaskRunOutcome.failure_mode] || [])
+      : [];
+    if (!allowedSubtypes.includes(bulkTaskRunOutcome.failure_subtype)) {
+      bulkTaskRunOutcome = { ...bulkTaskRunOutcome, failure_subtype: "" };
+    }
+  }
+
+  async function applyBulkTaskRunOutcome() {
+    if (selectedTaskRunIds.size === 0) {
+      alert("Select at least one task run.");
+      return;
+    }
+
+    const requiredFailureLabels = outcomeTaxonomy?.requires_failure_mode_for || fallbackRequiredFailureLabels;
+    const requiresFailure = requiredFailureLabels.includes(bulkTaskRunOutcome.outcome_label);
+    if (requiresFailure && !bulkTaskRunOutcome.failure_mode) {
+      alert("Failure mode is required for this outcome label.");
+      return;
+    }
+
+    try {
+      savingBulkOutcomes = true;
+      const items = [...selectedTaskRunIds].map((taskRunId) => ({
+        task_run_id: taskRunId,
+        evaluation_type: bulkTaskRunOutcome.evaluation_type,
+        outcome_label: bulkTaskRunOutcome.outcome_label,
+        correctness_score: bulkTaskRunOutcome.correctness_score === "" ? null : Number(bulkTaskRunOutcome.correctness_score),
+        safety_score: bulkTaskRunOutcome.safety_score === "" ? null : Number(bulkTaskRunOutcome.safety_score),
+        efficiency_score: bulkTaskRunOutcome.efficiency_score === "" ? null : Number(bulkTaskRunOutcome.efficiency_score),
+        reproducibility_score: bulkTaskRunOutcome.reproducibility_score === "" ? null : Number(bulkTaskRunOutcome.reproducibility_score),
+        requires_human_intervention: bulkTaskRunOutcome.requires_human_intervention,
+        failure_mode: bulkTaskRunOutcome.failure_mode || undefined,
+        failure_subtype: bulkTaskRunOutcome.failure_subtype || undefined,
+        notes: bulkTaskRunOutcome.notes || undefined,
+        evaluator: bulkTaskRunOutcome.evaluator || undefined,
+        is_canonical: bulkTaskRunOutcome.is_canonical
+      }));
+
+      const result = await api.createOutcomesBatch(items);
+      showNotice(
+        `Bulk outcomes: ${result.success_count} succeeded, ${result.failure_count} failed.`,
+        result.failure_count > 0 ? "error" : "success"
+      );
+
+      await loadTaskRuns();
+      if (selectedTaskRun?.id && selectedTaskRunIds.has(selectedTaskRun.id)) {
+        selectedTaskRun = await api.getTaskRun(selectedTaskRun.id);
+      }
+      if (result.failure_count === 0) {
+        clearSelectedTaskRuns();
+      }
+    } catch (err) {
+      console.error("Failed to apply bulk outcomes:", err);
+      alert("Failed to apply bulk outcomes");
+    } finally {
+      savingBulkOutcomes = false;
     }
   }
 
@@ -663,6 +820,46 @@
     return d.toLocaleString();
   }
 
+  function formatPercent(value) {
+    if (value == null || Number.isNaN(value)) return "—";
+    return `${(value * 100).toFixed(1)}%`;
+  }
+
+  function formatMoney(value) {
+    if (value == null || Number.isNaN(value)) return "—";
+    return `$${Number(value).toFixed(4)}`;
+  }
+
+  function formatBucketStart(value, bucket = "day") {
+    if (!value) return "—";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+    if (bucket === "week") {
+      return `Week of ${date.toLocaleDateString()}`;
+    }
+    return date.toLocaleDateString();
+  }
+
+  function formatLabel(value) {
+    if (!value) return "";
+    return String(value).replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
+  }
+
+  function formatSignedPercentDelta(value) {
+    if (value == null || Number.isNaN(value)) return "—";
+    const pct = value * 100;
+    const sign = pct > 0 ? "+" : "";
+    return `${sign}${pct.toFixed(1)}%`;
+  }
+
+  function formatFailureModeRow(bucketRow) {
+    if (!bucketRow?.by_mode?.length) return "—";
+    return bucketRow.by_mode
+      .slice(0, 3)
+      .map((modeRow) => `${modeRow.failure_mode} ${modeRow.count} (${formatPercent(modeRow.failure_mode_share)})`)
+      .join(", ");
+  }
+
   function selectEntry(key) {
     selectedKey = key;
     selected = pageItems.find(e => e.__key === key) || null;
@@ -991,7 +1188,10 @@ ${analysisResult.analysis}
     taskRunCanonicalOutcomeFilter ||
     taskRunFailureModeFilter ||
     taskRunFailureSubtypeFilter ||
-    taskRunHumanInterventionFilter
+    taskRunHumanInterventionFilter ||
+    taskRunNeedsLabelingOnly ||
+    reliabilityTrendBucket ||
+    reliabilityTrendWindowDays
   ) {
     loadTaskRuns();
   }
@@ -1705,6 +1905,299 @@ ${analysisResult.analysis}
               >
                 Requires human intervention
               </Button>
+              <Button
+                variant={taskRunNeedsLabelingOnly ? "default" : "outline"}
+                size="sm"
+                on:click={toggleNeedsLabelingQueue}
+              >
+                Needs labeling queue
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card class="rounded-2xl shadow-sm">
+          <CardContent class="p-4 md:p-5 space-y-4">
+            <div class="flex items-center justify-between gap-2">
+              <div class="text-base font-semibold">Runner Comparison</div>
+              <div class="flex items-center gap-2">
+                <Button variant="outline" size="sm" on:click={() => showKpiDefinitions = !showKpiDefinitions}>
+                  {showKpiDefinitions ? "Hide metric definitions" : "Show metric definitions"}
+                </Button>
+                {#if loadingTaskRuns}
+                  <Badge variant="outline">Updating…</Badge>
+                {/if}
+              </div>
+            </div>
+
+            {#if showKpiDefinitions}
+              <div class="rounded-xl border p-3 space-y-2 bg-muted/10">
+                <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">KPI Definitions</div>
+                {#if kpiDefinitions?.metrics}
+                  <div class="space-y-2">
+                    {#each Object.entries(kpiDefinitions.metrics) as [metric, definition] (metric)}
+                      <div class="text-xs space-y-1">
+                        <div class="font-medium">{formatLabel(metric)}</div>
+                        <div class="text-muted-foreground">Formula: {definition.formula}</div>
+                        <div class="text-muted-foreground">Null when: {definition.null_when}</div>
+                      </div>
+                    {/each}
+                  </div>
+                  <div class="text-xs text-muted-foreground">
+                    Guardrails: canonical sample >= {kpiDefinitions?.thresholds?.min_canonical_sample ?? "—"}, successful sample for cost >= {kpiDefinitions?.thresholds?.min_success_sample_for_cost ?? "—"}.
+                  </div>
+                {:else}
+                  <div class="text-xs text-muted-foreground">Metric definitions unavailable.</div>
+                {/if}
+              </div>
+            {/if}
+
+            {#if reliabilityKpisByRunner?.by_runner?.length}
+              <div class="overflow-auto rounded-xl border">
+                <table class="min-w-full text-sm">
+                  <thead class="bg-muted/20 text-xs text-muted-foreground uppercase tracking-wide">
+                    <tr>
+                      <th class="px-3 py-2 text-left">Runner</th>
+                      <th class="px-3 py-2 text-right">Runs</th>
+                      <th class="px-3 py-2 text-right">With outcome</th>
+                      <th class="px-3 py-2 text-right">Success</th>
+                      <th class="px-3 py-2 text-right">First-pass</th>
+                      <th class="px-3 py-2 text-right">Retry</th>
+                      <th class="px-3 py-2 text-right">Intervention</th>
+                      <th class="px-3 py-2 text-right">Cost/success</th>
+                      <th class="px-3 py-2 text-left">Flags</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {#each reliabilityKpisByRunner.by_runner as row (row.runner)}
+                      <tr class="border-t">
+                        <td class="px-3 py-2 font-medium">{row.runner}</td>
+                        <td class="px-3 py-2 text-right">{row.counts?.task_runs ?? 0}</td>
+                        <td class="px-3 py-2 text-right">{row.counts?.with_canonical_outcome ?? 0}</td>
+                        <td class="px-3 py-2 text-right">{formatPercent(row.rates?.success_rate)}</td>
+                        <td class="px-3 py-2 text-right">{formatPercent(row.rates?.first_pass_rate)}</td>
+                        <td class="px-3 py-2 text-right">{formatPercent(row.rates?.retry_rate)}</td>
+                        <td class="px-3 py-2 text-right">{formatPercent(row.rates?.intervention_rate)}</td>
+                        <td class="px-3 py-2 text-right">{formatMoney(row.cost?.cost_per_success)}</td>
+                        <td class="px-3 py-2">
+                          {#if row.anomalies?.length}
+                            <div class="flex flex-wrap gap-1">
+                              {#each row.anomalies as anomaly (`${row.runner}-${anomaly.code}`)}
+                                <Badge variant={anomaly.severity === "high" ? "destructive" : "outline"} title={anomaly.message}>
+                                  {formatLabel(anomaly.code)}
+                                </Badge>
+                              {/each}
+                            </div>
+                          {:else}
+                            <span class="text-xs text-muted-foreground">—</span>
+                          {/if}
+                        </td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </div>
+            {:else}
+              <div class="text-sm text-muted-foreground">No runner comparison data in current scope.</div>
+            {/if}
+          </CardContent>
+        </Card>
+
+        <Card class="rounded-2xl shadow-sm">
+          <CardContent class="p-4 md:p-5 space-y-4">
+            <div class="flex items-center justify-between gap-3 flex-wrap">
+              <div class="text-base font-semibold">Reliability Trends</div>
+              <div class="flex gap-2">
+                <Select bind:value={reliabilityTrendBucket} options={reliabilityTrendBucketOptions} />
+                <Select bind:value={reliabilityTrendWindowDays} options={reliabilityTrendWindowOptions} />
+              </div>
+            </div>
+
+            {#if reliabilityTrends?.series?.length}
+              <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div class="rounded-xl border p-3 space-y-2">
+                  <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Improving</div>
+                  {#if reliabilityTrendInsights?.insights?.improving?.length}
+                    {#each reliabilityTrendInsights.insights.improving as insight (`improve-${insight.metric}-${insight.current_bucket_start}`)}
+                      <div class="text-sm flex items-center justify-between gap-3">
+                        <span>{formatLabel(insight.metric)}</span>
+                        <span class="text-green-700">{formatSignedPercentDelta(insight.abs_delta)}</span>
+                      </div>
+                    {/each}
+                  {:else}
+                    <div class="text-xs text-muted-foreground">No significant improving signals.</div>
+                  {/if}
+                </div>
+
+                <div class="rounded-xl border p-3 space-y-2">
+                  <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Degrading</div>
+                  {#if reliabilityTrendInsights?.insights?.degrading?.length}
+                    {#each reliabilityTrendInsights.insights.degrading as insight (`degrade-${insight.metric}-${insight.current_bucket_start}`)}
+                      <div class="text-sm flex items-center justify-between gap-3">
+                        <span>{formatLabel(insight.metric)}</span>
+                        <span class="text-red-700">{formatSignedPercentDelta(insight.abs_delta)}</span>
+                      </div>
+                    {/each}
+                  {:else}
+                    <div class="text-xs text-muted-foreground">No significant degrading signals.</div>
+                  {/if}
+                </div>
+
+                <div class="rounded-xl border p-3 space-y-2">
+                  <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Insufficient Evidence</div>
+                  {#if reliabilityTrendInsights?.insights?.insufficient_evidence?.length}
+                    {#each reliabilityTrendInsights.insights.insufficient_evidence.slice(-3) as item (`evidence-${item.metric}-${item.bucket_start}`)}
+                      <div class="text-xs text-muted-foreground">
+                        {formatLabel(item.metric)}: {item.reason}
+                      </div>
+                    {/each}
+                  {:else}
+                    <div class="text-xs text-muted-foreground">Sample guardrails satisfied.</div>
+                  {/if}
+                </div>
+              </div>
+
+              <div class="overflow-auto rounded-xl border">
+                <table class="min-w-full text-sm">
+                  <thead class="bg-muted/20 text-xs text-muted-foreground uppercase tracking-wide">
+                    <tr>
+                      <th class="px-3 py-2 text-left">Bucket</th>
+                      <th class="px-3 py-2 text-right">Runs</th>
+                      <th class="px-3 py-2 text-right">Success</th>
+                      <th class="px-3 py-2 text-right">Partial</th>
+                      <th class="px-3 py-2 text-right">Failure</th>
+                      <th class="px-3 py-2 text-right">Retry</th>
+                      <th class="px-3 py-2 text-right">Cost/success</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {#each [...reliabilityTrends.series].reverse() as bucketRow (bucketRow.bucket_start)}
+                      <tr class="border-t">
+                        <td class="px-3 py-2">{formatBucketStart(bucketRow.bucket_start, reliabilityTrends.bucket)}</td>
+                        <td class="px-3 py-2 text-right">{bucketRow.task_runs}</td>
+                        <td class="px-3 py-2 text-right">{formatPercent(bucketRow.success_rate)}</td>
+                        <td class="px-3 py-2 text-right">{formatPercent(bucketRow.partial_success_rate)}</td>
+                        <td class="px-3 py-2 text-right">{formatPercent(bucketRow.failure_rate)}</td>
+                        <td class="px-3 py-2 text-right">{formatPercent(bucketRow.retry_rate)}</td>
+                        <td class="px-3 py-2 text-right">{formatMoney(bucketRow.cost_per_success)}</td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </div>
+
+              <div class="rounded-xl border p-3 space-y-2">
+                <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Failure Mode Trends</div>
+                {#if reliabilityFailureModeTrends?.series?.some((row) => row.with_failure_mode > 0)}
+                  <div class="overflow-auto rounded-xl border">
+                    <table class="min-w-full text-sm">
+                      <thead class="bg-muted/20 text-xs text-muted-foreground uppercase tracking-wide">
+                        <tr>
+                          <th class="px-3 py-2 text-left">Bucket</th>
+                          <th class="px-3 py-2 text-right">Canonical</th>
+                          <th class="px-3 py-2 text-right">With failure mode</th>
+                          <th class="px-3 py-2 text-left">Top modes</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {#each [...reliabilityFailureModeTrends.series].reverse() as modeBucket (modeBucket.bucket_start)}
+                          <tr class="border-t">
+                            <td class="px-3 py-2">{formatBucketStart(modeBucket.bucket_start, reliabilityFailureModeTrends.bucket)}</td>
+                            <td class="px-3 py-2 text-right">{modeBucket.with_canonical_outcome}</td>
+                            <td class="px-3 py-2 text-right">{modeBucket.with_failure_mode}</td>
+                            <td class="px-3 py-2">{formatFailureModeRow(modeBucket)}</td>
+                          </tr>
+                        {/each}
+                      </tbody>
+                    </table>
+                  </div>
+                {:else}
+                  <div class="text-xs text-muted-foreground">No failure mode data in current scope.</div>
+                {/if}
+                {#if reliabilityFailureModeTrends?.insufficient_evidence?.length}
+                  <div class="text-xs text-muted-foreground">
+                    Guardrail: canonical sample should be at least {reliabilityFailureModeTrends?.thresholds?.min_canonical_sample ?? "—"} per bucket for stable mode trends.
+                  </div>
+                {/if}
+              </div>
+
+              {#if Object.keys(reliabilityTrends.by_runner || {}).length}
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {#each Object.entries(reliabilityTrends.by_runner) as [runnerName, runnerSeries] (runnerName)}
+                    <div class="rounded-xl border p-3 space-y-2">
+                      <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">{runnerName}</div>
+                      {#if runnerSeries.length}
+                        {#each [...runnerSeries].slice(-3).reverse() as runnerBucket (runnerBucket.bucket_start)}
+                          <div class="flex items-center justify-between text-sm">
+                            <span>{formatBucketStart(runnerBucket.bucket_start, reliabilityTrends.bucket)}</span>
+                            <span class="text-muted-foreground">{runnerBucket.task_runs} runs · {formatPercent(runnerBucket.success_rate)}</span>
+                          </div>
+                        {/each}
+                      {:else}
+                        <div class="text-xs text-muted-foreground">No buckets.</div>
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+            {:else}
+              <div class="text-sm text-muted-foreground">
+                No trend data in current scope.
+              </div>
+            {/if}
+          </CardContent>
+        </Card>
+
+        <Card class="rounded-2xl shadow-sm">
+          <CardContent class="p-4 md:p-5 space-y-4">
+            <div class="flex items-center justify-between gap-2">
+              <div class="text-base font-semibold">Reliability KPIs</div>
+              {#if loadingTaskRuns}
+                <Badge variant="outline">Updating…</Badge>
+              {/if}
+            </div>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div class="rounded-xl border p-3 bg-muted/10">
+                <div class="text-xs text-muted-foreground">Success rate</div>
+                <div class="text-xl font-semibold">{formatPercent(reliabilityKpis?.rates?.success_rate)}</div>
+              </div>
+              <div class="rounded-xl border p-3 bg-muted/10">
+                <div class="text-xs text-muted-foreground">First-pass rate</div>
+                <div class="text-xl font-semibold">{formatPercent(reliabilityKpis?.rates?.first_pass_rate)}</div>
+              </div>
+              <div class="rounded-xl border p-3 bg-muted/10">
+                <div class="text-xs text-muted-foreground">Retry rate</div>
+                <div class="text-xl font-semibold">{formatPercent(reliabilityKpis?.rates?.retry_rate)}</div>
+              </div>
+              <div class="rounded-xl border p-3 bg-muted/10">
+                <div class="text-xs text-muted-foreground">Cost per success</div>
+                <div class="text-xl font-semibold">{formatMoney(reliabilityKpis?.cost?.cost_per_success)}</div>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div class="rounded-xl border p-3 bg-muted/10">
+                <div class="text-xs text-muted-foreground">Unsafe success rate</div>
+                <div class="text-lg font-semibold">{formatPercent(reliabilityKpis?.rates?.unsafe_success_rate)}</div>
+              </div>
+              <div class="rounded-xl border p-3 bg-muted/10">
+                <div class="text-xs text-muted-foreground">Intervention rate</div>
+                <div class="text-lg font-semibold">{formatPercent(reliabilityKpis?.rates?.intervention_rate)}</div>
+              </div>
+              <div class="rounded-xl border p-3 bg-muted/10">
+                <div class="text-xs text-muted-foreground">Duration p50 / p95</div>
+                <div class="text-lg font-semibold">
+                  {#if reliabilityKpis?.duration_ms}
+                    {reliabilityKpis.duration_ms.p50 ?? "—"} / {reliabilityKpis.duration_ms.p95 ?? "—"} ms
+                  {:else}
+                    —
+                  {/if}
+                </div>
+              </div>
+              <div class="rounded-xl border p-3 bg-muted/10">
+                <div class="text-xs text-muted-foreground">Total estimated cost</div>
+                <div class="text-lg font-semibold">{formatMoney(reliabilityKpis?.cost?.total_estimated_cost)}</div>
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -1808,6 +2301,31 @@ ${analysisResult.analysis}
                 <div class="text-base font-semibold">Runs</div>
                 <div class="text-sm text-muted-foreground">{taskRunsTotal} total</div>
               </div>
+              <div class="px-4 py-3 border-b bg-muted/5 space-y-3">
+                <div class="flex items-center justify-between gap-2 flex-wrap">
+                  <div class="text-xs text-muted-foreground">{selectedTaskRunIds.size} selected</div>
+                  <div class="flex gap-2">
+                    <Button variant="outline" size="sm" on:click={selectAllVisibleTaskRuns} disabled={taskRuns.length === 0}>Select visible</Button>
+                    <Button variant="outline" size="sm" on:click={clearSelectedTaskRuns} disabled={selectedTaskRunIds.size === 0}>Clear</Button>
+                  </div>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-12 gap-2">
+                  <div class="md:col-span-3">
+                    <Select bind:value={bulkTaskRunOutcome.evaluation_type} options={evaluationTypeOptions} />
+                  </div>
+                  <div class="md:col-span-3">
+                    <Select bind:value={bulkTaskRunOutcome.outcome_label} options={outcomeLabelOptions} on:change={handleBulkOutcomeLabelChange} />
+                  </div>
+                  <div class="md:col-span-3">
+                    <Select bind:value={bulkTaskRunOutcome.failure_mode} options={failureModeOptions} on:change={handleBulkFailureModeChange} />
+                  </div>
+                  <div class="md:col-span-3">
+                    <Button class="w-full" size="sm" on:click={applyBulkTaskRunOutcome} disabled={savingBulkOutcomes || selectedTaskRunIds.size === 0}>
+                      {savingBulkOutcomes ? "Applying..." : "Apply to selected"}
+                    </Button>
+                  </div>
+                </div>
+              </div>
               <Separator />
 
               {#if loadingTaskRuns}
@@ -1826,7 +2344,16 @@ ${analysisResult.analysis}
                     >
                       <div class="flex items-start justify-between gap-4">
                         <div class="space-y-2 min-w-0">
-                          <div class="font-medium truncate">{run.title || run.task_key}</div>
+                          <div class="flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={selectedTaskRunIds.has(run.id)}
+                              on:click|stopPropagation
+                              on:change|stopPropagation={() => toggleTaskRunSelection(run.id)}
+                              class="w-4 h-4"
+                            />
+                            <span class="font-medium truncate">{run.title || run.task_key}</span>
+                          </div>
                           <div class="text-xs text-muted-foreground font-mono break-all">{run.task_key}</div>
                           <div class="flex flex-wrap gap-2">
                             <Badge variant="outline">{run.runner || 'unknown'}</Badge>
@@ -1900,6 +2427,18 @@ ${analysisResult.analysis}
                     <div>
                       <div class="text-muted-foreground">Output tokens</div>
                       <div class="font-medium">{selectedTaskRun.token_output.toLocaleString()}</div>
+                    </div>
+                    <div>
+                      <div class="text-muted-foreground">Model</div>
+                      <div class="font-medium break-all">{selectedTaskRun.model || "—"}</div>
+                    </div>
+                    <div>
+                      <div class="text-muted-foreground">Runner version</div>
+                      <div class="font-medium break-all">{selectedTaskRun.agent_system_version || selectedTaskRun.toolchain_version || "—"}</div>
+                    </div>
+                    <div class="col-span-2">
+                      <div class="text-muted-foreground">Git revision</div>
+                      <div class="font-medium break-all font-mono">{selectedTaskRun.git_revision || "—"}</div>
                     </div>
                   </div>
 
