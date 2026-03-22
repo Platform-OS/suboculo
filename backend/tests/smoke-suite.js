@@ -322,6 +322,12 @@ async function run() {
     assert.ok(result.body.rates.retry_rate != null, 'KPI retry rate should be present');
     assert.ok(result.body.cost.total_estimated_cost >= 0, 'KPI cost aggregate should be non-negative');
 
+    result = await request('/reliability/kpis/compare?runner=smoke-runner&source=derived_attempt&period_days=7');
+    assert.equal(result.response.status, 200, 'reliability KPI compare endpoint should succeed');
+    assert.ok(result.body.period_a && result.body.period_b, 'KPI compare should include both periods');
+    assert.ok(result.body.deltas && result.body.deltas.rates, 'KPI compare should include deltas');
+    assert.ok(Array.isArray(result.body.period_a.anomalies), 'KPI compare should include period anomalies');
+
     result = await request('/reliability/kpis/by-runner?source=derived_attempt');
     assert.equal(result.response.status, 200, 'reliability KPI by-runner endpoint should succeed');
     const smokeRunnerKpi = result.body.by_runner.find((row) => row.runner === 'smoke-runner');

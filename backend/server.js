@@ -1436,6 +1436,61 @@ function buildReliabilityReviewData(query = {}) {
   return review;
 }
 
+function parsePositiveIntOrDefault(value, fallbackValue) {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  return fallbackValue;
+}
+
+function getKpiComparePeriods(query = {}) {
+  const periodDays = parsePositiveIntOrDefault(query.period_days, 7);
+  const now = new Date();
+  const periodMs = periodDays * 24 * 60 * 60 * 1000;
+
+  const aFrom = query.period_a_from || new Date(now.getTime() - periodMs).toISOString();
+  const aTo = query.period_a_to || now.toISOString();
+  const bFrom = query.period_b_from || new Date(new Date(aFrom).getTime() - periodMs).toISOString();
+  const bTo = query.period_b_to || new Date(aFrom).toISOString();
+
+  return {
+    period_days: periodDays,
+    period_a: { from: aFrom, to: aTo },
+    period_b: { from: bFrom, to: bTo }
+  };
+}
+
+function deltaOrNull(currentValue, previousValue) {
+  if (currentValue == null || previousValue == null) return null;
+  return +(Number(currentValue) - Number(previousValue)).toFixed(6);
+}
+
+function buildKpiCompareDeltas(periodA, periodB) {
+  const a = periodA || {};
+  const b = periodB || {};
+  return {
+    counts: {
+      task_runs: deltaOrNull(a.counts?.task_runs, b.counts?.task_runs),
+      with_canonical_outcome: deltaOrNull(a.counts?.with_canonical_outcome, b.counts?.with_canonical_outcome),
+      successful_runs: deltaOrNull(a.counts?.successful_runs, b.counts?.successful_runs)
+    },
+    rates: {
+      success_rate: deltaOrNull(a.rates?.success_rate, b.rates?.success_rate),
+      first_pass_rate: deltaOrNull(a.rates?.first_pass_rate, b.rates?.first_pass_rate),
+      retry_rate: deltaOrNull(a.rates?.retry_rate, b.rates?.retry_rate),
+      intervention_rate: deltaOrNull(a.rates?.intervention_rate, b.rates?.intervention_rate),
+      unsafe_success_rate: deltaOrNull(a.rates?.unsafe_success_rate, b.rates?.unsafe_success_rate)
+    },
+    cost: {
+      total_estimated_cost: deltaOrNull(a.cost?.total_estimated_cost, b.cost?.total_estimated_cost),
+      cost_per_success: deltaOrNull(a.cost?.cost_per_success, b.cost?.cost_per_success)
+    },
+    duration_ms: {
+      p50: deltaOrNull(a.duration_ms?.p50, b.duration_ms?.p50),
+      p95: deltaOrNull(a.duration_ms?.p95, b.duration_ms?.p95)
+    }
+  };
+}
+
 function normalizeModelName(model) {
   if (!model || typeof model !== 'string') return null;
   const trimmed = model.trim();
@@ -2473,6 +2528,57 @@ app.get('/api/reliability/kpis/by-runner', (req, res) => {
     });
   } catch (error) {
     console.error('Reliability KPI by-runner error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/reliability/kpis/compare', (req, res) => {
+  try {
+    const periods = getKpiComparePeriods(req.query);
+    const targets = getConfiguredKpiTargets();
+
+    const commonFilters = { ...req.query };
+    delete commonFilters.period_days;
+    delete commonFilters.period_a_from;
+    delete commonFilters.period_a_to;
+    delete commonFilters.period_b_from;
+    delete commonFilters.period_b_to;
+
+    const periodAQuery = {
+      ...commonFilters,
+      from: periods.period_a.from,
+      to: periods.period_a.to
+    };
+    const periodBQuery = {
+      ...commonFilters,
+      from: periods.period_b.from,
+      to: periods.period_b.to
+    };
+
+    const periodAKpis = summarizeReliabilityKpis(fetchReliabilityRows(periodAQuery));
+    const periodBKpis = summarizeReliabilityKpis(fetchReliabilityRows(periodBQuery));
+
+    res.json({
+      period_days: periods.period_days,
+      thresholds: {
+        min_canonical_sample: KPI_MIN_CANONICAL_SAMPLE,
+        min_success_sample_for_cost: KPI_MIN_SUCCESS_SAMPLE_FOR_COST,
+        targets
+      },
+      period_a: {
+        ...periods.period_a,
+        ...periodAKpis,
+        anomalies: deriveKpiAnomalies(periodAKpis, targets)
+      },
+      period_b: {
+        ...periods.period_b,
+        ...periodBKpis,
+        anomalies: deriveKpiAnomalies(periodBKpis, targets)
+      },
+      deltas: buildKpiCompareDeltas(periodAKpis, periodBKpis)
+    });
+  } catch (error) {
+    console.error('Reliability KPI compare error:', error);
     res.status(500).json({ error: error.message });
   }
 });
