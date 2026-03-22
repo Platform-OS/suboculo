@@ -125,6 +125,18 @@
     }, 150);
   }
 
+  function setTaskRunAarCache(taskRunId, report) {
+    const nextCache = new Map(taskRunAfterActionReportCache);
+    nextCache.set(taskRunId, report);
+    taskRunAfterActionReportCache = nextCache;
+  }
+
+  function deleteTaskRunAarCache(taskRunId) {
+    const nextCache = new Map(taskRunAfterActionReportCache);
+    nextCache.delete(taskRunId);
+    taskRunAfterActionReportCache = nextCache;
+  }
+
   async function loadTaskRuns() {
     try {
       loadingTaskRuns = true;
@@ -363,7 +375,18 @@
     try {
       selectedTaskRun = await api.getTaskRun(id);
       onOpenTaskRun(id);
-      taskRunAfterActionReport = taskRunAfterActionReportCache.get(id) || null;
+      const cached = taskRunAfterActionReportCache.get(id) || null;
+      taskRunAfterActionReport = cached;
+      if (!cached) {
+        try {
+          const persisted = await api.getTaskRunAfterActionReport(id);
+          taskRunAfterActionReport = persisted;
+          setTaskRunAarCache(id, persisted);
+        } catch (reportErr) {
+          console.warn("Failed to load persisted after-action report:", reportErr);
+          taskRunAfterActionReport = null;
+        }
+      }
     } catch (err) {
       console.error('Failed to load task run:', err);
       alert('Failed to load task run');
@@ -376,7 +399,7 @@
       loadingTaskRunAfterActionReport = true;
       const report = await api.getTaskRunAfterActionReport(selectedTaskRun.id);
       taskRunAfterActionReport = report;
-      taskRunAfterActionReportCache = new Map(taskRunAfterActionReportCache).set(selectedTaskRun.id, report);
+      setTaskRunAarCache(selectedTaskRun.id, report);
     } catch (err) {
       console.error('Failed to generate after-action report:', err);
       alert('Failed to generate after-action report');
@@ -483,16 +506,12 @@
       });
 
       selectedTaskRun = await api.getTaskRun(taskRunId);
-      {
-        const nextCache = new Map(taskRunAfterActionReportCache);
-        nextCache.delete(taskRunId);
-        taskRunAfterActionReportCache = nextCache;
-      }
+      deleteTaskRunAarCache(taskRunId);
       loadingTaskRunAfterActionReport = true;
       try {
         const updatedReport = await api.getTaskRunAfterActionReport(taskRunId);
         taskRunAfterActionReport = updatedReport;
-        taskRunAfterActionReportCache = new Map(taskRunAfterActionReportCache).set(taskRunId, updatedReport);
+        setTaskRunAarCache(taskRunId, updatedReport);
       } catch (reportErr) {
         console.error('Failed to regenerate after-action report:', reportErr);
         taskRunAfterActionReport = null;

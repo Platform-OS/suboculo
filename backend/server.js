@@ -79,6 +79,7 @@ const OUTCOME_LABELS_REQUIRING_FAILURE_MODE = new Set([
 ]);
 const KPI_MIN_CANONICAL_SAMPLE = 5;
 const KPI_MIN_SUCCESS_SAMPLE_FOR_COST = 3;
+const TASK_RUN_REPORT_VERSION = '1';
 const ATTEMPT_IDLE_GAP_MS = 45 * 60 * 1000;
 const gitRevisionCache = new Map();
 const AUTO_LABEL_ENABLED = String(process.env.SUBOCULO_AUTO_LABEL ?? 'true').toLowerCase() !== 'false';
@@ -217,6 +218,13 @@ function initDatabase() {
     // Column already exists
   }
 
+  try {
+    db.exec(`ALTER TABLE task_runs ADD COLUMN estimated_cost_known INTEGER NOT NULL DEFAULT 0`);
+    logger.debug('Added column: estimated_cost_known');
+  } catch (e) {
+    // Column already exists
+  }
+
   // Create indexes for CEP fields
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_runner ON entries(runner);
@@ -283,6 +291,7 @@ function initDatabase() {
       token_cache_creation INTEGER NOT NULL DEFAULT 0,
       token_cache_read INTEGER NOT NULL DEFAULT 0,
       estimated_cost REAL NOT NULL DEFAULT 0,
+      estimated_cost_known INTEGER NOT NULL DEFAULT 0,
       metadata TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -326,6 +335,18 @@ function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_outcomes_task_run_id ON outcomes(task_run_id);
     CREATE INDEX IF NOT EXISTS idx_outcomes_label ON outcomes(outcome_label);
     CREATE INDEX IF NOT EXISTS idx_outcomes_canonical ON outcomes(is_canonical);
+
+    CREATE TABLE IF NOT EXISTS task_run_reports (
+      task_run_id INTEGER PRIMARY KEY,
+      report_json TEXT NOT NULL,
+      generated_at TEXT NOT NULL,
+      report_version TEXT NOT NULL DEFAULT '1',
+      based_on_outcome_id INTEGER,
+      based_on_task_run_updated_at TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (task_run_id) REFERENCES task_runs(id) ON DELETE CASCADE
+    );
 
     CREATE TABLE IF NOT EXISTS benchmarks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -626,10 +647,12 @@ function createTrendBucket(startDate) {
     task_runs: 0,
     with_canonical_outcome: 0,
     success_count: 0,
+    successful_runs_with_known_cost: 0,
     partial_success_count: 0,
     failure_count: 0,
     unsafe_success_count: 0,
     retry_runs: 0,
+    runs_with_known_cost: 0,
     total_estimated_cost: 0,
     successful_estimated_cost: 0
   };
@@ -702,23 +725,26 @@ function getConfiguredKpiTargets() {
 function finalizeTrendBucket(bucket) {
   const withCanonical = bucket.with_canonical_outcome;
   const success = bucket.success_count;
+  const successfulWithKnownCost = bucket.successful_runs_with_known_cost;
   return {
     bucket_start: bucket.bucket_start,
     bucket_end: bucket.bucket_end,
     task_runs: bucket.task_runs,
     with_canonical_outcome: withCanonical,
     success_count: success,
+    successful_runs_with_known_cost: successfulWithKnownCost,
     partial_success_count: bucket.partial_success_count,
     failure_count: bucket.failure_count,
     unsafe_success_count: bucket.unsafe_success_count,
     retry_runs: bucket.retry_runs,
+    runs_with_known_cost: bucket.runs_with_known_cost,
     total_estimated_cost: +bucket.total_estimated_cost.toFixed(6),
     successful_estimated_cost: +bucket.successful_estimated_cost.toFixed(6),
     success_rate: ratioOrNull(success, withCanonical),
     partial_success_rate: ratioOrNull(bucket.partial_success_count, withCanonical),
     failure_rate: ratioOrNull(bucket.failure_count, withCanonical),
     retry_rate: ratioOrNull(bucket.retry_runs, bucket.task_runs),
-    cost_per_success: ratioOrNull(bucket.successful_estimated_cost, success)
+    cost_per_success: ratioOrNull(bucket.successful_estimated_cost, successfulWithKnownCost)
   };
 }
 
@@ -740,6 +766,7 @@ function buildReliabilityTrendsData(query = {}) {
       tr.started_at,
       tr.retry_count,
       tr.estimated_cost,
+      tr.estimated_cost_known,
       (
         SELECT o.outcome_label
         FROM outcomes o
@@ -777,9 +804,13 @@ function buildReliabilityTrendsData(query = {}) {
     const runnerBucket = upsertBucket(byRunner.get(runnerName), key, start);
 
     const targets = [globalBucket, runnerBucket];
+    const hasKnownCost = Number(row.estimated_cost_known) === 1;
     for (const target of targets) {
       target.task_runs += 1;
-      target.total_estimated_cost += row.estimated_cost || 0;
+      if (hasKnownCost) {
+        target.runs_with_known_cost += 1;
+        target.total_estimated_cost += row.estimated_cost || 0;
+      }
       if ((row.retry_count || 0) > 0) target.retry_runs += 1;
 
       const label = row.canonical_outcome_label;
@@ -787,7 +818,10 @@ function buildReliabilityTrendsData(query = {}) {
         target.with_canonical_outcome += 1;
         if (label === 'success') {
           target.success_count += 1;
-          target.successful_estimated_cost += row.estimated_cost || 0;
+          if (hasKnownCost) {
+            target.successful_runs_with_known_cost += 1;
+            target.successful_estimated_cost += row.estimated_cost || 0;
+          }
         } else if (label === 'partial_success') {
           target.partial_success_count += 1;
         } else if (label === 'failure') {
@@ -965,6 +999,7 @@ function fetchReliabilityRows(query = {}) {
       tr.runner,
       tr.retry_count,
       tr.estimated_cost,
+      tr.estimated_cost_known,
       tr.total_duration_ms,
       tr.token_input,
       tr.token_output,
@@ -995,13 +1030,15 @@ function summarizeReliabilityKpis(rows) {
   const totalRuns = rows.length;
   const withCanonical = rows.filter(r => !!r.canonical_outcome_label);
   const successfulRuns = withCanonical.filter(r => r.canonical_outcome_label === 'success');
+  const runsWithKnownCost = rows.filter(r => Number(r.estimated_cost_known) === 1);
+  const successfulRunsWithKnownCost = successfulRuns.filter(r => Number(r.estimated_cost_known) === 1);
   const unsafeSuccessRuns = withCanonical.filter(r => r.canonical_outcome_label === 'unsafe_success');
   const retryRuns = rows.filter(r => (r.retry_count || 0) > 0);
   const firstPassSuccessRuns = successfulRuns.filter(r => (r.retry_count || 0) === 0);
   const interventionRuns = withCanonical.filter(r => Number(r.canonical_requires_human_intervention) === 1);
 
-  const totalCost = rows.reduce((sum, r) => sum + (r.estimated_cost || 0), 0);
-  const successfulCost = successfulRuns.reduce((sum, r) => sum + (r.estimated_cost || 0), 0);
+  const totalCost = runsWithKnownCost.reduce((sum, r) => sum + (r.estimated_cost || 0), 0);
+  const successfulCost = successfulRunsWithKnownCost.reduce((sum, r) => sum + (r.estimated_cost || 0), 0);
 
   const durations = rows
     .map(r => r.total_duration_ms)
@@ -1019,6 +1056,8 @@ function summarizeReliabilityKpis(rows) {
       task_runs: totalRuns,
       with_canonical_outcome: withCanonical.length,
       successful_runs: successfulRuns.length,
+      successful_runs_with_known_cost: successfulRunsWithKnownCost.length,
+      runs_with_known_cost: runsWithKnownCost.length,
       unsafe_success_runs: unsafeSuccessRuns.length,
       retry_runs: retryRuns.length,
       first_pass_success_runs: firstPassSuccessRuns.length,
@@ -1034,7 +1073,7 @@ function summarizeReliabilityKpis(rows) {
     cost: {
       total_estimated_cost: +totalCost.toFixed(6),
       successful_estimated_cost: +successfulCost.toFixed(6),
-      cost_per_success: ratio(successfulCost, successfulRuns.length)
+      cost_per_success: ratio(successfulCost, successfulRunsWithKnownCost.length)
     },
     duration_ms: {
       p50: durations.length ? Math.round(quantile(durations, 0.5)) : null,
@@ -1155,6 +1194,8 @@ function validateOutcomePayload(payload) {
 
 function insertOutcomeForTaskRun(taskRunId, outcomeInput) {
   const insertOutcome = db.transaction((targetTaskRunId, input) => {
+    db.prepare('DELETE FROM task_run_reports WHERE task_run_id = ?').run(targetTaskRunId);
+
     if (input.is_canonical) {
       db.prepare('UPDATE outcomes SET is_canonical = 0 WHERE task_run_id = ?').run(targetTaskRunId);
     }
@@ -1247,7 +1288,7 @@ function deriveKpiAnomalies(kpiSummary, targets = {}) {
   const rates = kpiSummary?.rates || {};
   const cost = kpiSummary?.cost || {};
   const withCanonical = Number(counts.with_canonical_outcome || 0);
-  const successCount = Number(counts.successful_runs || 0);
+  const successWithKnownCostCount = Number(counts.successful_runs_with_known_cost || 0);
   const anomalies = [];
 
   if (withCanonical === 0) {
@@ -1266,11 +1307,11 @@ function deriveKpiAnomalies(kpiSummary, targets = {}) {
     });
   }
 
-  if (successCount > 0 && successCount < KPI_MIN_SUCCESS_SAMPLE_FOR_COST) {
+  if (successWithKnownCostCount > 0 && successWithKnownCostCount < KPI_MIN_SUCCESS_SAMPLE_FOR_COST) {
     anomalies.push({
       code: 'unstable_cost_per_success',
       severity: 'medium',
-      message: `Only ${successCount} successful runs. Cost-per-success is unstable (recommended >= ${KPI_MIN_SUCCESS_SAMPLE_FOR_COST}).`
+      message: `Only ${successWithKnownCostCount} successful runs with known cost. Cost-per-success is unstable (recommended >= ${KPI_MIN_SUCCESS_SAMPLE_FOR_COST}).`
     });
   }
 
@@ -1640,6 +1681,7 @@ function summarizeTaskRunRows(rows) {
   let tokenCacheCreation = 0;
   let tokenCacheRead = 0;
   let estimatedCost = 0;
+  let estimatedCostKnown = false;
   let interruptCount = 0;
 
   for (const event of usageRows) {
@@ -1648,7 +1690,10 @@ function summarizeTaskRunRows(rows) {
     tokenOutput += data.outputTokens || 0;
     tokenCacheCreation += data.cacheCreationTokens || 0;
     tokenCacheRead += data.cacheReadTokens || 0;
-    estimatedCost += data.cost || 0;
+    if (typeof data.cost === 'number' && Number.isFinite(data.cost)) {
+      estimatedCostKnown = true;
+      estimatedCost += data.cost;
+    }
   }
 
   for (const event of parsed) {
@@ -1685,6 +1730,7 @@ function summarizeTaskRunRows(rows) {
     tokenOutput,
     tokenCacheCreation,
     tokenCacheRead,
+    estimatedCostKnown: estimatedCostKnown ? 1 : 0,
     estimatedCost: +estimatedCost.toFixed(6),
     metadata: JSON.stringify({
       sessionIds: [...new Set(rows.map(row => row.sessionID).filter(Boolean))],
@@ -1749,8 +1795,8 @@ function upsertTaskRunForRootSession(rootSessionId) {
       started_at, ended_at, total_events, total_tool_calls, distinct_tools,
       total_duration_ms, error_count, retry_count, subagent_count, interrupt_count,
       token_input, token_output, token_cache_creation, token_cache_read,
-      estimated_cost, metadata, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      estimated_cost, estimated_cost_known, metadata, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(task_key) DO UPDATE SET
       title = excluded.title,
       description = excluded.description,
@@ -1777,6 +1823,7 @@ function upsertTaskRunForRootSession(rootSessionId) {
       token_cache_creation = excluded.token_cache_creation,
       token_cache_read = excluded.token_cache_read,
       estimated_cost = excluded.estimated_cost,
+      estimated_cost_known = excluded.estimated_cost_known,
       metadata = excluded.metadata,
       updated_at = excluded.updated_at
   `);
@@ -1824,6 +1871,7 @@ function upsertTaskRunForRootSession(rootSessionId) {
       summary.tokenCacheCreation,
       summary.tokenCacheRead,
       summary.estimatedCost,
+      summary.estimatedCostKnown,
       summary.metadata,
       new Date().toISOString()
     );
@@ -2124,6 +2172,68 @@ function buildTaskRunAfterActionReport(taskRunId) {
   };
   report.markdown = formatTaskRunAfterActionReportMarkdown(report);
   return report;
+}
+
+function getTaskRunCanonicalOutcomeId(taskRunId) {
+  const row = db.prepare(`
+    SELECT id
+    FROM outcomes
+    WHERE task_run_id = ?
+      AND is_canonical = 1
+    ORDER BY evaluated_at DESC, id DESC
+    LIMIT 1
+  `).get(taskRunId);
+  return row?.id || null;
+}
+
+function getStoredTaskRunAfterActionReport(taskRunId) {
+  const row = db.prepare(`
+    SELECT report_json, generated_at, report_version, based_on_outcome_id, based_on_task_run_updated_at
+    FROM task_run_reports
+    WHERE task_run_id = ?
+  `).get(taskRunId);
+  if (!row) return null;
+  const parsed = parseJSONSafe(row.report_json, null);
+  if (!parsed || typeof parsed !== 'object') return null;
+  return {
+    report: parsed,
+    generated_at: row.generated_at || null,
+    report_version: row.report_version || null,
+    based_on_outcome_id: row.based_on_outcome_id || null,
+    based_on_task_run_updated_at: row.based_on_task_run_updated_at || null
+  };
+}
+
+function upsertStoredTaskRunAfterActionReport(taskRunId, report, reportContext) {
+  const generatedAt = report?.generated_at || new Date().toISOString();
+  db.prepare(`
+    INSERT INTO task_run_reports (
+      task_run_id, report_json, generated_at, report_version, based_on_outcome_id, based_on_task_run_updated_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(task_run_id) DO UPDATE SET
+      report_json = excluded.report_json,
+      generated_at = excluded.generated_at,
+      report_version = excluded.report_version,
+      based_on_outcome_id = excluded.based_on_outcome_id,
+      based_on_task_run_updated_at = excluded.based_on_task_run_updated_at,
+      updated_at = excluded.updated_at
+  `).run(
+    taskRunId,
+    JSON.stringify(report),
+    generatedAt,
+    TASK_RUN_REPORT_VERSION,
+    reportContext?.canonicalOutcomeId || null,
+    reportContext?.taskRunUpdatedAt || null,
+    new Date().toISOString()
+  );
+}
+
+function isStoredTaskRunReportFresh(storedReport, reportContext) {
+  if (!storedReport || !reportContext) return false;
+  if (storedReport.report_version !== TASK_RUN_REPORT_VERSION) return false;
+  if ((storedReport.based_on_outcome_id || null) !== (reportContext.canonicalOutcomeId || null)) return false;
+  if ((storedReport.based_on_task_run_updated_at || null) !== (reportContext.taskRunUpdatedAt || null)) return false;
+  return true;
 }
 
 function backfillAllTaskRuns() {
@@ -2542,10 +2652,10 @@ app.get('/api/reliability/kpi-definitions', (_req, res) => {
         null_when: 'with_canonical_outcome = 0'
       },
       cost_per_success: {
-        formula: 'successful_estimated_cost / successful_runs',
-        numerator: 'sum(estimated_cost for canonical outcome_label = success)',
-        denominator: 'count(successful canonical outcomes)',
-        null_when: 'successful_runs = 0'
+        formula: 'successful_estimated_cost / successful_runs_with_known_cost',
+        numerator: 'sum(estimated_cost for canonical outcome_label = success and estimated_cost_known = 1)',
+        denominator: 'count(successful canonical outcomes with estimated_cost_known = 1)',
+        null_when: 'successful_runs_with_known_cost = 0'
       }
     }
   });
@@ -2674,7 +2784,7 @@ app.get('/api/reliability/trends/insights', (req, res) => {
 
     function bucketHasEnoughSample(bucketRow, metricKey) {
       if (!bucketRow) return false;
-      if (metricKey === 'cost_per_success') return (bucketRow.success_count || 0) >= KPI_MIN_SUCCESS_SAMPLE_FOR_COST;
+      if (metricKey === 'cost_per_success') return (bucketRow.successful_runs_with_known_cost || 0) >= KPI_MIN_SUCCESS_SAMPLE_FOR_COST;
       return (bucketRow.with_canonical_outcome || 0) >= KPI_MIN_CANONICAL_SAMPLE;
     }
 
@@ -2727,7 +2837,7 @@ app.get('/api/reliability/trends/insights', (req, res) => {
     const insufficientEvidenceMap = new Map();
     for (const d of deltas.filter(item => item.insufficient_sample)) {
       const reason = d.metric === 'cost_per_success'
-        ? `successful_runs < ${KPI_MIN_SUCCESS_SAMPLE_FOR_COST}`
+        ? `successful_runs_with_known_cost < ${KPI_MIN_SUCCESS_SAMPLE_FOR_COST}`
         : `with_canonical_outcome < ${KPI_MIN_CANONICAL_SAMPLE}`;
       const key = `${d.metric}::${reason}`;
       const existing = insufficientEvidenceMap.get(key);
@@ -2820,11 +2930,40 @@ app.get('/api/task-runs/:id', (req, res) => {
 
 app.get('/api/task-runs/:id/after-action-report', (req, res) => {
   try {
-    const report = buildTaskRunAfterActionReport(req.params.id);
+    const taskRunId = req.params.id;
+    const taskRun = getTaskRunById(taskRunId);
+    if (!taskRun) {
+      return res.status(404).json({ error: 'Task run not found' });
+    }
+
+    const reportContext = {
+      canonicalOutcomeId: getTaskRunCanonicalOutcomeId(taskRunId),
+      taskRunUpdatedAt: taskRun.updated_at || null
+    };
+
+    const stored = getStoredTaskRunAfterActionReport(taskRunId);
+    if (isStoredTaskRunReportFresh(stored, reportContext)) {
+      return res.json({
+        ...stored.report,
+        cache: {
+          source: 'db',
+          fresh: true
+        }
+      });
+    }
+
+    const report = buildTaskRunAfterActionReport(taskRunId);
     if (!report) {
       return res.status(404).json({ error: 'Task run not found' });
     }
-    res.json(report);
+    upsertStoredTaskRunAfterActionReport(taskRunId, report, reportContext);
+    res.json({
+      ...report,
+      cache: {
+        source: 'generated',
+        fresh: false
+      }
+    });
   } catch (error) {
     console.error('Task run after-action report error:', error);
     res.status(500).json({ error: error.message });
