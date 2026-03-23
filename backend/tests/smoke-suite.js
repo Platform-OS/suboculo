@@ -229,6 +229,11 @@ async function run() {
     assert.equal(autoCanonical.outcome_label, 'success', 'auto label should mark run as success');
     assert.equal(autoCanonical.evaluator, 'auto-labeler/v1', 'auto label should include evaluator provenance');
 
+    result = await request(`/task-runs/${smokeTaskRunId}/after-action-report?stored=true`);
+    assert.equal(result.response.status, 200, 'stored-only after-action report read should succeed');
+    assert.equal(result.body?.missing, true, 'stored-only read should not auto-generate missing reports');
+    assert.equal(result.body?.cache?.source, 'none', 'stored-only miss should report none cache source');
+
     result = await request(`/task-runs/${smokeTaskRunId}/after-action-report`);
     assert.equal(result.response.status, 200, 'after-action report should be available for task run');
     assert.equal(result.body.status, 'insufficient_evidence', 'report should flag missing canonical outcome');
@@ -241,6 +246,11 @@ async function run() {
     assert.equal(result.response.status, 200, 'cached after-action report should be available');
     assert.equal(result.body.cache?.source, 'db', 'second report request should come from persisted cache');
     assert.equal(result.body.generated_at, initialAarGeneratedAt, 'cached report should preserve generated_at');
+
+    result = await request(`/task-runs/${smokeTaskRunId}/after-action-report?stored=true`);
+    assert.equal(result.response.status, 200, 'stored-only after-action report read should return persisted report');
+    assert.equal(result.body.cache?.source, 'db', 'stored-only read should use persisted cache when report exists');
+    assert.ok(result.body.status, 'stored-only read should return report payload');
 
     result = await request('/task-runs/999999/after-action-report');
     assert.equal(result.response.status, 404, 'after-action report should return 404 for unknown task run');
@@ -411,6 +421,19 @@ async function run() {
     // Re-derive should not overwrite existing human canonical outcomes
     result = await request('/task-runs/derive', { method: 'POST' });
     assert.equal(result.response.status, 200, 'task run re-derivation should succeed');
+
+    result = await request(`/task-runs/${smokeTaskRunId}/after-action-report?stored=true`);
+    assert.equal(result.response.status, 200, 'stored-only after-action report should return stale persisted report after re-derive');
+    assert.equal(result.body.cache?.source, 'db', 'stale stored report should still come from db cache');
+    assert.equal(result.body.cache?.fresh, false, 'stale stored report should be marked not fresh');
+    assert.equal(result.body.cache?.stale, true, 'stale stored report should be explicitly flagged');
+    assert.equal(result.body.generated_at, labeledAarGeneratedAt, 'stale stored report should preserve previous generated_at');
+
+    result = await request(`/task-runs/${smokeTaskRunId}/after-action-report`);
+    assert.equal(result.response.status, 200, 'normal after-action report read should regenerate stale report');
+    assert.equal(result.body.cache?.source, 'generated', 'stale report should regenerate on normal endpoint');
+    assert.notEqual(result.body.generated_at, labeledAarGeneratedAt, 'regenerated report should have a new generated_at after stale refresh');
+
     result = await request(`/task-runs/${smokeTaskRunId}`);
     assert.equal(result.response.status, 200, 'active run detail should succeed after re-derive');
     const canonicalAfterRebuild = (result.body.outcomes || []).find((o) => o.is_canonical);
