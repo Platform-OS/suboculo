@@ -32,11 +32,11 @@ export async function viewTaskRunAction({
     setTaskRunAfterActionReport(cached);
     if (!cached) {
       try {
-        const persisted = await api.getTaskRunAfterActionReport(id);
+        const persisted = await api.getTaskRunAfterActionReport(id, { storedOnly: true });
         setTaskRunAfterActionReport(persisted);
         setTaskRunAarCache(id, persisted);
       } catch (reportErr) {
-        console.warn("Failed to load persisted after-action report:", reportErr);
+        // No persisted report yet is expected until user generates or outcome-save regenerates it.
         setTaskRunAfterActionReport(null);
       }
     }

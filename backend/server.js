@@ -3090,13 +3090,35 @@ app.get('/api/task-runs/:id/after-action-report', (req, res) => {
       taskRunUpdatedAt: taskRun.updated_at || null
     };
 
+    const storedOnly = String(req.query?.stored || '').toLowerCase() === 'true';
     const stored = getStoredTaskRunAfterActionReport(taskRunId);
-    if (isStoredTaskRunReportFresh(stored, reportContext)) {
+    const storedFresh = isStoredTaskRunReportFresh(stored, reportContext);
+    if (storedFresh) {
       return res.json({
         ...stored.report,
         cache: {
           source: 'db',
           fresh: true
+        }
+      });
+    }
+
+    if (storedOnly) {
+      if (stored) {
+        return res.json({
+          ...stored.report,
+          cache: {
+            source: 'db',
+            fresh: false,
+            stale: true
+          }
+        });
+      }
+      return res.json({
+        missing: true,
+        cache: {
+          source: 'none',
+          fresh: false
         }
       });
     }

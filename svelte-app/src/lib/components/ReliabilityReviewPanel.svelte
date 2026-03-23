@@ -1,5 +1,5 @@
 <script>
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy } from "svelte";
   import * as api from "$lib/api.js";
   import Card from "./ui/Card.svelte";
   import CardContent from "./ui/CardContent.svelte";
@@ -32,10 +32,6 @@
   let acknowledgingReview = false;
   let reviewAcknowledgeReviewer = "web-ui";
   let reviewAcknowledgeNotes = "";
-
-  onMount(async () => {
-    await loadReview();
-  });
 
   onDestroy(() => {
     clearTimeout(loadTimer);
@@ -187,6 +183,9 @@
     <div class="flex items-center justify-between gap-2">
       <div class="text-base font-semibold">Reliability Review</div>
       <div class="flex items-center gap-2">
+        {#if loading}
+          <Badge variant="outline">Updating…</Badge>
+        {/if}
         <Button variant="outline" size="sm" on:click={toggleWeeklyReviewHistory}>
           {showWeeklyReviewHistory ? "Hide last 4 weeks" : "Show last 4 weeks"}
         </Button>
@@ -199,9 +198,8 @@
       </div>
     </div>
 
-    {#if loading}
-      <div class="text-sm text-muted-foreground">Loading reliability review...</div>
-    {:else if review}
+    <div class="min-h-[300px]">
+    {#if review}
       <div class="rounded-xl border p-3 bg-muted/10 flex items-center justify-between gap-3 flex-wrap">
         <div class="text-sm">
           <span class="text-muted-foreground">Period:</span>
@@ -358,8 +356,11 @@
           {/if}
         </div>
       {/if}
+    {:else if loading}
+      <div class="text-sm text-muted-foreground min-h-[120px]">Loading reliability review...</div>
     {:else}
       <div class="text-sm text-muted-foreground">No review data in current scope.</div>
     {/if}
+    </div>
   </CardContent>
 </Card>

@@ -1,5 +1,5 @@
 <script>
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy } from "svelte";
   import * as api from "$lib/api.js";
   import Card from "./ui/Card.svelte";
   import CardContent from "./ui/CardContent.svelte";
@@ -38,10 +38,6 @@
     { value: "preset", label: "Preset window" },
     { value: "custom", label: "Custom A/B ranges" }
   ];
-
-  onMount(async () => {
-    await loadCompare();
-  });
 
   onDestroy(() => {
     clearTimeout(loadTimer);
@@ -182,6 +178,9 @@
     <div class="flex items-center justify-between gap-3 flex-wrap">
       <div class="text-base font-semibold">KPI Compare</div>
       <div class="flex items-center gap-2">
+        {#if loading}
+          <Badge variant="outline">Updating…</Badge>
+        {/if}
         <Select bind:value={compareMode} options={compareModeOptions} />
         {#if compareMode === "preset"}
           <Select bind:value={comparePreset} options={comparePresetOptions} />
@@ -219,9 +218,8 @@
       </div>
     {/if}
 
-    {#if loading}
-      <div class="text-sm text-muted-foreground">Loading KPI compare...</div>
-    {:else if compare}
+    <div class="min-h-[300px]">
+    {#if compare}
       <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div class="rounded-xl border p-3 bg-muted/10">
           <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Period A (current)</div>
@@ -365,8 +363,11 @@
           {/if}
         </div>
       </div>
+    {:else if loading}
+      <div class="text-sm text-muted-foreground min-h-[120px]">Loading KPI compare...</div>
     {:else}
       <div class="text-sm text-muted-foreground">No KPI comparison data in current scope.</div>
     {/if}
+    </div>
   </CardContent>
 </Card>

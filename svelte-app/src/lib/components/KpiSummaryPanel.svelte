@@ -55,6 +55,7 @@
       </div>
     {/if}
 
+    <div class="min-h-[220px]">
     {#if reliabilityKpisByRunner?.by_runner?.length}
       <div class="overflow-auto rounded-xl border">
         <table class="min-w-full text-sm">
@@ -103,6 +104,7 @@
     {:else}
       <div class="text-sm text-muted-foreground">No runner comparison data in current scope.</div>
     {/if}
+    </div>
   </CardContent>
 </Card>
 
@@ -114,6 +116,7 @@
         <Badge variant="outline">Updating…</Badge>
       {/if}
     </div>
+    <div class="min-h-[200px] space-y-3">
     <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
       <div class="rounded-xl border p-3 bg-muted/10">
         <div class="text-xs text-muted-foreground">Success rate</div>
@@ -157,6 +160,7 @@
         <div class="text-lg font-semibold">{formatMoney(reliabilityKpis?.cost?.total_estimated_cost)}</div>
       </div>
     </div>
+    </div>
   </CardContent>
 </Card>
 
@@ -168,6 +172,7 @@
         <Badge variant="outline">Updating…</Badge>
       {/if}
     </div>
+    <div class="min-h-[260px] space-y-3">
     <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
       <div class="rounded-xl border p-3 bg-muted/10">
         <div class="text-xs text-muted-foreground">Task runs</div>
@@ -248,6 +253,7 @@
           <div class="text-xs text-muted-foreground">No evaluations in current scope.</div>
         {/if}
       </div>
+    </div>
     </div>
   </CardContent>
 </Card>

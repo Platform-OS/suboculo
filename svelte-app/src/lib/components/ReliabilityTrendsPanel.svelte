@@ -6,6 +6,7 @@
 
   export let trendBucket = "day";
   export let trendWindowDays = "30";
+  export let loading = false;
   export let trendBucketOptions = [];
   export let trendWindowOptions = [];
   export let reliabilityTrends = null;
@@ -38,12 +39,16 @@
   <CardContent class="p-4 md:p-5 space-y-4">
     <div class="flex items-center justify-between gap-3 flex-wrap">
       <div class="text-base font-semibold">Reliability Trends</div>
-      <div class="flex gap-2">
+      <div class="flex items-center gap-2">
+        {#if loading}
+          <span class="text-xs text-muted-foreground">Updating…</span>
+        {/if}
         <Select bind:value={trendBucket} options={trendBucketOptions} />
         <Select bind:value={trendWindowDays} options={trendWindowOptions} />
       </div>
     </div>
 
+    <div class="min-h-[300px]">
     {#if reliabilityTrends?.series?.length}
       <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
         <div class="rounded-xl border p-3 space-y-2">
@@ -171,10 +176,15 @@
           {/each}
         </div>
       {/if}
+    {:else if loading}
+      <div class="text-sm text-muted-foreground min-h-[120px]">
+        Loading trend data...
+      </div>
     {:else}
       <div class="text-sm text-muted-foreground">
         No trend data in current scope.
       </div>
     {/if}
+    </div>
   </CardContent>
 </Card>

@@ -61,6 +61,7 @@
   let reliabilityKpiComparePeriodBTo = "";
   let hasHydratedStateFromUrl = false;
   let taskRunsRefreshKey = 0;
+  let lastTaskRunsRefreshStateKey = "";
   let taskRunFiltersSignal = {};
   let taskRunStatusFilter = "all";
   let taskRunRunnerFilter = "all";
@@ -130,6 +131,7 @@
   onMount(async () => {
     hydrateStateFromUrl();
     hasHydratedStateFromUrl = true;
+    lastTaskRunsRefreshStateKey = getTaskRunsRefreshStateKey();
     taskRunFiltersSignal = getTaskRunFilters();
     taskRunsRefreshKey += 1;
     await loadTaskRuns(taskRunFiltersSignal);
@@ -226,6 +228,24 @@
       failure_subtype: taskRunFailureSubtypeFilter !== "all" ? taskRunFailureSubtypeFilter : undefined,
       requires_human_intervention: taskRunHumanInterventionFilter === "all" ? undefined : taskRunHumanInterventionFilter
     };
+  }
+
+  function getTaskRunsRefreshStateKey() {
+    return JSON.stringify({
+      filters: getTaskRunFilters(),
+      compare: {
+        mode: reliabilityKpiCompareMode,
+        preset: reliabilityKpiComparePreset,
+        aFrom: reliabilityKpiComparePeriodAFrom || "",
+        aTo: reliabilityKpiComparePeriodATo || "",
+        bFrom: reliabilityKpiComparePeriodBFrom || "",
+        bTo: reliabilityKpiComparePeriodBTo || ""
+      },
+      trends: {
+        bucket: reliabilityTrendBucket,
+        windowDays: reliabilityTrendWindowDays
+      }
+    });
   }
 
   function toggleNoCanonicalFilter() {
@@ -474,25 +494,12 @@
     taskRunFailureModeFilter
   }));
 
-  $: if (hasHydratedStateFromUrl && (
-    taskRunStatusFilter ||
-    taskRunRunnerFilter ||
-    taskRunQuery !== undefined ||
-    taskRunCanonicalOutcomeFilter ||
-    taskRunFailureModeFilter ||
-    taskRunFailureSubtypeFilter ||
-    taskRunHumanInterventionFilter ||
-    taskRunNeedsLabelingOnly ||
-    reliabilityKpiComparePreset ||
-    reliabilityKpiCompareMode ||
-    reliabilityKpiComparePeriodAFrom !== undefined ||
-    reliabilityKpiComparePeriodATo !== undefined ||
-    reliabilityKpiComparePeriodBFrom !== undefined ||
-    reliabilityKpiComparePeriodBTo !== undefined ||
-    reliabilityTrendBucket ||
-    reliabilityTrendWindowDays
-  )) {
-    scheduleLoadTaskRuns();
+  $: if (hasHydratedStateFromUrl) {
+    const nextRefreshStateKey = getTaskRunsRefreshStateKey();
+    if (nextRefreshStateKey !== lastTaskRunsRefreshStateKey) {
+      lastTaskRunsRefreshStateKey = nextRefreshStateKey;
+      scheduleLoadTaskRuns();
+    }
   }
 
   $: if (hasHydratedStateFromUrl) {
@@ -557,6 +564,7 @@
         />
 
         <ReliabilityTrendsPanel
+          loading={loadingTaskRuns}
           bind:trendBucket={reliabilityTrendBucket}
           bind:trendWindowDays={reliabilityTrendWindowDays}
           trendBucketOptions={reliabilityTrendBucketOptions}
