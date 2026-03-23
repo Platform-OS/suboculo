@@ -26,6 +26,7 @@
     toggleNoCanonicalFilterState,
     toggleRequiresHumanFilterState
   } from "$lib/taskRunsFilterState.js";
+  import { fetchTaskRunsBundle, filterSelectedTaskRunIds } from "$lib/taskRunsDataLoader.js";
   import { deriveTaskRunsUiOptions } from "$lib/taskRunsOptions.js";
   import { buildTaskRunsUrl, hydrateTaskRunsStateFromUrl } from "$lib/taskRunsUrlState.js";
 
@@ -176,31 +177,14 @@
       loadingTaskRuns = true;
       const filters = preparedFilters || getTaskRunFilters();
 
-      const [result, summary, kpis, kpisByRunner, trends, trendInsights, failureModeTrends] = await Promise.all([
-        api.getTaskRuns(filters),
-        api.getTaskRunOutcomeSummary(filters),
-        api.getReliabilityKpis(filters),
-        api.getReliabilityKpisByRunner(filters),
-        api.getReliabilityTrends({
-          ...filters,
-          bucket: reliabilityTrendBucket,
-          window_days: reliabilityTrendWindowDays
-        }),
-        api.getReliabilityTrendInsights({
-          ...filters,
-          bucket: reliabilityTrendBucket,
-          window_days: reliabilityTrendWindowDays
-        }),
-        api.getReliabilityFailureModeTrends({
-          ...filters,
-          bucket: reliabilityTrendBucket,
-          window_days: reliabilityTrendWindowDays
-        })
-      ]);
+      const { result, summary, kpis, kpisByRunner, trends, trendInsights, failureModeTrends } = await fetchTaskRunsBundle({
+        api,
+        filters,
+        trendBucket: reliabilityTrendBucket,
+        trendWindowDays: reliabilityTrendWindowDays
+      });
       taskRuns = result.taskRuns;
-      selectedTaskRunIds = new Set(
-        [...selectedTaskRunIds].filter((id) => result.taskRuns.some((run) => run.id === id))
-      );
+      selectedTaskRunIds = filterSelectedTaskRunIds(result.taskRuns, selectedTaskRunIds);
       taskRunsTotal = result.total;
       onTaskRunsTotalChange(taskRunsTotal);
       taskRunOutcomeSummary = summary;
