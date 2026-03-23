@@ -306,14 +306,21 @@ export async function getTaskRun(id) {
   return response.json();
 }
 
-export async function getTaskRunAfterActionReport(id) {
-  const response = await fetch(`${API_BASE}/task-runs/${id}/after-action-report`);
+export async function getTaskRunAfterActionReport(id, options = {}) {
+  const params = new URLSearchParams();
+  if (options.storedOnly) params.set("stored", "true");
+  const query = params.toString();
+  const response = await fetch(`${API_BASE}/task-runs/${id}/after-action-report${query ? `?${query}` : ""}`);
 
   if (!response.ok) {
     throw new Error('Failed to fetch task run after-action report');
   }
 
-  return response.json();
+  const payload = await response.json();
+  if (options.storedOnly && payload?.missing) {
+    return null;
+  }
+  return payload;
 }
 
 export async function getTaskRunOutcomeSummary(filters = {}) {

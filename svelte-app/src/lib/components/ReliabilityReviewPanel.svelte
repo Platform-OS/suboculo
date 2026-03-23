@@ -1,11 +1,19 @@
 <script>
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy } from "svelte";
   import * as api from "$lib/api.js";
   import Card from "./ui/Card.svelte";
   import CardContent from "./ui/CardContent.svelte";
   import Button from "./ui/Button.svelte";
   import Input from "./ui/Input.svelte";
   import Badge from "./ui/Badge.svelte";
+  import {
+    formatTs,
+    formatPercent,
+    formatMoney,
+    formatSignedPercentDelta,
+    formatSignedNumberDelta,
+    formatPeriodRange
+  } from "$lib/formatters.js";
 
   export let filters = {};
   export let refreshKey = 0;
@@ -24,10 +32,6 @@
   let acknowledgingReview = false;
   let reviewAcknowledgeReviewer = "web-ui";
   let reviewAcknowledgeNotes = "";
-
-  onMount(async () => {
-    await loadReview();
-  });
 
   onDestroy(() => {
     clearTimeout(loadTimer);
@@ -57,44 +61,6 @@
     } finally {
       loading = false;
     }
-  }
-
-  function formatTs(ts) {
-    if (!ts) return "";
-    const d = new Date(ts);
-    if (Number.isNaN(d.getTime())) return String(ts);
-    return d.toLocaleString();
-  }
-
-  function formatPercent(value) {
-    if (value == null || Number.isNaN(value)) return "—";
-    return `${(value * 100).toFixed(1)}%`;
-  }
-
-  function formatMoney(value) {
-    if (value == null || Number.isNaN(value)) return "—";
-    return `$${Number(value).toFixed(4)}`;
-  }
-
-  function formatSignedPercentDelta(value) {
-    if (value == null || Number.isNaN(value)) return "—";
-    const pct = value * 100;
-    const sign = pct > 0 ? "+" : "";
-    return `${sign}${pct.toFixed(1)}%`;
-  }
-
-  function formatSignedNumberDelta(value, precision = 0) {
-    if (value == null || Number.isNaN(value)) return "—";
-    const sign = value > 0 ? "+" : "";
-    return `${sign}${Number(value).toFixed(precision)}`;
-  }
-
-  function formatPeriodRange(period) {
-    if (!period?.from || !period?.to) return "—";
-    const from = new Date(period.from);
-    const to = new Date(period.to);
-    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) return `${period.from} → ${period.to}`;
-    return `${from.toLocaleDateString()} → ${to.toLocaleDateString()}`;
   }
 
   function formatLabel(value) {
@@ -217,6 +183,9 @@
     <div class="flex items-center justify-between gap-2">
       <div class="text-base font-semibold">Reliability Review</div>
       <div class="flex items-center gap-2">
+        {#if loading}
+          <Badge variant="outline">Updating…</Badge>
+        {/if}
         <Button variant="outline" size="sm" on:click={toggleWeeklyReviewHistory}>
           {showWeeklyReviewHistory ? "Hide last 4 weeks" : "Show last 4 weeks"}
         </Button>
@@ -229,9 +198,8 @@
       </div>
     </div>
 
-    {#if loading}
-      <div class="text-sm text-muted-foreground">Loading reliability review...</div>
-    {:else if review}
+    <div class="min-h-[300px]">
+    {#if review}
       <div class="rounded-xl border p-3 bg-muted/10 flex items-center justify-between gap-3 flex-wrap">
         <div class="text-sm">
           <span class="text-muted-foreground">Period:</span>
@@ -388,8 +356,11 @@
           {/if}
         </div>
       {/if}
+    {:else if loading}
+      <div class="text-sm text-muted-foreground min-h-[120px]">Loading reliability review...</div>
     {:else}
       <div class="text-sm text-muted-foreground">No review data in current scope.</div>
     {/if}
+    </div>
   </CardContent>
 </Card>

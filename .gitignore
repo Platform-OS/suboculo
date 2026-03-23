@@ -1,6 +1,9 @@
 # Development docs (local planning)
 docs/
 
+# Local tmp files
+tmp/
+
 # Claude Code local storage
 .claude/
 

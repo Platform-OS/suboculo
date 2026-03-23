@@ -1,5 +1,5 @@
 <script>
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy } from "svelte";
   import * as api from "$lib/api.js";
   import Card from "./ui/Card.svelte";
   import CardContent from "./ui/CardContent.svelte";
@@ -7,6 +7,13 @@
   import Input from "./ui/Input.svelte";
   import Select from "./ui/Select.svelte";
   import Badge from "./ui/Badge.svelte";
+  import {
+    formatPercent,
+    formatMoney,
+    formatSignedPercentDelta,
+    formatSignedNumberDelta,
+    formatPeriodRange
+  } from "$lib/formatters.js";
 
   export let filters = {};
   export let refreshKey = 0;
@@ -31,10 +38,6 @@
     { value: "preset", label: "Preset window" },
     { value: "custom", label: "Custom A/B ranges" }
   ];
-
-  onMount(async () => {
-    await loadCompare();
-  });
 
   onDestroy(() => {
     clearTimeout(loadTimer);
@@ -118,37 +121,6 @@
     }
   }
 
-  function formatPercent(value) {
-    if (value == null || Number.isNaN(value)) return "—";
-    return `${(value * 100).toFixed(1)}%`;
-  }
-
-  function formatMoney(value) {
-    if (value == null || Number.isNaN(value)) return "—";
-    return `$${Number(value).toFixed(4)}`;
-  }
-
-  function formatSignedPercentDelta(value) {
-    if (value == null || Number.isNaN(value)) return "—";
-    const pct = value * 100;
-    const sign = pct > 0 ? "+" : "";
-    return `${sign}${pct.toFixed(1)}%`;
-  }
-
-  function formatSignedNumberDelta(value, precision = 0) {
-    if (value == null || Number.isNaN(value)) return "—";
-    const sign = value > 0 ? "+" : "";
-    return `${sign}${Number(value).toFixed(precision)}`;
-  }
-
-  function formatPeriodRange(period) {
-    if (!period?.from || !period?.to) return "—";
-    const from = new Date(period.from);
-    const to = new Date(period.to);
-    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) return `${period.from} → ${period.to}`;
-    return `${from.toLocaleDateString()} → ${to.toLocaleDateString()}`;
-  }
-
   function getDeltaTrend(metricKey, delta) {
     if (delta == null || Number.isNaN(delta)) return { label: "Insufficient data", tone: "muted" };
     const direction = delta > 0 ? "up" : delta < 0 ? "down" : "flat";
@@ -206,6 +178,9 @@
     <div class="flex items-center justify-between gap-3 flex-wrap">
       <div class="text-base font-semibold">KPI Compare</div>
       <div class="flex items-center gap-2">
+        {#if loading}
+          <Badge variant="outline">Updating…</Badge>
+        {/if}
         <Select bind:value={compareMode} options={compareModeOptions} />
         {#if compareMode === "preset"}
           <Select bind:value={comparePreset} options={comparePresetOptions} />
@@ -243,9 +218,8 @@
       </div>
     {/if}
 
-    {#if loading}
-      <div class="text-sm text-muted-foreground">Loading KPI compare...</div>
-    {:else if compare}
+    <div class="min-h-[300px]">
+    {#if compare}
       <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div class="rounded-xl border p-3 bg-muted/10">
           <div class="text-xs font-medium text-muted-foreground uppercase tracking-wide">Period A (current)</div>
@@ -389,8 +363,11 @@
           {/if}
         </div>
       </div>
+    {:else if loading}
+      <div class="text-sm text-muted-foreground min-h-[120px]">Loading KPI compare...</div>
     {:else}
       <div class="text-sm text-muted-foreground">No KPI comparison data in current scope.</div>
     {/if}
+    </div>
   </CardContent>
 </Card>
