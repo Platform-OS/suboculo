@@ -47,6 +47,8 @@ while [ $# -gt 0 ]; do
 done
 
 TARGET_DIR="${TARGET_DIR:-.}"
+TARGET_ABS_DIR="$(cd "$TARGET_DIR" && pwd)"
+SUBOCULO_DB_PATH="$TARGET_ABS_DIR/.suboculo/events.db"
 
 echo "📊 Installing Suboculo for OpenCode to: $TARGET_DIR (port: $PORT)"
 echo ""
@@ -64,12 +66,12 @@ require_cmd jq
 require_cmd mktemp
 
 # Create .suboculo directory for shared backend/database
-SUBOCULO_DIR="$TARGET_DIR/.suboculo"
+SUBOCULO_DIR="$TARGET_ABS_DIR/.suboculo"
 mkdir -p "$SUBOCULO_DIR/backend"
 mkdir -p "$SUBOCULO_DIR/frontend"
 
 # Create .opencode directory for plugin
-OPENCODE_DIR="$TARGET_DIR/.opencode"
+OPENCODE_DIR="$TARGET_ABS_DIR/.opencode"
 mkdir -p "$OPENCODE_DIR/plugins"
 
 # Build frontend
@@ -81,7 +83,7 @@ if ! npm run build >/dev/null 2>&1; then
   npm run build
   exit 1
 fi
-cd "$TARGET_DIR"
+cd "$TARGET_ABS_DIR"
 
 # Copy backend files (shared with Claude Code integration)
 echo "📋 Copying backend files..."
@@ -110,10 +112,10 @@ echo "📦 Installing backend dependencies..."
 cd "$SUBOCULO_DIR"
 npm install --silent
 
-cd "$TARGET_DIR"
+cd "$TARGET_ABS_DIR"
 
 # Create or merge opencode.json
-OPENCODE_CONFIG="$TARGET_DIR/opencode.json"
+OPENCODE_CONFIG="$TARGET_ABS_DIR/opencode.json"
 SUBOCULO_MCP="{\"type\":\"local\",\"command\":[\"node\",\"./.suboculo/backend/mcp-analytics-server.mjs\"],\"environment\":{\"SUBOCULO_DB_PATH\":\".suboculo/events.db\",\"SUBOCULO_PORT\":\"$PORT\"},\"enabled\":true}"
 
 if [ -f "$OPENCODE_CONFIG" ] && [ -s "$OPENCODE_CONFIG" ]; then
@@ -127,10 +129,10 @@ else
 fi
 
 # Create .gitignore entries
-if [ -f "$TARGET_DIR/.gitignore" ]; then
-  if ! grep -q "^\.suboculo/$" "$TARGET_DIR/.gitignore" 2>/dev/null; then
+if [ -f "$TARGET_ABS_DIR/.gitignore" ]; then
+  if ! grep -q "^\.suboculo/$" "$TARGET_ABS_DIR/.gitignore" 2>/dev/null; then
     echo "📝 Adding .suboculo/ to .gitignore..."
-    echo ".suboculo/" >> "$TARGET_DIR/.gitignore"
+    echo ".suboculo/" >> "$TARGET_ABS_DIR/.gitignore"
   fi
 fi
 
@@ -142,10 +144,10 @@ echo ""
 echo "1. Restart OpenCode"
 echo "2. Run any tool to generate events"
 echo "3. Query via MCP: 'What tools have I used?'"
-echo "4. Start web UI: cd $TARGET_DIR && node ./.suboculo/backend/server.js"
+echo "4. Start web UI: cd $TARGET_ABS_DIR && node ./.suboculo/backend/server.js"
 echo "   Then open http://localhost:$PORT"
 echo ""
-echo "📊 Data stored in: .suboculo/events.db"
+echo "📊 Data stored in: $SUBOCULO_DB_PATH"
 echo "🔧 MCP server configured in: opencode.json"
 echo "🌐 Web UI available at: .suboculo/backend/server.js"
 echo "🔌 Plugin installed at: .opencode/plugins/suboculo.js"

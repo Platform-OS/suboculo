@@ -48,6 +48,8 @@ while [ $# -gt 0 ]; do
 done
 
 TARGET_DIR="${TARGET_DIR:-.}"
+TARGET_ABS_DIR="$(cd "$TARGET_DIR" && pwd)"
+SUBOCULO_DB_PATH="$TARGET_ABS_DIR/.suboculo/events.db"
 
 echo "📊 Installing Suboculo to: $TARGET_DIR (port: $PORT)"
 echo ""
@@ -65,7 +67,7 @@ require_cmd jq
 require_cmd mktemp
 
 # Create .suboculo directory with mirrored structure
-SUBOCULO_DIR="$TARGET_DIR/.suboculo"
+SUBOCULO_DIR="$TARGET_ABS_DIR/.suboculo"
 mkdir -p "$SUBOCULO_DIR/integrations/claude-code"
 mkdir -p "$SUBOCULO_DIR/backend"
 mkdir -p "$SUBOCULO_DIR/frontend"
@@ -79,7 +81,7 @@ if ! npm run build >/dev/null 2>&1; then
   npm run build
   exit 1
 fi
-cd "$TARGET_DIR"
+cd "$TARGET_ABS_DIR"
 
 # Copy files from monorepo structure
 echo "📋 Copying files..."
@@ -102,7 +104,7 @@ cd "$SUBOCULO_DIR"
 npm install --silent
 
 # Create or merge .mcp.json
-MCP_FILE="$TARGET_DIR/.mcp.json"
+MCP_FILE="$TARGET_ABS_DIR/.mcp.json"
 SUBOCULO_MCP="{\"command\":\"node\",\"args\":[\"./.suboculo/backend/mcp-analytics-server.mjs\"],\"env\":{\"SUBOCULO_DB_PATH\":\".suboculo/events.db\",\"SUBOCULO_PORT\":\"$PORT\"}}"
 
 if [ -f "$MCP_FILE" ] && [ -s "$MCP_FILE" ]; then
@@ -116,16 +118,16 @@ else
 fi
 
 # Create .gitignore entry
-if [ -f "$TARGET_DIR/.gitignore" ]; then
-  if ! grep -q "^\.suboculo/$" "$TARGET_DIR/.gitignore" 2>/dev/null; then
+if [ -f "$TARGET_ABS_DIR/.gitignore" ]; then
+  if ! grep -q "^\.suboculo/$" "$TARGET_ABS_DIR/.gitignore" 2>/dev/null; then
     echo "📝 Adding .suboculo/ to .gitignore..."
-    echo ".suboculo/" >> "$TARGET_DIR/.gitignore"
+    echo ".suboculo/" >> "$TARGET_ABS_DIR/.gitignore"
   fi
 fi
 
 # Configure hooks
 echo "🔗 Configuring hooks..."
-CLAUDE_DIR="$TARGET_DIR/.claude"
+CLAUDE_DIR="$TARGET_ABS_DIR/.claude"
 SETTINGS_FILE="$CLAUDE_DIR/settings.local.json"
 
 mkdir -p "$CLAUDE_DIR"
@@ -185,10 +187,10 @@ echo ""
 echo "1. Restart Claude Code"
 echo "2. Run any tool to generate events"
 echo "3. Query via MCP: 'What tools have I used?'"
-echo "4. Start web UI: cd $TARGET_DIR && node ./.suboculo/backend/server.js"
+echo "4. Start web UI: cd $TARGET_ABS_DIR && node ./.suboculo/backend/server.js"
 echo "   Then open http://localhost:$PORT"
 echo ""
-echo "📊 Data stored in: .suboculo/events.db"
+echo "📊 Data stored in: $SUBOCULO_DB_PATH"
 echo "🔧 MCP server configured and ready"
 echo "🌐 Web UI available at: .suboculo/backend/server.js"
 echo ""

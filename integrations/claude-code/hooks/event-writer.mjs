@@ -4,24 +4,34 @@
  * Suboculo Event Writer
  *
  * Standalone script that reads CEP events from argv and writes them
- * to a local SQLite database at {CWD}/.suboculo/events.db
+ * to a local SQLite database.
  *
  * Usage: echo '{"ts":"...","event":"..."}' | node writer.mjs
  */
 
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { dirname, isAbsolute, resolve } from 'path';
 import { mkdirSync, existsSync, openSync, readSync, closeSync, statSync } from 'fs';
 import { execFileSync } from 'child_process';
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
 
-// Database path: .suboculo/events.db in current working directory
-const CWD = process.cwd();
-const DB_DIR = join(CWD, '.suboculo');
-const DB_PATH = join(DB_DIR, 'events.db');
+function resolveDbPath() {
+  const configured = process.env.SUBOCULO_DB_PATH;
+  if (configured && configured.trim()) {
+    return isAbsolute(configured) ? configured : resolve(process.cwd(), configured);
+  }
+
+  // Preferred fallback: relative to installed hook location
+  // <project>/.suboculo/integrations/claude-code/event-writer.mjs
+  const here = dirname(fileURLToPath(import.meta.url));
+  return resolve(here, '..', '..', 'events.db');
+}
+
+const DB_PATH = resolveDbPath();
+const DB_DIR = dirname(DB_PATH);
 
 // Ensure .suboculo directory exists
 if (!existsSync(DB_DIR)) {

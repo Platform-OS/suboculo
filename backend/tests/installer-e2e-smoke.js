@@ -99,6 +99,11 @@ async function run() {
   assert.ok(mcpJson.mcpServers?.existing, 'installer should preserve existing mcp server');
   assert.ok(mcpJson.mcpServers?.suboculo, 'installer should add suboculo mcp server');
   assert.equal(mcpJson.mcpServers.suboculo.env.SUBOCULO_PORT, String(INSTALL_PORT), 'installer should configure custom port in mcp env');
+  assert.equal(
+    mcpJson.mcpServers.suboculo.env.SUBOCULO_DB_PATH,
+    '.suboculo/events.db',
+    'installer should configure relative SUBOCULO_DB_PATH in mcp env for sandbox compatibility'
+  );
 
   // Validate hooks merge
   const settings = JSON.parse(fs.readFileSync(path.join(tmpProject, '.claude', 'settings.local.json'), 'utf8'));

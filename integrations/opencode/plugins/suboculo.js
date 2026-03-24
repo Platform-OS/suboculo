@@ -10,11 +10,30 @@
  */
 
 import { Database } from 'bun:sqlite';
-import { join } from 'path';
+import { dirname, isAbsolute, join, resolve } from 'path';
 import { mkdirSync, existsSync, appendFileSync } from 'fs';
 
 export const SuboculoPlugin = async ({ project, client, directory, worktree }) => {
-  const LOG_FILE = join(directory, '.suboculo', 'plugin-debug.log');
+  const fallbackRootDir = (() => {
+    try {
+      const pluginPath = new URL(import.meta.url).pathname;
+      return resolve(dirname(pluginPath), '..', '..');
+    } catch {
+      return directory;
+    }
+  })();
+
+  function resolveDbPath() {
+    const configured = process.env.SUBOCULO_DB_PATH;
+    if (configured && configured.trim()) {
+      return isAbsolute(configured) ? configured : resolve(fallbackRootDir, configured);
+    }
+    return join(fallbackRootDir, '.suboculo', 'events.db');
+  }
+
+  const DB_PATH = resolveDbPath();
+  const DB_DIR = dirname(DB_PATH);
+  const LOG_FILE = join(DB_DIR, 'plugin-debug.log');
 
   function debugLog(message, data = null) {
     try {
@@ -28,10 +47,6 @@ export const SuboculoPlugin = async ({ project, client, directory, worktree }) =
       // Ignore logging errors
     }
   }
-
-  // Database setup
-  const DB_DIR = join(directory, '.suboculo');
-  const DB_PATH = join(DB_DIR, 'events.db');
 
   // Ensure .suboculo directory exists
   if (!existsSync(DB_DIR)) {
