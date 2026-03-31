@@ -5,45 +5,16 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
+const {
+  requestJson,
+  waitForServer
+} = require('./helpers/server-smoke');
 
 const PORT = 3221;
 const baseUrl = `http://127.0.0.1:${PORT}/api`;
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function waitForServer(server, getOutput, timeoutMs = 10000) {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    if (server.exitCode !== null) {
-      throw new Error(`Server exited before startup (code ${server.exitCode})\n${getOutput()}`);
-    }
-    try {
-      const res = await fetch(`${baseUrl}/stats`);
-      if (res.ok) return;
-    } catch {
-      // retry
-    }
-    await sleep(200);
-  }
-  throw new Error('Server did not start in time');
-}
-
-async function request(pathname, options = {}) {
-  const response = await fetch(`${baseUrl}${pathname}`, options);
-  const text = await response.text();
-  let body = null;
-  try {
-    body = text ? JSON.parse(text) : null;
-  } catch {
-    body = text;
-  }
-  return { response, body };
-}
-
 async function ingestEvents(events) {
-  const result = await request('/ingest/batch', {
+  const result = await requestJson(baseUrl, '/ingest/batch', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(events)
@@ -83,7 +54,7 @@ async function run() {
   });
 
   try {
-    await waitForServer(server, () => `stdout:\n${stdout}\nstderr:\n${stderr}`);
+    await waitForServer(baseUrl, server, () => `stdout:\n${stdout}\nstderr:\n${stderr}`);
 
     await ingestEvents([
       {
@@ -221,11 +192,11 @@ async function run() {
       }
     ]);
 
-    let result = await request('/task-runs/derive', { method: 'POST' });
+    let result = await requestJson(baseUrl, '/task-runs/derive', { method: 'POST' });
     assert.equal(result.response.status, 200, 'task run derivation should succeed');
     assert.equal(result.body.derived, 2, 'task run derivation should produce two attempts');
 
-    result = await request('/task-runs?pageSize=10&runner=reliability-smoke');
+    result = await requestJson(baseUrl, '/task-runs?pageSize=10&runner=reliability-smoke');
     assert.equal(result.response.status, 200, 'task runs listing should succeed');
     assert.equal(result.body.total, 2, 'task runs should be split into two attempts');
     const completedRun = result.body.taskRuns.find((row) => row.status === 'completed');
@@ -235,13 +206,13 @@ async function run() {
     assert.equal(completedRun.model, 'reliability-model', 'task run should normalize model version suffix');
     assert.equal(activeRun.retry_count, 1, 'second attempt should record retry pressure');
 
-    result = await request(`/task-runs/${completedRun.id}`);
+    result = await requestJson(baseUrl, `/task-runs/${completedRun.id}`);
     assert.equal(result.response.status, 200, 'completed task run detail should succeed');
     const autoCanonical = result.body.outcomes.find((row) => row.is_canonical);
     assert.ok(autoCanonical, 'completed run should receive auto canonical outcome');
     assert.equal(autoCanonical.outcome_label, 'success', 'completed run should auto-label as success');
 
-    result = await request(`/task-runs/${activeRun.id}/outcomes`, {
+    result = await requestJson(baseUrl, `/task-runs/${activeRun.id}/outcomes`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -255,33 +226,33 @@ async function run() {
     });
     assert.equal(result.response.status, 200, 'manual canonical outcome should succeed');
 
-    result = await request(`/task-runs/${activeRun.id}/after-action-report`);
+    result = await requestJson(baseUrl, `/task-runs/${activeRun.id}/after-action-report`);
     assert.equal(result.response.status, 200, 'after-action report should succeed');
     assert.equal(result.body.status, 'ready', 'labeled task run report should be ready');
     assert.equal(result.body.canonical_outcome?.failure_mode, 'execution_failure', 'report should surface failure mode');
     assert.equal(result.body.cache?.source, 'generated', 'first report read should generate report');
 
-    result = await request('/reliability/kpis?runner=reliability-smoke&source=derived_attempt');
+    result = await requestJson(baseUrl, '/reliability/kpis?runner=reliability-smoke&source=derived_attempt');
     assert.equal(result.response.status, 200, 'reliability KPI endpoint should succeed');
     assert.equal(result.body.counts.task_runs, 2, 'KPI should include both attempts');
     assert.equal(result.body.counts.with_canonical_outcome, 2, 'KPI should include canonical outcomes for both attempts');
     assert.equal(result.body.rates.success_rate, 0.5, 'KPI should compute success rate across two attempts');
     assert.equal(result.body.rates.retry_rate, 0.5, 'KPI should compute retry rate from one retrying run');
 
-    result = await request('/reliability/review?runner=reliability-smoke&source=derived_attempt&bucket=day&window_days=7');
+    result = await requestJson(baseUrl, '/reliability/review?runner=reliability-smoke&source=derived_attempt&bucket=day&window_days=7');
     assert.equal(result.response.status, 200, 'reliability review endpoint should succeed');
     assert.ok(Array.isArray(result.body.anomalies), 'review should expose anomalies');
     assert.ok(Array.isArray(result.body.top_failing_runs), 'review should expose top failing runs');
     assert.ok(typeof result.body.markdown === 'string' && result.body.markdown.includes('Reliability Review'), 'review should include markdown');
 
-    result = await request('/reliability/trends?runner=reliability-smoke&source=derived_attempt&bucket=day&window_days=7');
+    result = await requestJson(baseUrl, '/reliability/trends?runner=reliability-smoke&source=derived_attempt&bucket=day&window_days=7');
     assert.equal(result.response.status, 200, 'reliability trends endpoint should succeed');
     assert.ok(Array.isArray(result.body.series), 'trends should return a series');
     assert.equal(result.body.series.length, 2, 'trend series should expose two daily buckets');
     assert.ok(result.body.series.some((row) => row.success_count === 1), 'trend data should include success bucket');
     assert.ok(result.body.series.some((row) => row.failure_count === 1), 'trend data should include failure bucket');
 
-    result = await request('/reliability/trends/failure-modes?runner=reliability-smoke&source=derived_attempt&bucket=day&window_days=7');
+    result = await requestJson(baseUrl, '/reliability/trends/failure-modes?runner=reliability-smoke&source=derived_attempt&bucket=day&window_days=7');
     assert.equal(result.response.status, 200, 'failure mode trends endpoint should succeed');
     assert.ok(
       result.body.series.some((row) => Array.isArray(row.by_mode) && row.by_mode.some((modeRow) => modeRow.failure_mode === 'execution_failure')),

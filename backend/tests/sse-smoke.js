@@ -4,71 +4,30 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawn } = require('child_process');
+const { sleep, startInProcessServer, waitForServer } = require('./helpers/server-smoke');
 
-const PORT = 3220;
+const PORT = 3222;
 const baseUrl = `http://127.0.0.1:${PORT}/api`;
 
-function resolveNodeBinary() {
-  if (process.env.SUBOCULO_NODE_BINARY) return process.env.SUBOCULO_NODE_BINARY;
-  const candidates = [
-    path.join(os.homedir(), '.config', 'nvm', 'versions', 'node', 'v20.20.0', 'bin', 'node'),
-    process.execPath
-  ];
-  for (const candidate of candidates) {
-    if (candidate && fs.existsSync(candidate)) return candidate;
-  }
-  return process.execPath;
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function waitForServer(server, getOutput, timeoutMs = 10000) {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    if (server.exitCode !== null) {
-      const out = getOutput();
-      throw new Error(`Server exited before startup (code ${server.exitCode})\n${out}`);
-    }
-    try {
-      const res = await fetch(`${baseUrl}/stats`);
-      if (res.ok) return;
-    } catch {
-      // retry
-    }
-    await sleep(200);
-  }
-  throw new Error('Server did not start in time');
-}
-
 async function run() {
-  const nodeBinary = resolveNodeBinary();
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'suboculo-sse-smoke-'));
   const dbPath = path.join(tmpDir, 'events.db');
-  const server = spawn(nodeBinary, ['server.js'], {
-    cwd: path.join(__dirname, '..'),
-    env: {
-      ...process.env,
-      SUBOCULO_PORT: String(PORT),
-      SUBOCULO_DB_PATH: dbPath,
-      SUBOCULO_LOG_LEVEL: 'warn'
-    },
-    stdio: ['ignore', 'pipe', 'pipe']
-  });
-
-  let stderr = '';
-  let stdout = '';
-  server.stdout.on('data', (chunk) => {
-    stdout += chunk.toString();
-  });
-  server.stderr.on('data', (chunk) => {
-    stderr += chunk.toString();
-  });
+  const thresholdsPath = path.join(tmpDir, 'thresholds.json');
+  fs.writeFileSync(thresholdsPath, JSON.stringify({
+    retry_rate: { max: 0.5, severity: 'medium' }
+  }, null, 2));
 
   try {
-    await waitForServer(server, () => `stdout:\n${stdout}\nstderr:\n${stderr}`);
+    startInProcessServer({
+      backendDir: path.join(__dirname, '..'),
+      env: {
+        SUBOCULO_PORT: PORT,
+        SUBOCULO_DB_PATH: dbPath,
+        SUBOCULO_THRESHOLDS_PATH: thresholdsPath,
+        SUBOCULO_LOG_LEVEL: 'warn'
+      }
+    });
+    await waitForServer(baseUrl, null, null);
 
     const streamResponse = await fetch(`${baseUrl}/events/stream`);
     assert.equal(streamResponse.status, 200, 'SSE endpoint should return 200');
@@ -129,16 +88,11 @@ async function run() {
 
     console.log('SSE smoke passed');
   } finally {
-    server.kill('SIGTERM');
-    await sleep(100);
-    if (!server.killed) server.kill('SIGKILL');
-    if (stdout.trim()) {
-      process.stdout.write(stdout);
-    }
-    if (stderr.trim()) {
-      process.stderr.write(stderr);
-    }
+    await sleep(50);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
+
+  process.exit(0);
 }
 
 run().catch((error) => {
