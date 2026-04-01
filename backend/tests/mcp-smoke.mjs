@@ -4,56 +4,14 @@ import assert from 'assert';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import serverSmokeHelpers from './helpers/server-smoke.js';
 
 const PORT = 3221;
 const baseUrl = `http://127.0.0.1:${PORT}/api`;
-
-function resolveNodeBinary() {
-  if (process.env.SUBOCULO_NODE_BINARY) return process.env.SUBOCULO_NODE_BINARY;
-  const candidates = [
-    path.join(os.homedir(), '.config', 'nvm', 'versions', 'node', 'v20.20.0', 'bin', 'node'),
-    process.execPath
-  ];
-  for (const candidate of candidates) {
-    if (candidate && fs.existsSync(candidate)) return candidate;
-  }
-  return process.execPath;
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function waitForServer(server, getOutput, timeoutMs = 10000) {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    try {
-      const res = await fetch(`${baseUrl}/stats`);
-      if (res.ok) return;
-    } catch {
-      // retry
-    }
-    await sleep(200);
-  }
-  const out = getOutput();
-  throw new Error(`Server did not start in time (exitCode=${server.exitCode})\n${out}`);
-}
-
-async function request(pathname, options = {}) {
-  const response = await fetch(`${baseUrl}${pathname}`, options);
-  const text = await response.text();
-  let body = null;
-  try {
-    body = text ? JSON.parse(text) : null;
-  } catch {
-    body = text;
-  }
-  return { response, body };
-}
+const { requestJson, sleep, startInProcessServer, waitForServer } = serverSmokeHelpers;
 
 function assertCallResult(callResult, label) {
   assert.ok(callResult, `${label}: missing MCP tool result`);
@@ -92,35 +50,39 @@ function assertCallFailureText(callResult, label, expectedFragment) {
   }
 }
 
+async function assertValidationRejected(invocation, label, pattern) {
+  try {
+    const result = await invocation;
+    if (result?.isError === true) {
+      const text = getCallText(result) || JSON.stringify(result);
+      assert.ok(pattern.test(text), `${label}: unexpected validation payload: ${text}`);
+      return;
+    }
+    assert.fail(`${label}: expected validation rejection`);
+  } catch (error) {
+    const message = error?.message || String(error);
+    assert.ok(pattern.test(message), `${label}: unexpected validation error: ${message}`);
+  }
+}
+
 async function run() {
-  const nodeBinary = resolveNodeBinary();
+  const nodeBinary = process.execPath;
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'suboculo-mcp-smoke-'));
   const dbPath = path.join(tmpDir, 'events.db');
   const __filename = fileURLToPath(import.meta.url);
   const backendDir = path.join(path.dirname(__filename), '..');
-  const server = spawn(nodeBinary, ['server.js'], {
-    cwd: backendDir,
-    env: {
-      ...process.env,
-      SUBOCULO_PORT: String(PORT),
-      SUBOCULO_DB_PATH: dbPath,
-      SUBOCULO_LOG_LEVEL: 'warn'
-    },
-    stdio: ['ignore', 'pipe', 'pipe']
-  });
-
-  let stderr = '';
-  let stdout = '';
-  server.stdout.on('data', (chunk) => {
-    stdout += chunk.toString();
-  });
-  server.stderr.on('data', (chunk) => {
-    stderr += chunk.toString();
-  });
 
   let transport;
   try {
-    await waitForServer(server, () => `stdout:\n${stdout}\nstderr:\n${stderr}`);
+    startInProcessServer({
+      backendDir,
+      env: {
+        SUBOCULO_PORT: PORT,
+        SUBOCULO_DB_PATH: dbPath,
+        SUBOCULO_LOG_LEVEL: 'warn'
+      }
+    });
+    await waitForServer(baseUrl, null, null);
 
     const events = [
       {
@@ -154,17 +116,17 @@ async function run() {
         data: { reason: 'completed' }
       }
     ];
-    const ingest = await request('/ingest/batch', {
+    const ingest = await requestJson(baseUrl, '/ingest/batch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(events)
     });
     assert.equal(ingest.response.status, 200, 'batch ingest should succeed');
 
-    const derive = await request('/task-runs/derive', { method: 'POST' });
+    const derive = await requestJson(baseUrl, '/task-runs/derive', { method: 'POST' });
     assert.equal(derive.response.status, 200, 'task run derive should succeed');
 
-    const listRuns = await request('/task-runs?runner=mcp-smoke&pageSize=5');
+    const listRuns = await requestJson(baseUrl, '/task-runs?runner=mcp-smoke&pageSize=5');
     assert.equal(listRuns.response.status, 200, 'task runs fetch should succeed');
     assert.ok(listRuns.body.taskRuns.length >= 1, 'should have at least one mcp-smoke task run');
     const taskRunId = listRuns.body.taskRuns[0].id;
@@ -301,52 +263,39 @@ async function run() {
         }
       }),
       'suboculo_record_task_run_outcome (invalid payload)',
-      'requires failure_mode'
+      'failure_mode is required'
     );
 
     // Negative path: MCP schema-level validation rejection
-    let invalidArgsRejected = false;
-    try {
-      await client.callTool({
+    await assertValidationRejected(
+      client.callTool({
         name: 'suboculo_list_sessions',
         arguments: { limit: 999 } // > max(50)
-      });
-    } catch (error) {
-      invalidArgsRejected = true;
-      const message = error?.message || String(error);
-      assert.ok(/limit|validation|Invalid arguments/i.test(message), `unexpected validation error: ${message}`);
-    }
-    assert.equal(invalidArgsRejected, true, 'schema-invalid MCP arguments should be rejected');
+      }),
+      'schema-invalid MCP arguments',
+      /limit|validation|Invalid arguments/i
+    );
 
-    let invalidTrendsBucketRejected = false;
-    try {
-      await client.callTool({
+    await assertValidationRejected(
+      client.callTool({
         name: 'suboculo_get_reliability_trends',
         arguments: { runner: 'mcp-smoke', bucket: 'month' }
-      });
-    } catch (error) {
-      invalidTrendsBucketRejected = true;
-      const message = error?.message || String(error);
-      assert.ok(/bucket|validation|Invalid arguments/i.test(message), `unexpected validation error: ${message}`);
-    }
-    assert.equal(invalidTrendsBucketRejected, true, 'invalid trends bucket should be rejected');
+      }),
+      'invalid trends bucket',
+      /bucket|validation|Invalid arguments/i
+    );
 
-    let invalidWindowDaysRejected = false;
-    try {
-      await client.callTool({
+    await assertValidationRejected(
+      client.callTool({
         name: 'suboculo_get_failure_mode_trends',
         arguments: { runner: 'mcp-smoke', bucket: 'day', window_days: 0 }
-      });
-    } catch (error) {
-      invalidWindowDaysRejected = true;
-      const message = error?.message || String(error);
-      assert.ok(/window_days|validation|Invalid arguments/i.test(message), `unexpected validation error: ${message}`);
-    }
-    assert.equal(invalidWindowDaysRejected, true, 'invalid window_days should be rejected');
+      }),
+      'invalid window_days',
+      /window_days|validation|Invalid arguments/i
+    );
 
-    let invalidScoreRejected = false;
-    try {
-      await client.callTool({
+    await assertValidationRejected(
+      client.callTool({
         name: 'suboculo_record_task_run_outcome',
         arguments: {
           task_run_id: taskRunId,
@@ -354,15 +303,12 @@ async function run() {
           outcome_label: 'success',
           correctness_score: 1.5
         }
-      });
-    } catch (error) {
-      invalidScoreRejected = true;
-      const message = error?.message || String(error);
-      assert.ok(/correctness_score|validation|Invalid arguments/i.test(message), `unexpected validation error: ${message}`);
-    }
-    assert.equal(invalidScoreRejected, true, 'out-of-range score should be rejected');
+      }),
+      'out-of-range score',
+      /correctness_score|validation|Invalid arguments/i
+    );
 
-    const runAfterOutcome = await request(`/task-runs/${taskRunId}`);
+    const runAfterOutcome = await requestJson(baseUrl, `/task-runs/${taskRunId}`);
     assert.equal(runAfterOutcome.response.status, 200, 'task run detail should succeed');
     assert.ok((runAfterOutcome.body.outcomes || []).some((o) => o.is_canonical && o.outcome_label === 'success'), 'canonical outcome should be recorded by MCP write tool');
 
@@ -373,16 +319,11 @@ async function run() {
     if (transport) {
       await transport.close().catch(() => {});
     }
-    server.kill('SIGTERM');
     await sleep(100);
-    if (!server.killed) server.kill('SIGKILL');
-    if (stdout.trim()) {
-      process.stdout.write(stdout);
-    }
-    if (stderr.trim()) {
-      process.stderr.write(stderr);
-    }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
+
+  process.exit(0);
 }
 
 run().catch((error) => {
