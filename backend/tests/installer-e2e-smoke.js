@@ -91,6 +91,10 @@ async function run() {
   // Validate files created
   assert.ok(fs.existsSync(path.join(tmpProject, '.suboculo', 'backend', 'server.js')), 'installer should copy backend server');
   assert.ok(fs.existsSync(path.join(tmpProject, '.suboculo', 'backend', 'mcp-analytics-server.mjs')), 'installer should copy MCP server');
+  assert.ok(fs.existsSync(path.join(tmpProject, '.suboculo', 'backend', 'domain', 'taxonomy.js')), 'installer should copy backend domain modules');
+  assert.ok(fs.existsSync(path.join(tmpProject, '.suboculo', 'backend', 'domain', 'reliability.js')), 'installer should copy backend reliability domain');
+  assert.ok(fs.existsSync(path.join(tmpProject, '.suboculo', 'backend', 'routes', 'task-runs.js')), 'installer should copy backend task-run routes');
+  assert.ok(fs.existsSync(path.join(tmpProject, '.suboculo', 'backend', 'routes', 'reliability.js')), 'installer should copy backend reliability routes');
   assert.ok(fs.existsSync(path.join(tmpProject, '.suboculo', 'integrations', 'claude-code', 'event-writer.mjs')), 'installer should copy event writer');
   assert.ok(fs.existsSync(path.join(tmpProject, '.suboculo', 'frontend', 'index.html')), 'installer should copy frontend bundle');
 
