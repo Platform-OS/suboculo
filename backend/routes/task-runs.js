@@ -1,3 +1,11 @@
+const {
+  parseOrRespond,
+  taskRunListQuerySchema,
+  taskRunIdParamsSchema,
+  taskRunAfterActionReportQuerySchema,
+  taskRunOutcomesBatchBodySchema
+} = require('./validation');
+
 function registerTaskRunRoutes(app, deps) {
   const {
     taskRunsRepository,
@@ -26,14 +34,16 @@ function registerTaskRunRoutes(app, deps) {
 
   app.get('/api/task-runs', (req, res) => {
     try {
+      const parsedQuery = parseOrRespond(taskRunListQuerySchema, req.query, res);
+      if (!parsedQuery) return;
       const {
-        page = 1,
-        pageSize = 50,
-        sortKey = 'started_at',
-        sortDir = 'desc'
-      } = req.query;
+        page,
+        pageSize,
+        sortKey,
+        sortDir
+      } = parsedQuery;
 
-      const { whereSql, params: filterParams } = buildTaskRunsWhereClause(req.query, 'task_runs');
+      const { whereSql, params: filterParams } = buildTaskRunsWhereClause(parsedQuery, 'task_runs');
       const params = [...filterParams];
       const total = taskRunsRepository.countByWhere({ whereSql, params });
 
@@ -41,8 +51,8 @@ function registerTaskRunRoutes(app, deps) {
       const safeSortKey = allowedSortKeys.includes(sortKey) ? sortKey : 'started_at';
       const safeSortDir = sortDir === 'asc' ? 'ASC' : 'DESC';
 
-      const limit = parseInt(pageSize, 10);
-      const offset = (parseInt(page, 10) - 1) * limit;
+      const limit = pageSize;
+      const offset = (page - 1) * limit;
 
       const taskRuns = taskRunsRepository.listByWhere({
         whereSql,
@@ -59,7 +69,7 @@ function registerTaskRunRoutes(app, deps) {
       res.json({
         taskRuns,
         total,
-        page: parseInt(page, 10),
+        page,
         pageSize: limit,
         totalPages: Math.ceil(total / limit)
       });
@@ -99,15 +109,17 @@ function registerTaskRunRoutes(app, deps) {
 
   app.get('/api/task-runs/:id', (req, res) => {
     try {
-      const taskRun = getTaskRunById(req.params.id);
+      const params = parseOrRespond(taskRunIdParamsSchema, req.params, res);
+      if (!params) return;
+      const taskRun = getTaskRunById(params.id);
       if (!taskRun) {
         return res.status(404).json({ error: 'Task run not found' });
       }
 
-      const eventRows = taskRunsRepository.listEventDataForTaskRun(req.params.id);
+      const eventRows = taskRunsRepository.listEventDataForTaskRun(params.id);
 
       const events = eventRows.map(row => ({ __key: row.key, ...parseJSONSafe(row.data, {}) }));
-      const outcomes = outcomesRepository.listOutcomesForTaskRun(req.params.id).map(row => ({
+      const outcomes = outcomesRepository.listOutcomesForTaskRun(params.id).map(row => ({
         ...row,
         requires_human_intervention: !!row.requires_human_intervention,
         is_canonical: !!row.is_canonical,
@@ -128,7 +140,12 @@ function registerTaskRunRoutes(app, deps) {
 
   app.get('/api/task-runs/:id/after-action-report', (req, res) => {
     try {
-      const taskRunId = req.params.id;
+      const params = parseOrRespond(taskRunIdParamsSchema, req.params, res);
+      if (!params) return;
+      const query = parseOrRespond(taskRunAfterActionReportQuerySchema, req.query, res);
+      if (!query) return;
+
+      const taskRunId = params.id;
       const taskRun = getTaskRunById(taskRunId);
       if (!taskRun) {
         return res.status(404).json({ error: 'Task run not found' });
@@ -139,7 +156,7 @@ function registerTaskRunRoutes(app, deps) {
         taskRunUpdatedAt: taskRun.updated_at || null
       };
 
-      const storedOnly = String(req.query?.stored || '').toLowerCase() === 'true';
+      const storedOnly = query.stored === 'true';
       const stored = getStoredTaskRunAfterActionReport(taskRunId);
       const storedFresh = isStoredTaskRunReportFresh(stored, reportContext);
       if (storedFresh) {
@@ -192,7 +209,9 @@ function registerTaskRunRoutes(app, deps) {
 
   app.post('/api/task-runs/:id/outcomes', (req, res) => {
     try {
-      const taskRun = getTaskRunById(req.params.id);
+      const params = parseOrRespond(taskRunIdParamsSchema, req.params, res);
+      if (!params) return;
+      const taskRun = getTaskRunById(params.id);
       if (!taskRun) {
         return res.status(404).json({ error: 'Task run not found' });
       }
@@ -202,7 +221,7 @@ function registerTaskRunRoutes(app, deps) {
         return res.status(validation.status || 400).json(validation);
       }
 
-      const result = insertOutcomeForTaskRun(req.params.id, validation.value);
+      const result = insertOutcomeForTaskRun(params.id, validation.value);
       res.json({ success: true, outcomeId: result.lastInsertRowid });
     } catch (error) {
       console.error('Create outcome error:', error);
@@ -212,14 +231,9 @@ function registerTaskRunRoutes(app, deps) {
 
   app.post('/api/task-runs/outcomes/batch', (req, res) => {
     try {
-      if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
-        return res.status(400).json({ error: 'Request body must be a JSON object' });
-      }
-
-      const { items } = req.body;
-      if (!Array.isArray(items) || items.length === 0) {
-        return res.status(400).json({ error: 'items must be a non-empty array' });
-      }
+      const parsedBody = parseOrRespond(taskRunOutcomesBatchBodySchema, req.body, res);
+      if (!parsedBody) return;
+      const { items } = parsedBody;
 
       const results = [];
       let successCount = 0;
