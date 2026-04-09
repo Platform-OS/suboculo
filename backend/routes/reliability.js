@@ -1,3 +1,10 @@
+const {
+  parseOrRespond,
+  reliabilityCommonQuerySchema,
+  reviewAcknowledgeBodySchema,
+  reviewAcknowledgementsQuerySchema
+} = require('./validation');
+
 function registerReliabilityRoutes(app, deps) {
   const {
     reviewAcknowledgementsRepository,
@@ -18,7 +25,9 @@ function registerReliabilityRoutes(app, deps) {
 
   app.get('/api/reliability/kpis', (req, res) => {
     try {
-      const rows = fetchReliabilityRows(req.query);
+      const query = parseOrRespond(reliabilityCommonQuerySchema, req.query, res);
+      if (!query) return;
+      const rows = fetchReliabilityRows(query);
       const targets = getConfiguredKpiTargets();
       const kpis = summarizeReliabilityKpis(rows);
       res.json({
@@ -80,7 +89,9 @@ function registerReliabilityRoutes(app, deps) {
 
   app.get('/api/reliability/kpis/by-runner', (req, res) => {
     try {
-      const rows = fetchReliabilityRows(req.query);
+      const query = parseOrRespond(reliabilityCommonQuerySchema, req.query, res);
+      if (!query) return;
+      const rows = fetchReliabilityRows(query);
       const targets = getConfiguredKpiTargets();
 
       const byRunnerMap = new Map();
@@ -118,10 +129,12 @@ function registerReliabilityRoutes(app, deps) {
 
   app.get('/api/reliability/kpis/compare', (req, res) => {
     try {
-      const periods = getKpiComparePeriods(req.query);
+      const query = parseOrRespond(reliabilityCommonQuerySchema, req.query, res);
+      if (!query) return;
+      const periods = getKpiComparePeriods(query);
       const targets = getConfiguredKpiTargets();
 
-      const commonFilters = { ...req.query };
+      const commonFilters = { ...query };
       delete commonFilters.period_days;
       delete commonFilters.period_a_from;
       delete commonFilters.period_a_to;
@@ -169,7 +182,9 @@ function registerReliabilityRoutes(app, deps) {
 
   app.get('/api/reliability/trends', (req, res) => {
     try {
-      res.json(buildReliabilityTrendsData(req.query));
+      const query = parseOrRespond(reliabilityCommonQuerySchema, req.query, res);
+      if (!query) return;
+      res.json(buildReliabilityTrendsData(query));
     } catch (error) {
       console.error('Reliability trends error:', error);
       res.status(500).json({ error: error.message });
@@ -178,7 +193,9 @@ function registerReliabilityRoutes(app, deps) {
 
   app.get('/api/reliability/trends/insights', (req, res) => {
     try {
-      const trendData = buildReliabilityTrendsData(req.query);
+      const query = parseOrRespond(reliabilityCommonQuerySchema, req.query, res);
+      if (!query) return;
+      const trendData = buildReliabilityTrendsData(query);
       const series = trendData.series || [];
       const deltas = [];
       const thresholds = {
@@ -289,7 +306,9 @@ function registerReliabilityRoutes(app, deps) {
 
   app.get('/api/reliability/trends/failure-modes', (req, res) => {
     try {
-      res.json(buildFailureModeTrendsData(req.query));
+      const query = parseOrRespond(reliabilityCommonQuerySchema, req.query, res);
+      if (!query) return;
+      res.json(buildFailureModeTrendsData(query));
     } catch (error) {
       console.error('Reliability failure-mode trends error:', error);
       res.status(500).json({ error: error.message });
@@ -298,7 +317,9 @@ function registerReliabilityRoutes(app, deps) {
 
   app.get('/api/reliability/review', (req, res) => {
     try {
-      res.json(buildReliabilityReviewData(req.query));
+      const query = parseOrRespond(reliabilityCommonQuerySchema, req.query, res);
+      if (!query) return;
+      res.json(buildReliabilityReviewData(query));
     } catch (error) {
       console.error('Reliability review error:', error);
       res.status(500).json({ error: error.message });
@@ -307,11 +328,13 @@ function registerReliabilityRoutes(app, deps) {
 
   app.post('/api/reliability/review/acknowledge', (req, res) => {
     try {
-      const periodFrom = normalizeIsoTimestampOrNull(req.body?.period_from);
-      const periodTo = normalizeIsoTimestampOrNull(req.body?.period_to);
-      const reviewer = normalizeOptionalString(req.body?.reviewer);
-      const notes = normalizeOptionalString(req.body?.notes);
-      const runner = normalizeOptionalString(req.body?.runner);
+      const body = parseOrRespond(reviewAcknowledgeBodySchema, req.body, res);
+      if (!body) return;
+      const periodFrom = normalizeIsoTimestampOrNull(body.period_from);
+      const periodTo = normalizeIsoTimestampOrNull(body.period_to);
+      const reviewer = normalizeOptionalString(body.reviewer);
+      const notes = normalizeOptionalString(body.notes);
+      const runner = normalizeOptionalString(body.runner);
 
       if (!periodFrom || !periodTo) {
         return res.status(400).json({ error: 'period_from and period_to are required ISO timestamps' });
@@ -353,12 +376,14 @@ function registerReliabilityRoutes(app, deps) {
 
   app.get('/api/reliability/review/acknowledgements', (req, res) => {
     try {
-      const periodFrom = normalizeIsoTimestampOrNull(req.query?.period_from);
-      const periodTo = normalizeIsoTimestampOrNull(req.query?.period_to);
-      const runner = normalizeOptionalString(req.query?.runner);
-      const limit = Math.min(Math.max(parseInt(req.query?.limit || '20', 10) || 20, 1), 100);
+      const query = parseOrRespond(reviewAcknowledgementsQuerySchema, req.query, res);
+      if (!query) return;
+      const periodFrom = normalizeIsoTimestampOrNull(query.period_from);
+      const periodTo = normalizeIsoTimestampOrNull(query.period_to);
+      const runner = normalizeOptionalString(query.runner);
+      const limit = query.limit;
 
-      const rows = req.query?.runner === ''
+      const rows = query.runner === ''
         ? reviewAcknowledgementsRepository.listNullRunner({ periodFrom, periodTo, limit })
         : reviewAcknowledgementsRepository.list({ periodFrom, periodTo, runner, limit });
 
