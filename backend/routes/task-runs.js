@@ -1,11 +1,11 @@
 function registerTaskRunRoutes(app, deps) {
   const {
-    db,
+    taskRunsRepository,
+    outcomesRepository,
     parseJSONSafe,
     backfillAllTaskRuns,
     buildTaskRunsWhereClause,
     getTaskRunById,
-    getTaskRunCanonicalOutcomeId,
     getStoredTaskRunAfterActionReport,
     isStoredTaskRunReportFresh,
     buildTaskRunAfterActionReport,
@@ -34,22 +34,24 @@ function registerTaskRunRoutes(app, deps) {
       } = req.query;
 
       const { whereSql, params: filterParams } = buildTaskRunsWhereClause(req.query, 'task_runs');
-      let sql = `SELECT * FROM task_runs WHERE ${whereSql}`;
       const params = [...filterParams];
-
-      const countSql = sql.replace('SELECT *', 'SELECT COUNT(*) as count');
-      const total = db.prepare(countSql).get(...params).count;
+      const total = taskRunsRepository.countByWhere({ whereSql, params });
 
       const allowedSortKeys = ['started_at', 'ended_at', 'updated_at', 'total_events', 'total_duration_ms', 'estimated_cost'];
       const safeSortKey = allowedSortKeys.includes(sortKey) ? sortKey : 'started_at';
       const safeSortDir = sortDir === 'asc' ? 'ASC' : 'DESC';
-      sql += ` ORDER BY ${safeSortKey} ${safeSortDir} LIMIT ? OFFSET ?`;
 
       const limit = parseInt(pageSize, 10);
       const offset = (parseInt(page, 10) - 1) * limit;
-      params.push(limit, offset);
 
-      const taskRuns = db.prepare(sql).all(...params).map(row => ({
+      const taskRuns = taskRunsRepository.listByWhere({
+        whereSql,
+        params,
+        sortKey: safeSortKey,
+        sortDir: safeSortDir,
+        limit,
+        offset
+      }).map(row => ({
         ...row,
         metadata: parseJSONSafe(row.metadata, null)
       }));
@@ -71,66 +73,11 @@ function registerTaskRunRoutes(app, deps) {
     try {
       const { whereSql, params } = buildTaskRunsWhereClause(req.query, 'tr');
 
-      const totals = db.prepare(`
-        SELECT
-          COUNT(*) AS task_runs,
-          SUM(CASE WHEN EXISTS (
-            SELECT 1 FROM outcomes o
-            WHERE o.task_run_id = tr.id
-              AND o.is_canonical = 1
-          ) THEN 1 ELSE 0 END) AS with_canonical_outcome,
-          SUM(CASE WHEN NOT EXISTS (
-            SELECT 1 FROM outcomes o
-            WHERE o.task_run_id = tr.id
-              AND o.is_canonical = 1
-          ) THEN 1 ELSE 0 END) AS no_canonical_outcome,
-          SUM(CASE WHEN EXISTS (
-            SELECT 1 FROM outcomes o
-            WHERE o.task_run_id = tr.id
-              AND o.is_canonical = 1
-              AND o.requires_human_intervention = 1
-          ) THEN 1 ELSE 0 END) AS requires_human_intervention
-        FROM task_runs tr
-        WHERE ${whereSql}
-      `).get(...params);
-
-      const byOutcomeLabel = db.prepare(`
-        SELECT o.outcome_label AS value, COUNT(*) AS count
-        FROM task_runs tr
-        JOIN outcomes o ON o.task_run_id = tr.id AND o.is_canonical = 1
-        WHERE ${whereSql}
-        GROUP BY o.outcome_label
-        ORDER BY count DESC, value ASC
-      `).all(...params);
-
-      const byFailureMode = db.prepare(`
-        SELECT o.failure_mode AS value, COUNT(*) AS count
-        FROM task_runs tr
-        JOIN outcomes o ON o.task_run_id = tr.id AND o.is_canonical = 1
-        WHERE ${whereSql}
-          AND o.failure_mode IS NOT NULL
-        GROUP BY o.failure_mode
-        ORDER BY count DESC, value ASC
-      `).all(...params);
-
-      const byFailureSubtype = db.prepare(`
-        SELECT o.failure_subtype AS value, COUNT(*) AS count
-        FROM task_runs tr
-        JOIN outcomes o ON o.task_run_id = tr.id AND o.is_canonical = 1
-        WHERE ${whereSql}
-          AND o.failure_subtype IS NOT NULL
-        GROUP BY o.failure_subtype
-        ORDER BY count DESC, value ASC
-      `).all(...params);
-
-      const byEvaluationType = db.prepare(`
-        SELECT o.evaluation_type AS value, COUNT(*) AS count
-        FROM task_runs tr
-        JOIN outcomes o ON o.task_run_id = tr.id AND o.is_canonical = 1
-        WHERE ${whereSql}
-        GROUP BY o.evaluation_type
-        ORDER BY count DESC, value ASC
-      `).all(...params);
+      const totals = taskRunsRepository.getOutcomeSummaryTotals({ whereSql, params });
+      const byOutcomeLabel = taskRunsRepository.listOutcomeSummaryByField({ whereSql, params, field: 'outcome_label' });
+      const byFailureMode = taskRunsRepository.listOutcomeSummaryByField({ whereSql, params, field: 'failure_mode' });
+      const byFailureSubtype = taskRunsRepository.listOutcomeSummaryByField({ whereSql, params, field: 'failure_subtype' });
+      const byEvaluationType = taskRunsRepository.listOutcomeSummaryByField({ whereSql, params, field: 'evaluation_type' });
 
       res.json({
         totals: {
@@ -157,21 +104,10 @@ function registerTaskRunRoutes(app, deps) {
         return res.status(404).json({ error: 'Task run not found' });
       }
 
-      const eventRows = db.prepare(`
-        SELECT e.key, e.data
-        FROM task_run_events tre
-        JOIN entries e ON e.key = tre.entry_key
-        WHERE tre.task_run_id = ?
-        ORDER BY e.ts ASC, e.id ASC
-      `).all(req.params.id);
+      const eventRows = taskRunsRepository.listEventDataForTaskRun(req.params.id);
 
       const events = eventRows.map(row => ({ __key: row.key, ...parseJSONSafe(row.data, {}) }));
-      const outcomes = db.prepare(`
-        SELECT *
-        FROM outcomes
-        WHERE task_run_id = ?
-        ORDER BY is_canonical DESC, evaluated_at DESC, id DESC
-      `).all(req.params.id).map(row => ({
+      const outcomes = outcomesRepository.listOutcomesForTaskRun(req.params.id).map(row => ({
         ...row,
         requires_human_intervention: !!row.requires_human_intervention,
         is_canonical: !!row.is_canonical,
@@ -199,7 +135,7 @@ function registerTaskRunRoutes(app, deps) {
       }
 
       const reportContext = {
-        canonicalOutcomeId: getTaskRunCanonicalOutcomeId(taskRunId),
+        canonicalOutcomeId: outcomesRepository.getCanonicalOutcomeIdForTaskRun(taskRunId),
         taskRunUpdatedAt: taskRun.updated_at || null
       };
 

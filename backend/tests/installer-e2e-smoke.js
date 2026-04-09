@@ -93,6 +93,8 @@ async function run() {
   assert.ok(fs.existsSync(path.join(tmpProject, '.suboculo', 'backend', 'mcp-analytics-server.mjs')), 'installer should copy MCP server');
   assert.ok(fs.existsSync(path.join(tmpProject, '.suboculo', 'backend', 'domain', 'taxonomy.js')), 'installer should copy backend domain modules');
   assert.ok(fs.existsSync(path.join(tmpProject, '.suboculo', 'backend', 'domain', 'reliability.js')), 'installer should copy backend reliability domain');
+  assert.ok(fs.existsSync(path.join(tmpProject, '.suboculo', 'backend', 'repositories', 'task-runs-repository.js')), 'installer should copy task-run repository');
+  assert.ok(fs.existsSync(path.join(tmpProject, '.suboculo', 'backend', 'repositories', 'reliability-repository.js')), 'installer should copy reliability repository');
   assert.ok(fs.existsSync(path.join(tmpProject, '.suboculo', 'backend', 'routes', 'task-runs.js')), 'installer should copy backend task-run routes');
   assert.ok(fs.existsSync(path.join(tmpProject, '.suboculo', 'backend', 'routes', 'reliability.js')), 'installer should copy backend reliability routes');
   assert.ok(fs.existsSync(path.join(tmpProject, '.suboculo', 'integrations', 'claude-code', 'event-writer.mjs')), 'installer should copy event writer');

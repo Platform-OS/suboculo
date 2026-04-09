@@ -1,6 +1,6 @@
 function registerReliabilityRoutes(app, deps) {
   const {
-    db,
+    reviewAcknowledgementsRepository,
     KPI_MIN_CANONICAL_SAMPLE,
     KPI_MIN_SUCCESS_SAMPLE_FOR_COST,
     getConfiguredKpiTargets,
@@ -324,11 +324,14 @@ function registerReliabilityRoutes(app, deps) {
       }
 
       const acknowledgedAt = new Date().toISOString();
-      const result = db.prepare(`
-        INSERT INTO review_acknowledgements (
-          period_from, period_to, runner, reviewer, acknowledged_at, notes
-        ) VALUES (?, ?, ?, ?, ?, ?)
-      `).run(periodFrom, periodTo, runner, reviewer, acknowledgedAt, notes);
+      const result = reviewAcknowledgementsRepository.create({
+        periodFrom,
+        periodTo,
+        runner,
+        reviewer,
+        acknowledgedAt,
+        notes
+      });
 
       res.json({
         success: true,
@@ -355,31 +358,9 @@ function registerReliabilityRoutes(app, deps) {
       const runner = normalizeOptionalString(req.query?.runner);
       const limit = Math.min(Math.max(parseInt(req.query?.limit || '20', 10) || 20, 1), 100);
 
-      const where = ['1=1'];
-      const params = [];
-
-      if (periodFrom) {
-        where.push('period_from = ?');
-        params.push(periodFrom);
-      }
-      if (periodTo) {
-        where.push('period_to = ?');
-        params.push(periodTo);
-      }
-      if (runner) {
-        where.push('runner = ?');
-        params.push(runner);
-      } else if (req.query?.runner === '') {
-        where.push('runner IS NULL');
-      }
-
-      const rows = db.prepare(`
-        SELECT id, period_from, period_to, runner, reviewer, acknowledged_at, notes
-        FROM review_acknowledgements
-        WHERE ${where.join(' AND ')}
-        ORDER BY acknowledged_at DESC, id DESC
-        LIMIT ?
-      `).all(...params, limit);
+      const rows = req.query?.runner === ''
+        ? reviewAcknowledgementsRepository.listNullRunner({ periodFrom, periodTo, limit })
+        : reviewAcknowledgementsRepository.list({ periodFrom, periodTo, runner, limit });
 
       res.json({ acknowledgements: rows, total: rows.length });
     } catch (error) {

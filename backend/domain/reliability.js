@@ -99,7 +99,8 @@ function createFailureModeTrendBucket(startDate) {
 }
 
 function createReliabilityDomain({
-  db,
+  reliabilityRepository,
+  reviewAcknowledgementsRepository,
   fs,
   logger,
   thresholdsPath,
@@ -200,27 +201,7 @@ function createReliabilityDomain({
     }
 
     const { whereSql, params } = buildTaskRunsWhereClause(scopedQuery, 'tr');
-    const rows = db.prepare(`
-      SELECT
-        tr.id,
-        tr.runner,
-        tr.started_at,
-        tr.retry_count,
-        tr.estimated_cost,
-        tr.estimated_cost_known,
-        (
-          SELECT o.outcome_label
-          FROM outcomes o
-          WHERE o.task_run_id = tr.id
-            AND o.is_canonical = 1
-          ORDER BY o.evaluated_at DESC, o.id DESC
-          LIMIT 1
-        ) AS canonical_outcome_label
-      FROM task_runs tr
-      WHERE ${whereSql}
-        AND tr.started_at IS NOT NULL
-      ORDER BY tr.started_at ASC
-    `).all(...params);
+    const rows = reliabilityRepository.fetchTrendRows({ whereSql, params });
 
     const buckets = new Map();
     const byRunner = new Map();
@@ -325,31 +306,7 @@ function createReliabilityDomain({
     }
 
     const { whereSql, params } = buildTaskRunsWhereClause(scopedQuery, 'tr');
-    const rows = db.prepare(`
-      SELECT
-        tr.runner,
-        tr.started_at,
-        (
-          SELECT o.outcome_label
-          FROM outcomes o
-          WHERE o.task_run_id = tr.id
-            AND o.is_canonical = 1
-          ORDER BY o.evaluated_at DESC, o.id DESC
-          LIMIT 1
-        ) AS canonical_outcome_label,
-        (
-          SELECT o.failure_mode
-          FROM outcomes o
-          WHERE o.task_run_id = tr.id
-            AND o.is_canonical = 1
-          ORDER BY o.evaluated_at DESC, o.id DESC
-          LIMIT 1
-        ) AS canonical_failure_mode
-      FROM task_runs tr
-      WHERE ${whereSql}
-        AND tr.started_at IS NOT NULL
-      ORDER BY tr.started_at ASC
-    `).all(...params);
+    const rows = reliabilityRepository.fetchFailureModeTrendRows({ whereSql, params });
 
     const buckets = new Map();
     const byRunner = new Map();
@@ -419,37 +376,7 @@ function createReliabilityDomain({
 
   function fetchReliabilityRows(query = {}) {
     const { whereSql, params } = buildTaskRunsWhereClause(query, 'tr');
-    return db.prepare(`
-      SELECT
-        tr.id,
-        tr.runner,
-        tr.retry_count,
-        tr.estimated_cost,
-        tr.estimated_cost_known,
-        tr.total_duration_ms,
-        tr.token_input,
-        tr.token_output,
-        tr.token_cache_creation,
-        tr.token_cache_read,
-        (
-          SELECT o.outcome_label
-          FROM outcomes o
-          WHERE o.task_run_id = tr.id
-            AND o.is_canonical = 1
-          ORDER BY o.evaluated_at DESC, o.id DESC
-          LIMIT 1
-        ) AS canonical_outcome_label,
-        (
-          SELECT o.requires_human_intervention
-          FROM outcomes o
-          WHERE o.task_run_id = tr.id
-            AND o.is_canonical = 1
-          ORDER BY o.evaluated_at DESC, o.id DESC
-          LIMIT 1
-        ) AS canonical_requires_human_intervention
-      FROM task_runs tr
-      WHERE ${whereSql}
-    `).all(...params);
+    return reliabilityRepository.fetchReliabilityRows({ whereSql, params });
   }
 
   function summarizeReliabilityKpis(rows) {
@@ -637,27 +564,11 @@ function createReliabilityDomain({
   function getLatestReviewAcknowledgement({ periodFrom, periodTo, runner }) {
     if (!periodFrom || !periodTo) return null;
     const normalizedRunner = normalizeOptionalString(runner);
-    if (normalizedRunner) {
-      return db.prepare(`
-        SELECT id, period_from, period_to, runner, reviewer, acknowledged_at, notes
-        FROM review_acknowledgements
-        WHERE period_from = ?
-          AND period_to = ?
-          AND runner = ?
-        ORDER BY acknowledged_at DESC, id DESC
-        LIMIT 1
-      `).get(periodFrom, periodTo, normalizedRunner) || null;
-    }
-
-    return db.prepare(`
-      SELECT id, period_from, period_to, runner, reviewer, acknowledged_at, notes
-      FROM review_acknowledgements
-      WHERE period_from = ?
-        AND period_to = ?
-        AND runner IS NULL
-      ORDER BY acknowledged_at DESC, id DESC
-      LIMIT 1
-    `).get(periodFrom, periodTo) || null;
+    return reviewAcknowledgementsRepository.getLatest({
+      periodFrom,
+      periodTo,
+      runner: normalizedRunner || null
+    });
   }
 
   function buildReliabilityReviewData(query = {}) {
@@ -710,52 +621,14 @@ function createReliabilityDomain({
       ...scopedQuery,
       has_canonical_outcome: 'false'
     }, 'tr');
-    const backlogRow = db.prepare(`
-      SELECT COUNT(*) AS count
-      FROM task_runs tr
-      WHERE ${backlogWhere.whereSql}
-    `).get(...backlogWhere.params);
+    const backlogCount = reliabilityRepository.countLabelingBacklog(backlogWhere);
 
     const topFailWhere = buildTaskRunsWhereClause(scopedQuery, 'tr');
-    const topFailingRuns = db.prepare(`
-      SELECT
-        tr.id,
-        tr.task_key,
-        tr.title,
-        tr.runner,
-        tr.started_at,
-        tr.ended_at,
-        tr.error_count,
-        tr.retry_count,
-        tr.estimated_cost,
-        (
-          SELECT o.outcome_label
-          FROM outcomes o
-          WHERE o.task_run_id = tr.id
-            AND o.is_canonical = 1
-          ORDER BY o.evaluated_at DESC, o.id DESC
-          LIMIT 1
-        ) AS canonical_outcome_label,
-        (
-          SELECT o.failure_mode
-          FROM outcomes o
-          WHERE o.task_run_id = tr.id
-            AND o.is_canonical = 1
-          ORDER BY o.evaluated_at DESC, o.id DESC
-          LIMIT 1
-        ) AS canonical_failure_mode
-      FROM task_runs tr
-      WHERE ${topFailWhere.whereSql}
-        AND EXISTS (
-          SELECT 1
-          FROM outcomes o
-          WHERE o.task_run_id = tr.id
-            AND o.is_canonical = 1
-            AND o.outcome_label IN ('failure', 'unsafe_success', 'interrupted', 'abandoned')
-        )
-      ORDER BY tr.error_count DESC, tr.estimated_cost DESC, tr.started_at DESC
-      LIMIT 5
-    `).all(...topFailWhere.params);
+    const topFailingRuns = reliabilityRepository.listTopFailingRuns({
+      whereSql: topFailWhere.whereSql,
+      params: topFailWhere.params,
+      limit: 5
+    });
 
     const review = {
       generated_at: new Date().toISOString(),
@@ -785,7 +658,7 @@ function createReliabilityDomain({
         insufficient_evidence: failureModes.insufficient_evidence || []
       },
       labeling_backlog: {
-        no_canonical_outcome_runs: backlogRow?.count || 0
+        no_canonical_outcome_runs: backlogCount || 0
       },
       top_failing_runs: topFailingRuns
     };

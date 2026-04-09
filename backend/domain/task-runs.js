@@ -12,7 +12,8 @@ function normalizeModelName(model) {
 }
 
 function createTaskRunsDomain({
-  db,
+  taskRunsRepository,
+  outcomesRepository,
   parseJSONSafe,
   autoLabelTaskRunIfEligible
 }) {
@@ -313,119 +314,28 @@ function createTaskRunsDomain({
   function upsertTaskRunForRootSession(rootSessionId) {
     if (!rootSessionId) return [];
 
-    const rows = db.prepare(`
-      SELECT key, ts, sessionID, rootSessionID, runner, event, data
-      FROM entries
-      WHERE rootSessionID = ? OR sessionID = ?
-      ORDER BY ts ASC, id ASC
-    `).all(rootSessionId, rootSessionId);
-
+    const rows = taskRunsRepository.listRowsForRootSession(rootSessionId);
     if (rows.length === 0) return [];
     const attempts = splitRowsIntoAttemptRuns(rows);
-
-    const upsert = db.prepare(`
-      INSERT INTO task_runs (
-        task_key, title, description, source, runner, model, agent_system_version, toolchain_version, git_revision, status, root_session_id,
-        started_at, ended_at, total_events, total_tool_calls, distinct_tools,
-        total_duration_ms, error_count, retry_count, subagent_count, interrupt_count,
-        token_input, token_output, token_cache_creation, token_cache_read,
-        estimated_cost, estimated_cost_known, metadata, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(task_key) DO UPDATE SET
-        title = excluded.title,
-        description = excluded.description,
-        source = excluded.source,
-        runner = excluded.runner,
-        model = excluded.model,
-        agent_system_version = excluded.agent_system_version,
-        toolchain_version = excluded.toolchain_version,
-        git_revision = excluded.git_revision,
-        status = excluded.status,
-        root_session_id = excluded.root_session_id,
-        started_at = excluded.started_at,
-        ended_at = excluded.ended_at,
-        total_events = excluded.total_events,
-        total_tool_calls = excluded.total_tool_calls,
-        distinct_tools = excluded.distinct_tools,
-        total_duration_ms = excluded.total_duration_ms,
-        error_count = excluded.error_count,
-        retry_count = excluded.retry_count,
-        subagent_count = excluded.subagent_count,
-        interrupt_count = excluded.interrupt_count,
-        token_input = excluded.token_input,
-        token_output = excluded.token_output,
-        token_cache_creation = excluded.token_cache_creation,
-        token_cache_read = excluded.token_cache_read,
-        estimated_cost = excluded.estimated_cost,
-        estimated_cost_known = excluded.estimated_cost_known,
-        metadata = excluded.metadata,
-        updated_at = excluded.updated_at
-    `);
-
-    const replaceLinks = db.transaction((taskRunId, eventRows) => {
-      db.prepare('DELETE FROM task_run_events WHERE task_run_id = ?').run(taskRunId);
-      const insertLink = db.prepare(`
-        INSERT OR IGNORE INTO task_run_events (task_run_id, entry_key)
-        VALUES (?, ?)
-      `);
-      for (const row of eventRows) {
-        insertLink.run(taskRunId, row.key);
-      }
-    });
 
     const taskRunIds = [];
     attempts.forEach((attemptRows, idx) => {
       const summary = summarizeTaskRunRows(attemptRows);
       const taskKey = `root:${rootSessionId}::attempt:${idx + 1}`;
+      taskRunsRepository.upsertTaskRun(taskKey, rootSessionId, summary, new Date().toISOString());
 
-      upsert.run(
-        taskKey,
-        summary.title,
-        summary.description,
-        'derived_attempt',
-        summary.runner,
-        summary.model,
-        summary.agentSystemVersion,
-        summary.toolchainVersion,
-        summary.gitRevision,
-        summary.status,
-        rootSessionId,
-        summary.startedAt,
-        summary.endedAt,
-        summary.totalEvents,
-        summary.totalToolCalls,
-        summary.distinctTools,
-        summary.totalDurationMs,
-        summary.errorCount,
-        summary.retryCount,
-        summary.subagentCount,
-        summary.interruptCount,
-        summary.tokenInput,
-        summary.tokenOutput,
-        summary.tokenCacheCreation,
-        summary.tokenCacheRead,
-        summary.estimatedCost,
-        summary.estimatedCostKnown,
-        summary.metadata,
-        new Date().toISOString()
-      );
-
-      const taskRun = db.prepare('SELECT id FROM task_runs WHERE task_key = ?').get(taskKey);
-      if (!taskRun?.id) return;
-      replaceLinks(taskRun.id, attemptRows);
-      autoLabelTaskRunIfEligible(taskRun.id, summary);
-      taskRunIds.push(taskRun.id);
+      const taskRunId = taskRunsRepository.getTaskRunIdByTaskKey(taskKey);
+      if (!taskRunId) return;
+      taskRunsRepository.replaceTaskRunEventLinks(taskRunId, attemptRows);
+      autoLabelTaskRunIfEligible(taskRunId, summary);
+      taskRunIds.push(taskRunId);
     });
 
     return taskRunIds;
   }
 
   function getTaskRunById(taskRunId) {
-    return db.prepare(`
-      SELECT *
-      FROM task_runs
-      WHERE id = ?
-    `).get(taskRunId);
+    return taskRunsRepository.getById(taskRunId);
   }
 
   function formatTaskRunAfterActionReportMarkdown(report) {
@@ -511,22 +421,8 @@ function createTaskRunsDomain({
     const taskRun = getTaskRunById(taskRunId);
     if (!taskRun) return null;
 
-    const canonicalOutcome = db.prepare(`
-      SELECT *
-      FROM outcomes
-      WHERE task_run_id = ?
-        AND is_canonical = 1
-      ORDER BY evaluated_at DESC, id DESC
-      LIMIT 1
-    `).get(taskRunId);
-
-    const eventRows = db.prepare(`
-      SELECT e.key, e.ts, e.event, e.data
-      FROM task_run_events tre
-      JOIN entries e ON e.key = tre.entry_key
-      WHERE tre.task_run_id = ?
-      ORDER BY e.ts ASC, e.id ASC
-    `).all(taskRunId);
+    const canonicalOutcome = outcomesRepository.getCanonicalOutcomeForTaskRun(taskRunId);
+    const eventRows = taskRunsRepository.listReportEventRows(taskRunId);
 
     const events = eventRows.map((row) => ({
       key: row.key,
@@ -707,11 +603,7 @@ function createTaskRunsDomain({
   }
 
   function getStoredTaskRunAfterActionReport(taskRunId) {
-    const row = db.prepare(`
-      SELECT report_json, generated_at, report_version, based_on_outcome_id, based_on_task_run_updated_at
-      FROM task_run_reports
-      WHERE task_run_id = ?
-    `).get(taskRunId);
+    const row = taskRunsRepository.getStoredReport(taskRunId);
     if (!row) return null;
     const parsed = parseJSONSafe(row.report_json, null);
     if (!parsed || typeof parsed !== 'object') return null;
@@ -726,26 +618,14 @@ function createTaskRunsDomain({
 
   function upsertStoredTaskRunAfterActionReport(taskRunId, report, reportContext) {
     const generatedAt = report?.generated_at || new Date().toISOString();
-    db.prepare(`
-      INSERT INTO task_run_reports (
-        task_run_id, report_json, generated_at, report_version, based_on_outcome_id, based_on_task_run_updated_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(task_run_id) DO UPDATE SET
-        report_json = excluded.report_json,
-        generated_at = excluded.generated_at,
-        report_version = excluded.report_version,
-        based_on_outcome_id = excluded.based_on_outcome_id,
-        based_on_task_run_updated_at = excluded.based_on_task_run_updated_at,
-        updated_at = excluded.updated_at
-    `).run(
-      taskRunId,
-      JSON.stringify(report),
+    taskRunsRepository.upsertStoredReport(taskRunId, {
+      reportJson: JSON.stringify(report),
       generatedAt,
-      TASK_RUN_REPORT_VERSION,
-      reportContext?.canonicalOutcomeId || null,
-      reportContext?.taskRunUpdatedAt || null,
-      new Date().toISOString()
-    );
+      reportVersion: TASK_RUN_REPORT_VERSION,
+      basedOnOutcomeId: reportContext?.canonicalOutcomeId || null,
+      basedOnTaskRunUpdatedAt: reportContext?.taskRunUpdatedAt || null,
+      updatedAt: new Date().toISOString()
+    });
   }
 
   function isStoredTaskRunReportFresh(storedReport, reportContext) {
@@ -757,12 +637,7 @@ function createTaskRunsDomain({
   }
 
   function backfillAllTaskRuns() {
-    const rows = db.prepare(`
-      SELECT DISTINCT COALESCE(rootSessionID, sessionID) AS rootSessionId
-      FROM entries
-      WHERE COALESCE(rootSessionID, sessionID) IS NOT NULL
-      ORDER BY rootSessionId
-    `).all();
+    const rows = taskRunsRepository.listDistinctRootSessionIds();
 
     let derivedTaskRuns = 0;
     for (const row of rows) {

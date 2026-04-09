@@ -18,6 +18,10 @@ const {
 const { createOutcomesDomain } = require('./domain/outcomes');
 const { createReliabilityDomain } = require('./domain/reliability');
 const { createTaskRunsDomain } = require('./domain/task-runs');
+const { createTaskRunsRepository } = require('./repositories/task-runs-repository');
+const { createOutcomesRepository } = require('./repositories/outcomes-repository');
+const { createReliabilityRepository } = require('./repositories/reliability-repository');
+const { createReviewAcknowledgementsRepository } = require('./repositories/review-acknowledgements-repository');
 const { registerReliabilityRoutes } = require('./routes/reliability');
 const { registerTaskRunRoutes } = require('./routes/task-runs');
 
@@ -368,20 +372,28 @@ function initDatabase() {
 // Initialize DB on startup
 initDatabase();
 
+const taskRunsRepository = createTaskRunsRepository(db);
+const outcomesRepository = createOutcomesRepository(db);
+const reliabilityRepository = createReliabilityRepository(db);
+const reviewAcknowledgementsRepository = createReviewAcknowledgementsRepository(db);
+
 const outcomesDomain = createOutcomesDomain({
-  db,
+  outcomesRepository,
+  taskRunsRepository,
   normalizeOptionalString,
   autoLabelEnabled: AUTO_LABEL_ENABLED
 });
 
 const taskRunsDomain = createTaskRunsDomain({
-  db,
+  taskRunsRepository,
+  outcomesRepository,
   parseJSONSafe,
   autoLabelTaskRunIfEligible: outcomesDomain.autoLabelTaskRunIfEligible
 });
 
 const reliabilityDomain = createReliabilityDomain({
-  db,
+  reliabilityRepository,
+  reviewAcknowledgementsRepository,
   fs,
   logger,
   thresholdsPath: KPI_THRESHOLDS_PATH,
@@ -471,18 +483,6 @@ function normalizeIsoTimestampOrNull(value) {
   const parsed = new Date(str);
   if (Number.isNaN(parsed.getTime())) return null;
   return parsed.toISOString();
-}
-
-function getTaskRunCanonicalOutcomeId(taskRunId) {
-  const row = db.prepare(`
-    SELECT id
-    FROM outcomes
-    WHERE task_run_id = ?
-      AND is_canonical = 1
-    ORDER BY evaluated_at DESC, id DESC
-    LIMIT 1
-  `).get(taskRunId);
-  return row?.id || null;
 }
 
 const initialDerivedTaskRuns = backfillAllTaskRuns();
@@ -697,12 +697,12 @@ app.post('/api/ingest/batch', (req, res) => {
 });
 
 registerTaskRunRoutes(app, {
-  db,
+  taskRunsRepository,
+  outcomesRepository,
   parseJSONSafe,
   backfillAllTaskRuns,
   buildTaskRunsWhereClause,
   getTaskRunById,
-  getTaskRunCanonicalOutcomeId,
   getStoredTaskRunAfterActionReport,
   isStoredTaskRunReportFresh,
   buildTaskRunAfterActionReport,
@@ -712,7 +712,7 @@ registerTaskRunRoutes(app, {
 });
 
 registerReliabilityRoutes(app, {
-  db,
+  reviewAcknowledgementsRepository,
   KPI_MIN_CANONICAL_SAMPLE,
   KPI_MIN_SUCCESS_SAMPLE_FOR_COST,
   getConfiguredKpiTargets,

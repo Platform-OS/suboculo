@@ -69,6 +69,7 @@ require_cmd mktemp
 SUBOCULO_DIR="$TARGET_ABS_DIR/.suboculo"
 mkdir -p "$SUBOCULO_DIR/backend"
 mkdir -p "$SUBOCULO_DIR/backend/domain"
+mkdir -p "$SUBOCULO_DIR/backend/repositories"
 mkdir -p "$SUBOCULO_DIR/backend/routes"
 mkdir -p "$SUBOCULO_DIR/frontend"
 
@@ -95,6 +96,7 @@ cp "$SCRIPT_DIR/backend/logger.js" "$SUBOCULO_DIR/backend/"
 patch_port_in_file "$SUBOCULO_DIR/backend/server.js" "process.env.SUBOCULO_PORT || 3000" "process.env.SUBOCULO_PORT || $PORT"
 cp "$SCRIPT_DIR/backend/cep-processor.js" "$SUBOCULO_DIR/backend/"
 cp "$SCRIPT_DIR/backend/domain/"*.js "$SUBOCULO_DIR/backend/domain/"
+cp "$SCRIPT_DIR/backend/repositories/"*.js "$SUBOCULO_DIR/backend/repositories/"
 cp "$SCRIPT_DIR/backend/routes/"*.js "$SUBOCULO_DIR/backend/routes/"
 cp -r "$SCRIPT_DIR/svelte-app/dist/"* "$SUBOCULO_DIR/frontend/" 2>/dev/null || echo "⚠️  Frontend not built yet (run 'cd svelte-app && npm run build')"
 if [ -f "$SCRIPT_DIR/.suboculo/thresholds.example.json" ]; then
