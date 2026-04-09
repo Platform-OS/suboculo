@@ -7,7 +7,8 @@ const {
 } = require('./taxonomy');
 
 function createOutcomesDomain({
-  db,
+  outcomesRepository,
+  taskRunsRepository,
   normalizeOptionalString,
   autoLabelEnabled
 }) {
@@ -114,50 +115,15 @@ function createOutcomesDomain({
   }
 
   function insertOutcomeForTaskRun(taskRunId, outcomeInput) {
-    const insertOutcome = db.transaction((targetTaskRunId, input) => {
-      db.prepare('DELETE FROM task_run_reports WHERE task_run_id = ?').run(targetTaskRunId);
-
-      if (input.is_canonical) {
-        db.prepare('UPDATE outcomes SET is_canonical = 0 WHERE task_run_id = ?').run(targetTaskRunId);
-      }
-
-      return db.prepare(`
-        INSERT INTO outcomes (
-          task_run_id, evaluation_type, outcome_label, correctness_score, safety_score,
-          efficiency_score, reproducibility_score, requires_human_intervention,
-          failure_mode, failure_subtype, notes, evaluator, evidence, is_canonical, evaluated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        targetTaskRunId,
-        input.evaluation_type,
-        input.outcome_label,
-        input.correctness_score,
-        input.safety_score,
-        input.efficiency_score,
-        input.reproducibility_score,
-        input.requires_human_intervention ? 1 : 0,
-        input.failure_mode,
-        input.failure_subtype,
-        input.notes,
-        input.evaluator,
-        input.evidence == null ? null : JSON.stringify(input.evidence),
-        input.is_canonical ? 1 : 0,
-        new Date().toISOString()
-      );
-    });
-
-    return insertOutcome(taskRunId, outcomeInput);
+    taskRunsRepository.clearReportsForTaskRun(taskRunId);
+    if (outcomeInput.is_canonical) {
+      outcomesRepository.clearCanonicalForTaskRun(taskRunId);
+    }
+    return outcomesRepository.insertOutcome(taskRunId, outcomeInput, new Date().toISOString());
   }
 
   function getCanonicalOutcomeForTaskRun(taskRunId) {
-    return db.prepare(`
-      SELECT id, evaluation_type, outcome_label, evaluator, evaluated_at
-      FROM outcomes
-      WHERE task_run_id = ?
-        AND is_canonical = 1
-      ORDER BY evaluated_at DESC, id DESC
-      LIMIT 1
-    `).get(taskRunId);
+    return outcomesRepository.getCanonicalOutcomeHeaderForTaskRun(taskRunId);
   }
 
   function autoLabelTaskRunIfEligible(taskRunId, summary) {
