@@ -24,6 +24,25 @@ const { createReliabilityRepository } = require('./repositories/reliability-repo
 const { createReviewAcknowledgementsRepository } = require('./repositories/review-acknowledgements-repository');
 const { registerReliabilityRoutes } = require('./routes/reliability');
 const { registerTaskRunRoutes } = require('./routes/task-runs');
+const {
+  parseOrRespond,
+  eventBodySchema,
+  eventBatchBodySchema,
+  benchmarkIdParamsSchema,
+  benchmarkRunCaseParamsSchema,
+  benchmarkCreateBodySchema,
+  benchmarkCaseCreateBodySchema,
+  benchmarkRunCreateBodySchema,
+  benchmarkRunResultBodySchema,
+  entriesQuerySchema,
+  analysisIdParamsSchema,
+  analysesCreateBodySchema,
+  analyzeBodySchema,
+  selectionBodySchema,
+  tagMutationBodySchema,
+  noteMutationBodySchema,
+  importBodySchema
+} = require('./routes/validation');
 
 const app = express();
 const PORT = process.env.SUBOCULO_PORT || 3000;
@@ -510,10 +529,8 @@ function sseKey(event) {
 // Notify endpoint - for hooks that already wrote to DB, just emit SSE
 app.post('/api/notify', (req, res) => {
   try {
-    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
-      return res.status(400).json({ error: 'Request body must be a JSON object' });
-    }
-    const event = req.body;
+    const event = parseOrRespond(eventBodySchema, req.body, res);
+    if (!event) return;
 
     // Calculate duration for tool.end events
     if (event.event === 'tool.end' && event.traceId) {
@@ -558,10 +575,8 @@ app.post('/api/notify', (req, res) => {
 // Batch notify endpoint — for subagent extraction (events already in DB, just emit SSE)
 app.post('/api/notify/batch', (req, res) => {
   try {
-    const events = req.body;
-    if (!Array.isArray(events)) {
-      return res.status(400).json({ error: 'Expected array of events' });
-    }
+    const events = parseOrRespond(eventBatchBodySchema, req.body, res);
+    if (!events) return;
 
     let emitted = 0;
     for (const event of events) {
@@ -580,7 +595,8 @@ app.post('/api/notify/batch', (req, res) => {
 
 app.post('/api/ingest', (req, res) => {
   try {
-    const event = req.body;
+    const event = parseOrRespond(eventBodySchema, req.body, res);
+    if (!event) return;
 
     // Validate event
     const validation = validateCEPEvent(event);
@@ -643,13 +659,8 @@ app.post('/api/ingest', (req, res) => {
 // API: Ingest batch of CEP events
 app.post('/api/ingest/batch', (req, res) => {
   try {
-    const events = req.body;
-
-    if (!Array.isArray(events)) {
-      return res.status(400).json({
-        error: 'Expected array of events'
-      });
-    }
+    const events = parseOrRespond(eventBatchBodySchema, req.body, res);
+    if (!events) return;
 
     // Validate all events
     const invalidEvents = [];
@@ -765,14 +776,19 @@ app.get('/api/benchmarks', (req, res) => {
 
 app.post('/api/benchmarks', (req, res) => {
   try {
-    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
-      return res.status(400).json({ error: 'Request body must be a JSON object' });
-    }
+    const parsedBody = parseOrRespond(benchmarkCreateBodySchema, req.body, res);
+    if (!parsedBody) return;
 
-    const { name, description, version, status, task_definition_source, scoring_spec, policy_spec, owner } = req.body;
-    if (!name) {
-      return res.status(400).json({ error: 'name is required' });
-    }
+    const {
+      name,
+      description,
+      version,
+      status,
+      task_definition_source,
+      scoring_spec,
+      policy_spec,
+      owner
+    } = parsedBody;
 
     const result = db.prepare(`
       INSERT INTO benchmarks (
@@ -799,7 +815,10 @@ app.post('/api/benchmarks', (req, res) => {
 
 app.get('/api/benchmarks/:id', (req, res) => {
   try {
-    const benchmark = db.prepare('SELECT * FROM benchmarks WHERE id = ?').get(req.params.id);
+    const params = parseOrRespond(benchmarkIdParamsSchema, req.params, res);
+    if (!params) return;
+
+    const benchmark = db.prepare('SELECT * FROM benchmarks WHERE id = ?').get(params.id);
     if (!benchmark) {
       return res.status(404).json({ error: 'Benchmark not found' });
     }
@@ -809,7 +828,7 @@ app.get('/api/benchmarks/:id', (req, res) => {
       FROM benchmark_cases
       WHERE benchmark_id = ?
       ORDER BY case_key ASC, id ASC
-    `).all(req.params.id).map(row => ({
+    `).all(params.id).map(row => ({
       ...row,
       allowed_tools: parseJSONSafe(row.allowed_tools, null),
       expected_outputs: parseJSONSafe(row.expected_outputs, null),
@@ -823,7 +842,7 @@ app.get('/api/benchmarks/:id', (req, res) => {
       FROM benchmark_runs
       WHERE benchmark_id = ?
       ORDER BY created_at DESC, id DESC
-    `).all(req.params.id).map(row => ({
+    `).all(params.id).map(row => ({
       ...row,
       agent_config: parseJSONSafe(row.agent_config, null),
       summary_json: parseJSONSafe(row.summary_json, null)
@@ -844,11 +863,10 @@ app.get('/api/benchmarks/:id', (req, res) => {
 
 app.post('/api/benchmarks/:id/cases', (req, res) => {
   try {
-    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
-      return res.status(400).json({ error: 'Request body must be a JSON object' });
-    }
+    const params = parseOrRespond(benchmarkIdParamsSchema, req.params, res);
+    if (!params) return;
 
-    const benchmark = db.prepare('SELECT id FROM benchmarks WHERE id = ?').get(req.params.id);
+    const benchmark = db.prepare('SELECT id FROM benchmarks WHERE id = ?').get(params.id);
     if (!benchmark) {
       return res.status(404).json({ error: 'Benchmark not found' });
     }
@@ -865,11 +883,8 @@ app.post('/api/benchmarks/:id/cases', (req, res) => {
       forbidden_actions,
       scoring_rules,
       metadata
-    } = req.body;
-
-    if (!case_key || !title) {
-      return res.status(400).json({ error: 'case_key and title are required' });
-    }
+    } = parseOrRespond(benchmarkCaseCreateBodySchema, req.body, res) || {};
+    if (!case_key || !title) return;
 
     const result = db.prepare(`
       INSERT INTO benchmark_cases (
@@ -878,7 +893,7 @@ app.post('/api/benchmarks/:id/cases', (req, res) => {
         scoring_rules, metadata
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      req.params.id,
+      params.id,
       case_key,
       title,
       description || null,
@@ -901,23 +916,31 @@ app.post('/api/benchmarks/:id/cases', (req, res) => {
 
 app.post('/api/benchmarks/:id/runs', (req, res) => {
   try {
-    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
-      return res.status(400).json({ error: 'Request body must be a JSON object' });
-    }
+    const params = parseOrRespond(benchmarkIdParamsSchema, req.params, res);
+    if (!params) return;
 
-    const benchmark = db.prepare('SELECT * FROM benchmarks WHERE id = ?').get(req.params.id);
+    const benchmark = db.prepare('SELECT * FROM benchmarks WHERE id = ?').get(params.id);
     if (!benchmark) {
       return res.status(404).json({ error: 'Benchmark not found' });
     }
 
-    const { status, agent_config, environment_fingerprint, git_revision, case_ids } = req.body;
+    const parsedBody = parseOrRespond(benchmarkRunCreateBodySchema, req.body, res);
+    if (!parsedBody) return;
+
+    const {
+      status,
+      agent_config,
+      environment_fingerprint,
+      git_revision,
+      case_ids
+    } = parsedBody;
     const cases = Array.isArray(case_ids) && case_ids.length > 0
       ? db.prepare(`
           SELECT id
           FROM benchmark_cases
           WHERE benchmark_id = ? AND id IN (${case_ids.map(() => '?').join(',')})
-        `).all(req.params.id, ...case_ids)
-      : db.prepare('SELECT id FROM benchmark_cases WHERE benchmark_id = ?').all(req.params.id);
+        `).all(params.id, ...case_ids)
+      : db.prepare('SELECT id FROM benchmark_cases WHERE benchmark_id = ?').all(params.id);
 
     const createRun = db.transaction(() => {
       const run = db.prepare(`
@@ -925,7 +948,7 @@ app.post('/api/benchmarks/:id/runs', (req, res) => {
           benchmark_id, status, agent_config, environment_fingerprint, git_revision, started_at
         ) VALUES (?, ?, ?, ?, ?, ?)
       `).run(
-        req.params.id,
+        params.id,
         status || 'planned',
         agent_config ? JSON.stringify(agent_config) : null,
         environment_fingerprint || null,
@@ -957,12 +980,15 @@ app.post('/api/benchmarks/:id/runs', (req, res) => {
 
 app.get('/api/benchmark-runs/:id', (req, res) => {
   try {
+    const params = parseOrRespond(benchmarkIdParamsSchema, req.params, res);
+    if (!params) return;
+
     const run = db.prepare(`
       SELECT br.*, b.name AS benchmark_name, b.version AS benchmark_version
       FROM benchmark_runs br
       JOIN benchmarks b ON b.id = br.benchmark_id
       WHERE br.id = ?
-    `).get(req.params.id);
+    `).get(params.id);
 
     if (!run) {
       return res.status(404).json({ error: 'Benchmark run not found' });
@@ -982,7 +1008,7 @@ app.get('/api/benchmark-runs/:id', (req, res) => {
       LEFT JOIN outcomes o ON o.id = brc.outcome_id
       WHERE brc.benchmark_run_id = ?
       ORDER BY bc.case_key ASC, brc.id ASC
-    `).all(req.params.id).map(row => ({
+    `).all(params.id).map(row => ({
       ...row,
       metadata: parseJSONSafe(row.metadata, null)
     }));
@@ -1001,21 +1027,23 @@ app.get('/api/benchmark-runs/:id', (req, res) => {
 
 app.post('/api/benchmark-runs/:id/cases/:caseId/result', (req, res) => {
   try {
-    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
-      return res.status(400).json({ error: 'Request body must be a JSON object' });
-    }
+    const params = parseOrRespond(benchmarkRunCaseParamsSchema, req.params, res);
+    if (!params) return;
 
     const runCase = db.prepare(`
       SELECT brc.*
       FROM benchmark_run_cases brc
       WHERE brc.benchmark_run_id = ? AND brc.benchmark_case_id = ?
-    `).get(req.params.id, req.params.caseId);
+    `).get(params.id, params.caseId);
 
     if (!runCase) {
       return res.status(404).json({ error: 'Benchmark run case not found' });
     }
 
-    const { task_run_id, outcome_id, status, score, notes, metadata } = req.body;
+    const parsedBody = parseOrRespond(benchmarkRunResultBodySchema, req.body, res);
+    if (!parsedBody) return;
+
+    const { task_run_id, outcome_id, status, score, notes, metadata } = parsedBody;
 
     db.prepare(`
       UPDATE benchmark_run_cases
@@ -1028,8 +1056,8 @@ app.post('/api/benchmark-runs/:id/cases/:caseId/result', (req, res) => {
       score ?? null,
       notes || null,
       metadata ? JSON.stringify(metadata) : null,
-      req.params.id,
-      req.params.caseId
+      params.id,
+      params.caseId
     );
 
     const summary = db.prepare(`
@@ -1041,7 +1069,7 @@ app.post('/api/benchmark-runs/:id/cases/:caseId/result', (req, res) => {
         AVG(score) AS avg_score
       FROM benchmark_run_cases
       WHERE benchmark_run_id = ?
-    `).get(req.params.id);
+    `).get(params.id);
 
     db.prepare(`
       UPDATE benchmark_runs
@@ -1062,7 +1090,7 @@ app.post('/api/benchmark-runs/:id/cases/:caseId/result', (req, res) => {
       summary.total_cases || 0,
       summary.completed_cases || 0,
       summary.total_cases || 0,
-      req.params.id
+      params.id
     );
 
     res.json({ success: true, summary });
@@ -1090,7 +1118,8 @@ app.get('/api/entries', (req, res) => {
       runner,
       event,
       attempt
-    } = req.query;
+    } = parseOrRespond(entriesQuerySchema, req.query, res) || {};
+    if (!page) return;
 
     let sql = `
       SELECT
@@ -1312,7 +1341,8 @@ app.get('/api/analyses-history', (req, res) => {
 // API: Get single analysis
 app.get('/api/analyses-history/:id', (req, res) => {
   try {
-    const { id } = req.params;
+    const { id } = parseOrRespond(analysisIdParamsSchema, req.params, res) || {};
+    if (!id) return;
     const analysis = db.prepare(`
       SELECT * FROM analyses WHERE id = ?
     `).get(id);
@@ -1335,14 +1365,8 @@ app.get('/api/analyses-history/:id', (req, res) => {
 // API: Save externally-generated analysis (e.g. from CLI via MCP)
 app.post('/api/analyses', (req, res) => {
   try {
-    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
-      return res.status(400).json({ error: 'Request body must be a JSON object' });
-    }
-    const { model, event_count, event_keys, analysis, prompt } = req.body;
-
-    if (!analysis || typeof analysis !== 'string') {
-      return res.status(400).json({ error: 'analysis (string) is required' });
-    }
+    const { model, event_count, event_keys, analysis, prompt } = parseOrRespond(analysesCreateBodySchema, req.body, res) || {};
+    if (!analysis) return;
 
     const analysisId = db.prepare(`
       INSERT INTO analyses (timestamp, model, event_count, event_keys, analysis, prompt)
@@ -1366,7 +1390,8 @@ app.post('/api/analyses', (req, res) => {
 // API: Delete analysis
 app.delete('/api/analyses-history/:id', (req, res) => {
   try {
-    const { id } = req.params;
+    const { id } = parseOrRespond(analysisIdParamsSchema, req.params, res) || {};
+    if (!id) return;
     db.prepare('DELETE FROM analyses WHERE id = ?').run(id);
     res.json({ success: true });
   } catch (error) {
@@ -1418,18 +1443,8 @@ app.get('/api/events/stream', (req, res) => {
 // API: Analyze selected events with LLM
 app.post('/api/analyze', async (req, res) => {
   try {
-    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
-      return res.status(400).json({ error: 'Request body must be a JSON object' });
-    }
-    const { keys, model, apiKey, prompt } = req.body;
-
-    if (!keys || !Array.isArray(keys) || keys.length === 0) {
-      return res.status(400).json({ error: 'No events selected' });
-    }
-
-    if (!apiKey) {
-      return res.status(400).json({ error: 'Anthropic API key required' });
-    }
+    const { keys, model, apiKey, prompt } = parseOrRespond(analyzeBodySchema, req.body, res) || {};
+    if (!keys) return;
 
     // Retrieve selected events from database
     const placeholders = keys.map(() => '?').join(',');
@@ -1509,14 +1524,8 @@ Be concise and actionable.`;
 // API: Save selected events for MCP bridge (CLI analysis)
 app.post('/api/selection', (req, res) => {
   try {
-    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
-      return res.status(400).json({ error: 'Request body must be a JSON object' });
-    }
-    const { keys } = req.body;
-
-    if (!keys || !Array.isArray(keys) || keys.length === 0) {
-      return res.status(400).json({ error: 'No event keys provided' });
-    }
+    const { keys } = parseOrRespond(selectionBodySchema, req.body, res) || {};
+    if (!keys) return;
 
     // Fetch full event data for the selected keys
     const placeholders = keys.map(() => '?').join(',');
@@ -1629,10 +1638,8 @@ app.get('/api/tags', (req, res) => {
 // API: Add/remove tag
 app.post('/api/tags', (req, res) => {
   try {
-    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
-      return res.status(400).json({ error: 'Request body must be a JSON object' });
-    }
-    const { entryKey, tag, action } = req.body;
+    const { entryKey, tag, action } = parseOrRespond(tagMutationBodySchema, req.body, res) || {};
+    if (!action) return;
 
     if (action === 'add') {
       db.prepare('INSERT OR IGNORE INTO tags (entry_key, tag) VALUES (?, ?)').run(entryKey, tag);
@@ -1667,10 +1674,8 @@ app.get('/api/notes', (req, res) => {
 // API: Set note
 app.post('/api/notes', (req, res) => {
   try {
-    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
-      return res.status(400).json({ error: 'Request body must be a JSON object' });
-    }
-    const { entryKey, note } = req.body;
+    const { entryKey, note } = parseOrRespond(noteMutationBodySchema, req.body, res) || {};
+    if (!entryKey) return;
 
     if (note && note.trim()) {
       db.prepare('INSERT OR REPLACE INTO notes (entry_key, note) VALUES (?, ?)').run(entryKey, note);
@@ -1718,38 +1723,10 @@ app.get('/api/export', (req, res) => {
 // API: Import tags and notes
 app.post('/api/import', (req, res) => {
   try {
-    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
-      return res.status(400).json({ error: 'Request body must be a JSON object' });
-    }
+    const parsedBody = parseOrRespond(importBodySchema, req.body, res);
+    if (!parsedBody) return;
 
-    const { tagsByKey, notesByKey } = req.body;
-
-    // Validate structure before touching the database
-    if (tagsByKey != null) {
-      if (typeof tagsByKey !== 'object' || Array.isArray(tagsByKey)) {
-        return res.status(400).json({ error: 'tagsByKey must be an object' });
-      }
-      for (const [key, tags] of Object.entries(tagsByKey)) {
-        if (!Array.isArray(tags)) {
-          return res.status(400).json({ error: `tagsByKey["${key}"] must be an array` });
-        }
-        for (const tag of tags) {
-          if (typeof tag !== 'string') {
-            return res.status(400).json({ error: `tagsByKey["${key}"] contains a non-string value` });
-          }
-        }
-      }
-    }
-    if (notesByKey != null) {
-      if (typeof notesByKey !== 'object' || Array.isArray(notesByKey)) {
-        return res.status(400).json({ error: 'notesByKey must be an object' });
-      }
-      for (const [key, note] of Object.entries(notesByKey)) {
-        if (typeof note !== 'string') {
-          return res.status(400).json({ error: `notesByKey["${key}"] must be a string` });
-        }
-      }
-    }
+    const { tagsByKey, notesByKey } = parsedBody;
 
     // Atomic replace: delete + insert in a single transaction
     const insertTag = db.prepare('INSERT OR IGNORE INTO tags (entry_key, tag) VALUES (?, ?)');
