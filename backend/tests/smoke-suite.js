@@ -239,6 +239,9 @@ async function run() {
     assert.ok(result.body.total >= 1, 'attempt filter should return entries');
     assert.ok(result.body.entries.every((entry) => entry.attemptKey === attemptKey), 'all entries should match requested attempt');
 
+    result = await requestJson(baseUrl, '/entries?page=0');
+    assert.equal(result.response.status, 400, 'entries should reject invalid pagination values');
+
     result = await requestJson(baseUrl, '/reliability/kpi-definitions');
     assert.equal(result.response.status, 200, 'kpi definitions endpoint should succeed');
     assert.ok(result.body.metrics && result.body.metrics.success_rate, 'kpi definitions should include success_rate');
@@ -518,6 +521,13 @@ async function run() {
     });
     assert.equal(result.response.status, 200, 'add tag should succeed');
 
+    result = await requestJson(baseUrl, '/tags', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entryKey: firstKey, tag: 'smoke', action: 'rename' })
+    });
+    assert.equal(result.response.status, 400, 'tag mutation should reject unsupported actions');
+
     result = await requestJson(baseUrl, '/notes', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -555,6 +565,17 @@ async function run() {
     assert.equal(result.response.status, 200, 'save analysis should succeed');
     const analysisId = result.body.analysisId;
 
+    result = await requestJson(baseUrl, '/analyses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'smoke-model',
+        event_count: 1,
+        event_keys: [firstKey]
+      })
+    });
+    assert.equal(result.response.status, 400, 'analysis save should reject missing analysis text');
+
     result = await requestJson(baseUrl, '/analyses-history');
     assert.equal(result.response.status, 200, 'list analyses should succeed');
     assert.equal(result.body.length, 1);
@@ -576,6 +597,17 @@ async function run() {
     assert.equal(result.response.status, 200, 'notify batch should succeed');
     assert.equal(result.body.received, 2);
     assert.equal(result.body.emitted, 1);
+
+    result = await requestJson(baseUrl, '/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tagsByKey: {
+          [firstKey]: ['ok', 123]
+        }
+      })
+    });
+    assert.equal(result.response.status, 400, 'import should reject non-string tag values');
 
     console.log('Smoke suite passed');
   } finally {

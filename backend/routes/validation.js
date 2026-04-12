@@ -69,6 +69,115 @@ const reviewAcknowledgementsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20)
 });
 
+const eventBodySchema = z.object({}).passthrough();
+
+const eventBatchBodySchema = z.array(eventBodySchema);
+
+const benchmarkIdParamsSchema = z.object({
+  id: z.string().min(1)
+});
+
+const benchmarkRunCaseParamsSchema = z.object({
+  id: z.string().min(1),
+  caseId: z.string().min(1)
+});
+
+const benchmarkCreateBodySchema = z.object({
+  name: z.string().min(1),
+  description: z.string().optional(),
+  version: z.string().optional(),
+  status: z.string().optional(),
+  task_definition_source: z.string().optional(),
+  scoring_spec: z.unknown().optional(),
+  policy_spec: z.unknown().optional(),
+  owner: z.string().optional()
+}).passthrough();
+
+const benchmarkCaseCreateBodySchema = z.object({
+  case_key: z.string().min(1),
+  title: z.string().min(1),
+  description: z.string().optional(),
+  prompt: z.string().optional(),
+  fixture_ref: z.string().optional(),
+  timeout_seconds: z.coerce.number().int().min(0).optional(),
+  allowed_tools: z.unknown().optional(),
+  expected_outputs: z.unknown().optional(),
+  forbidden_actions: z.unknown().optional(),
+  scoring_rules: z.unknown().optional(),
+  metadata: z.unknown().optional()
+}).passthrough();
+
+const benchmarkRunCreateBodySchema = z.object({
+  status: z.string().optional(),
+  agent_config: z.unknown().optional(),
+  environment_fingerprint: z.string().optional(),
+  git_revision: z.string().optional(),
+  case_ids: z.array(z.union([z.string(), z.number()])).optional()
+}).passthrough();
+
+const benchmarkRunResultBodySchema = z.object({
+  task_run_id: z.union([z.string(), z.number(), z.null()]).optional(),
+  outcome_id: z.union([z.string(), z.number(), z.null()]).optional(),
+  status: z.string().optional(),
+  score: z.union([z.coerce.number(), z.null()]).optional(),
+  notes: z.union([z.string(), z.null()]).optional(),
+  metadata: z.unknown().optional()
+}).passthrough();
+
+const entriesQuerySchema = paginationQuerySchema.extend({
+  kind: z.string().optional(),
+  type: z.string().optional(),
+  tool: z.string().optional(),
+  subagent: z.string().optional(),
+  rootSession: z.string().optional(),
+  tag: z.string().optional(),
+  query: z.string().optional(),
+  sortKey: z.enum(['ts', 'kind', 'tool', 'durationMs']).default('ts'),
+  sortDir: z.enum(['asc', 'desc']).default('desc'),
+  runner: z.string().optional(),
+  event: z.string().optional(),
+  attempt: z.string().optional()
+}).passthrough();
+
+const analysisIdParamsSchema = z.object({
+  id: z.string().min(1)
+});
+
+const analysesCreateBodySchema = z.object({
+  model: z.string().optional(),
+  event_count: z.coerce.number().int().min(0).optional(),
+  event_keys: z.array(z.string()).optional(),
+  analysis: z.string().min(1),
+  prompt: z.union([z.string(), z.null()]).optional()
+}).passthrough();
+
+const analyzeBodySchema = z.object({
+  keys: z.array(z.string().min(1)).min(1),
+  model: z.string().optional(),
+  apiKey: z.string().min(1),
+  prompt: z.string().optional()
+}).passthrough();
+
+const selectionBodySchema = z.object({
+  keys: z.array(z.string().min(1)).min(1)
+}).passthrough();
+
+const tagMutationBodySchema = z.object({
+  entryKey: z.string().min(1),
+  tag: z.string().min(1),
+  action: z.enum(['add', 'remove'])
+}).passthrough();
+
+const noteMutationBodySchema = z.object({
+  entryKey: z.string().min(1),
+  note: z.union([z.string(), z.null()]).optional()
+}).passthrough();
+
+const importBodySchema = z.object({
+  tagsByKey: z.record(z.array(z.string())).optional(),
+  notesByKey: z.record(z.string()).optional()
+}).passthrough();
+
 module.exports = {
   parseOrRespond,
   taskRunListQuerySchema,
@@ -77,5 +186,21 @@ module.exports = {
   taskRunOutcomesBatchBodySchema,
   reliabilityCommonQuerySchema,
   reviewAcknowledgeBodySchema,
-  reviewAcknowledgementsQuerySchema
+  reviewAcknowledgementsQuerySchema,
+  eventBodySchema,
+  eventBatchBodySchema,
+  benchmarkIdParamsSchema,
+  benchmarkRunCaseParamsSchema,
+  benchmarkCreateBodySchema,
+  benchmarkCaseCreateBodySchema,
+  benchmarkRunCreateBodySchema,
+  benchmarkRunResultBodySchema,
+  entriesQuerySchema,
+  analysisIdParamsSchema,
+  analysesCreateBodySchema,
+  analyzeBodySchema,
+  selectionBodySchema,
+  tagMutationBodySchema,
+  noteMutationBodySchema,
+  importBodySchema
 };
