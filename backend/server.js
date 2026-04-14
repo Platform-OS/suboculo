@@ -12,8 +12,7 @@ const {
   FAILURE_MODES,
   OUTCOME_LABELS_REQUIRING_FAILURE_MODE,
   KPI_MIN_CANONICAL_SAMPLE,
-  KPI_MIN_SUCCESS_SAMPLE_FOR_COST,
-  DEFAULT_KPI_TARGETS
+  KPI_MIN_SUCCESS_SAMPLE_FOR_COST
 } = require('./domain/taxonomy');
 const { createOutcomesDomain } = require('./domain/outcomes');
 const { createReliabilityDomain } = require('./domain/reliability');
@@ -104,21 +103,6 @@ const {
   getKpiComparePeriods,
   buildKpiCompareDeltas
 } = reliabilityDomain;
-
-// Helper: Generate unique key for entry
-function generateKey(entry, idx) {
-  const callId = entry?.callID || entry?.callId;
-  if (callId && entry?.kind && entry?.ts) {
-    return `${callId}::${entry.kind}::${entry.ts}`;
-  }
-  if (callId && entry?.kind) {
-    return `${callId}::${entry.kind}::${idx}`;
-  }
-  if (entry?.sessionID && entry?.ts) {
-    return `${entry.sessionID}::${entry.ts}::${idx}`;
-  }
-  return `idx::${idx}`;
-}
 
 // Decode base64-encoded fields from hooks (safe shell transport → readable storage)
 function decodeBase64Fields(event) {
