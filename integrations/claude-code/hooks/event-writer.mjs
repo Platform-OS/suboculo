@@ -166,6 +166,7 @@ function insertCEPEvent(event) {
   const data = event.data || {};
   const tool = data.tool || null;
   let durationMs = data.durationMs || null;
+  let durationSource = typeof data.durationSource === 'string' ? data.durationSource : null;
   const outputLen = data.outputLen || null;
   const outputPreview = data.outputPreview || null;
   const title = data.title || null;
@@ -189,10 +190,15 @@ function insertCEPEvent(event) {
         const startTime = new Date(startData.ts);
         const endTime = new Date(event.ts);
         durationMs = endTime - startTime;
+        durationSource = 'derived_hook_timestamps';
       }
     } catch (err) {
       // Duration calculation failed, continue without it
     }
+  }
+
+  if (durationMs != null && !durationSource) {
+    durationSource = 'reported_by_runner';
   }
 
   const rootSessionId = parentSessionId || sessionId;
@@ -202,6 +208,9 @@ function insertCEPEvent(event) {
   if (durationMs != null) {
     if (!event.data) event.data = {};
     event.data.durationMs = durationMs;
+    if (durationSource) {
+      event.data.durationSource = durationSource;
+    }
   }
   if (status && (!event.data || !event.data.status)) {
     if (!event.data) event.data = {};

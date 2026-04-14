@@ -172,7 +172,7 @@ Monitor and analyze AI agent activity in real-time:
 - ✅ **Agent/subagent tracking** - See which agent (lead, Explore, Plan, etc.) executed each tool
 - ✅ **Session tracking** - Correlate events across sessions
 - ✅ **Tool diversity** - Bash, Read, Edit, MCP tools, all captured
-- ✅ **Duration tracking** - Automatic timing for tool execution
+- ✅ **Duration tracking** - Automatic timing for tool execution with source provenance
 - ✅ **Multi-instance support** - Run on custom ports for multiple projects
 
 ## Features
@@ -193,6 +193,7 @@ Monitor and analyze AI agent activity in real-time:
 - **LLM analysis** with custom prompts (API or CLI)
 - **CLI bridge** - Select in UI, analyze in Claude Code, save back to UI
 - **Duration calculation** for performance insights
+- **Timing provenance** via `durationSource` so derived durations are distinguishable from runner-reported ones
 - **Session correlation** across multiple agent invocations
 - **Attempt-based task runs** (derived from session boundaries and inactivity gaps)
 - **Events filter by attempt** in the web UI
@@ -235,6 +236,16 @@ suboculo.js plugin
 2. **Secondary:** HTTP POST to `/api/notify` (triggers SSE if server running)
 
 This ensures events are never lost while enabling real-time updates when monitoring.
+
+## Duration Semantics
+
+Suboculo records tool durations at the runner integration layer. That is not equally precise across all runners.
+
+- Claude Code durations are typically derived from hook-observed start/end timestamps
+- OpenCode durations are typically measured more directly inside the plugin runtime
+- `data.durationSource` records whether a duration was `reported_by_runner` or `derived_hook_timestamps`
+
+This means duration values are useful, but cross-runner comparisons should account for measurement provenance.
 
 ## Task Runs: Attempt Semantics
 

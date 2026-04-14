@@ -39,6 +39,7 @@ function registerRuntimeRoutes(app, deps) {
               const durationMs = endTime - startTime;
               if (!event.data) event.data = {};
               event.data.durationMs = durationMs;
+              event.data.durationSource = 'derived_hook_timestamps';
             }
           }
         } catch (err) {
@@ -108,6 +109,7 @@ function registerRuntimeRoutes(app, deps) {
               const durationMs = endTime - startTime;
               if (!event.data) event.data = {};
               event.data.durationMs = durationMs;
+              event.data.durationSource = 'derived_hook_timestamps';
             }
           }
         } catch (err) {

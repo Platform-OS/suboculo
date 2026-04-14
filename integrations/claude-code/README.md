@@ -60,13 +60,32 @@ Claude-specific enrichment includes:
 - agent and subagent attribution
 - transcript-derived inner tool calls for `Task` subagents
 - token usage extraction from transcript entries
-- duration and status tracking
+- status tracking
+- duration tracking with provenance (`durationSource`)
+
+## Timing Semantics
+
+Claude Code tool durations in Suboculo are usually derived from hook-observed `tool.start` and `tool.end` timestamps.
+
+That means the recorded duration is typically:
+
+- harness-observed wall-clock time
+- not guaranteed to be the tool's internal execution time
+- sensitive to hook timing and runner-side overhead
+
+Suboculo records timing provenance in `data.durationSource`:
+
+- `reported_by_runner`: the runner supplied a duration directly
+- `derived_hook_timestamps`: Suboculo derived duration from hook timestamps
+
+For Claude Code, `derived_hook_timestamps` is the expected case today.
 
 ## Notes
 
 - The UI is served by `node .suboculo/backend/server.js`, not by a separate frontend dev server in normal use.
 - The browser URL is the configured Suboculo port, typically `http://localhost:3000`.
 - Port changes are handled by re-running the installer with `--port`.
+- OpenCode duration measurements are generally stronger because they are captured in-process by the plugin runtime rather than inferred from external hooks.
 
 ## Troubleshooting
 
