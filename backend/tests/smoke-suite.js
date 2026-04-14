@@ -171,6 +171,61 @@ async function run() {
     assert.ok(Array.isArray(result.body.failure_modes), 'taxonomy should include failure_modes');
     assert.ok(result.body.failure_taxonomy && typeof result.body.failure_taxonomy === 'object', 'taxonomy should include failure_taxonomy');
 
+    result = await requestJson(baseUrl, '/benchmarks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Smoke Benchmark',
+        description: 'benchmark route smoke coverage'
+      })
+    });
+    assert.equal(result.response.status, 200, 'benchmark creation should succeed');
+    const benchmarkId = result.body.benchmarkId;
+
+    result = await requestJson(baseUrl, `/benchmarks/${benchmarkId}/cases`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        case_key: 'smoke-case-1',
+        title: 'Smoke Case'
+      })
+    });
+    assert.equal(result.response.status, 200, 'benchmark case creation should succeed');
+    const benchmarkCaseId = result.body.benchmarkCaseId;
+
+    result = await requestJson(baseUrl, `/benchmarks/${benchmarkId}/runs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status: 'planned',
+        case_ids: [benchmarkCaseId]
+      })
+    });
+    assert.equal(result.response.status, 200, 'benchmark run creation should succeed');
+    const benchmarkRunId = result.body.benchmarkRunId;
+    assert.equal(result.body.caseCount, 1, 'benchmark run should include requested case count');
+
+    result = await requestJson(baseUrl, `/benchmark-runs/${benchmarkRunId}`);
+    assert.equal(result.response.status, 200, 'benchmark run detail should succeed');
+    assert.equal(result.body.cases.length, 1, 'benchmark run detail should include one case');
+
+    result = await requestJson(baseUrl, `/benchmark-runs/${benchmarkRunId}/cases/${benchmarkCaseId}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status: 'passed',
+        score: 1
+      })
+    });
+    assert.equal(result.response.status, 200, 'benchmark run case result update should succeed');
+    assert.equal(result.body.summary.total_cases, 1, 'benchmark summary should track total cases');
+    assert.equal(result.body.summary.completed_cases, 1, 'benchmark summary should track completed cases');
+
+    result = await requestJson(baseUrl, `/benchmarks/${benchmarkId}`);
+    assert.equal(result.response.status, 200, 'benchmark detail should succeed');
+    assert.equal(result.body.cases.length, 1, 'benchmark detail should include created case');
+    assert.equal(result.body.runs.length, 1, 'benchmark detail should include created run');
+
     result = await requestJson(baseUrl, '/task-runs/derive', {
       method: 'POST'
     });
