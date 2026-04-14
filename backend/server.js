@@ -24,6 +24,9 @@ const { createReliabilityRepository } = require('./repositories/reliability-repo
 const { createReviewAcknowledgementsRepository } = require('./repositories/review-acknowledgements-repository');
 const { registerReliabilityRoutes } = require('./routes/reliability');
 const { registerTaskRunRoutes } = require('./routes/task-runs');
+const { registerEntriesRoutes } = require('./routes/entries');
+const { registerAnalysesRoutes } = require('./routes/analyses');
+const { registerAnnotationRoutes } = require('./routes/annotations');
 const {
   parseOrRespond,
   eventBodySchema,
@@ -34,14 +37,6 @@ const {
   benchmarkCaseCreateBodySchema,
   benchmarkRunCreateBodySchema,
   benchmarkRunResultBodySchema,
-  entriesQuerySchema,
-  analysisIdParamsSchema,
-  analysesCreateBodySchema,
-  analyzeBodySchema,
-  selectionBodySchema,
-  tagMutationBodySchema,
-  noteMutationBodySchema,
-  importBodySchema
 } = require('./routes/validation');
 
 const PORT = process.env.SUBOCULO_PORT || 3000;
@@ -409,6 +404,30 @@ registerReliabilityRoutes(app, {
   normalizeOptionalString
 });
 
+registerEntriesRoutes(app, {
+  db,
+  logger,
+  tryParseJson,
+  decodeBase64Fields
+});
+
+registerAnalysesRoutes(app, {
+  db,
+  logger,
+  tryParseJson,
+  callAnthropicAPI
+});
+
+registerAnnotationRoutes(app, {
+  db,
+  dbPath,
+  fs,
+  path,
+  logger,
+  tryParseJson,
+  decodeBase64Fields
+});
+
 app.get('/api/meta/outcome-taxonomy', (_req, res) => {
   res.json({
     evaluation_types: EVALUATION_TYPES,
@@ -770,306 +789,6 @@ app.post('/api/benchmark-runs/:id/cases/:caseId/result', (req, res) => {
   }
 });
 
-// API: Get entries with filters and pagination
-app.get('/api/entries', (req, res) => {
-  try {
-    const {
-      page = 1,
-      pageSize = 100,
-      kind,
-      type,
-      tool,
-      subagent,
-      rootSession,
-      tag,
-      query,
-      sortKey = 'ts',
-      sortDir = 'desc',
-      runner,
-      event,
-      attempt
-    } = parseOrRespond(entriesQuerySchema, req.query, res) || {};
-    if (!page) return;
-
-    let sql = `
-      SELECT
-        e.*,
-        tr.id AS taskRunId,
-        tr.task_key AS attemptKey
-      FROM entries e
-      LEFT JOIN task_run_events tre ON tre.entry_key = e.key
-      LEFT JOIN task_runs tr ON tr.id = tre.task_run_id
-      WHERE 1=1
-    `;
-    const params = [];
-
-    // Apply CEP filters
-    if (runner && runner !== 'all') {
-      sql += ' AND e.runner = ?';
-      params.push(runner);
-    }
-
-    if (event && event !== 'all') {
-      sql += ' AND e.event = ?';
-      params.push(event);
-    }
-
-    if (attempt && attempt !== 'all') {
-      sql += ' AND tr.task_key = ?';
-      params.push(attempt);
-    }
-
-    // Apply legacy filters (backward compat)
-    if (kind && kind !== 'all') {
-      sql += ' AND (e.kind = ? OR e.event = ?)';
-      params.push(kind, kind);
-    }
-
-    if (type && type !== 'all') {
-      sql += ' AND e.type = ?';
-      params.push(type);
-    }
-
-    if (tool && tool !== 'all') {
-      sql += ' AND e.tool = ?';
-      params.push(tool);
-    }
-
-    if (subagent && subagent !== 'all') {
-      sql += ' AND e.subagentType = ?';
-      params.push(subagent);
-    }
-
-    if (rootSession && rootSession !== 'all') {
-      sql += ' AND e.rootSessionID = ?';
-      params.push(rootSession);
-    }
-
-    if (tag && tag !== 'all') {
-      sql += ' AND e.key IN (SELECT entry_key FROM tags WHERE tag = ?)';
-      params.push(tag);
-    }
-
-    if (query) {
-      sql += ` AND (
-        e.kind LIKE ? OR
-        e.type LIKE ? OR
-        e.tool LIKE ? OR
-        e.sessionID LIKE ? OR
-        e.rootSessionID LIKE ? OR
-        e.callID LIKE ? OR
-        e.title LIKE ? OR
-        e.outputPreview LIKE ? OR
-        e.args LIKE ? OR
-        tr.task_key LIKE ? OR
-        e.key IN (SELECT entry_key FROM tags WHERE tag LIKE ?) OR
-        e.key IN (SELECT entry_key FROM notes WHERE note LIKE ?)
-      )`;
-      const likeQuery = `%${query}%`;
-      params.push(...Array(12).fill(likeQuery));
-    }
-
-    // Count total matching
-    const countSql = sql.replace(
-      `SELECT
-        e.*,
-        tr.id AS taskRunId,
-        tr.task_key AS attemptKey`,
-      'SELECT COUNT(DISTINCT e.key) as count'
-    );
-    const countResult = db.prepare(countSql).get(...params);
-    const total = countResult.count;
-
-    // Add sorting
-    const allowedSortKeys = ['ts', 'kind', 'tool', 'durationMs'];
-    const safeSortKey = allowedSortKeys.includes(sortKey) ? sortKey : 'ts';
-    const safeSortDir = sortDir === 'asc' ? 'ASC' : 'DESC';
-    sql += ` GROUP BY e.key ORDER BY e.${safeSortKey} ${safeSortDir}`;
-
-    // Add pagination
-    const limit = parseInt(pageSize);
-    const offset = (parseInt(page) - 1) * limit;
-    sql += ' LIMIT ? OFFSET ?';
-    params.push(limit, offset);
-
-    // Execute query
-    const entries = db.prepare(sql).all(...params);
-
-    // Return clean CEP events, supplementing with DB column values
-    const parsedEntries = entries.map(row => {
-      const cepEvent = tryParseJson(row.data);
-      if (!cepEvent) return null;
-
-      // Supplement event data with DB column values for older entries
-      // where these weren't stored in the JSON blob
-      if (!cepEvent.data) cepEvent.data = {};
-      if (row.durationMs != null && cepEvent.data.durationMs == null) {
-        cepEvent.data.durationMs = row.durationMs;
-      }
-      if (row.status && !cepEvent.data.status) {
-        cepEvent.data.status = row.status;
-      }
-
-      // Decode base64-encoded fields from older entries
-      decodeBase64Fields(cepEvent);
-
-      // Add __key for Svelte's keyed each blocks
-      return {
-        __key: row.key,
-        taskRunId: row.taskRunId || null,
-        attemptKey: row.attemptKey || null,
-        ...cepEvent
-      };
-    }).filter(Boolean);
-
-    res.json({
-      entries: parsedEntries,
-      total,
-      page: parseInt(page),
-      pageSize: limit,
-      totalPages: Math.ceil(total / limit)
-    });
-  } catch (error) {
-    logger.error('Query error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// API: Get facets (unique values for filters)
-app.get('/api/facets', (req, res) => {
-  try {
-    const kinds = db.prepare('SELECT DISTINCT kind FROM entries WHERE kind IS NOT NULL ORDER BY kind').all();
-    const types = db.prepare('SELECT DISTINCT type FROM entries WHERE type IS NOT NULL ORDER BY type').all();
-    const tools = db.prepare('SELECT DISTINCT tool FROM entries WHERE tool IS NOT NULL ORDER BY tool').all();
-    const subagents = db.prepare('SELECT DISTINCT subagentType FROM entries WHERE subagentType IS NOT NULL ORDER BY subagentType').all();
-    const roots = db.prepare('SELECT DISTINCT rootSessionID FROM entries WHERE rootSessionID IS NOT NULL').all();
-    const allTags = db.prepare('SELECT DISTINCT tag FROM tags ORDER BY tag').all();
-
-    // CEP-specific facets
-    const runners = db.prepare('SELECT DISTINCT runner FROM entries WHERE runner IS NOT NULL ORDER BY runner').all();
-    const events = db.prepare('SELECT DISTINCT event FROM entries WHERE event IS NOT NULL ORDER BY event').all();
-    const attempts = db.prepare(`
-      SELECT DISTINCT task_key
-      FROM task_runs
-      WHERE source = 'derived_attempt'
-      ORDER BY started_at DESC, task_key DESC
-    `).all();
-
-    res.json({
-      kinds: kinds.map(r => r.kind),
-      types: types.map(r => r.type),
-      tools: tools.map(r => r.tool),
-      subagents: subagents.map(r => r.subagentType),
-      roots: roots.map(r => r.rootSessionID),
-      allTags: allTags.map(r => r.tag),
-      runners: runners.map(r => r.runner),
-      events: events.map(r => r.event),
-      attempts: attempts.map(r => r.task_key)
-    });
-  } catch (error) {
-    logger.error('Facets error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// API: Get statistics
-app.get('/api/stats', (req, res) => {
-  try {
-    const total = db.prepare('SELECT COUNT(*) as count FROM entries').get();
-    const avgDur = db.prepare(`
-      SELECT AVG(durationMs) as avg
-      FROM entries
-      WHERE event = 'tool.end' AND durationMs IS NOT NULL
-    `).get();
-
-    res.json({
-      total: total.count,
-      avgDur: avgDur.avg ? Math.round(avgDur.avg) : null
-    });
-  } catch (error) {
-    logger.error('Stats error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// API: Get all analyses (history)
-app.get('/api/analyses-history', (req, res) => {
-  try {
-    const analyses = db.prepare(`
-      SELECT id, timestamp, model, event_count, analysis, prompt
-      FROM analyses
-      ORDER BY timestamp DESC
-    `).all();
-
-    res.json(analyses);
-  } catch (error) {
-    logger.error('Get analyses error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// API: Get single analysis
-app.get('/api/analyses-history/:id', (req, res) => {
-  try {
-    const { id } = parseOrRespond(analysisIdParamsSchema, req.params, res) || {};
-    if (!id) return;
-    const analysis = db.prepare(`
-      SELECT * FROM analyses WHERE id = ?
-    `).get(id);
-
-    if (!analysis) {
-      return res.status(404).json({ error: 'Analysis not found' });
-    }
-
-    analysis.event_keys = tryParseJson(analysis.event_keys);
-    if (!analysis.event_keys) {
-      return res.status(500).json({ error: 'Failed to parse saved analysis event keys' });
-    }
-    res.json(analysis);
-  } catch (error) {
-    logger.error('Get analysis error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// API: Save externally-generated analysis (e.g. from CLI via MCP)
-app.post('/api/analyses', (req, res) => {
-  try {
-    const { model, event_count, event_keys, analysis, prompt } = parseOrRespond(analysesCreateBodySchema, req.body, res) || {};
-    if (!analysis) return;
-
-    const analysisId = db.prepare(`
-      INSERT INTO analyses (timestamp, model, event_count, event_keys, analysis, prompt)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(
-      new Date().toISOString(),
-      model || 'claude-code-cli',
-      event_count || 0,
-      JSON.stringify(event_keys || []),
-      analysis,
-      prompt || null
-    ).lastInsertRowid;
-
-    res.json({ success: true, analysisId });
-  } catch (error) {
-    logger.error('Save analysis error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// API: Delete analysis
-app.delete('/api/analyses-history/:id', (req, res) => {
-  try {
-    const { id } = parseOrRespond(analysisIdParamsSchema, req.params, res) || {};
-    if (!id) return;
-    db.prepare('DELETE FROM analyses WHERE id = ?').run(id);
-    res.json({ success: true });
-  } catch (error) {
-    logger.error('Delete analysis error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
 // API: SSE stream for real-time events
 logger.debug('[INIT] Registering SSE endpoint at /api/events/stream');
 app.get('/api/events/stream', (req, res) => {
@@ -1110,153 +829,6 @@ app.get('/api/events/stream', (req, res) => {
   logger.debug('SSE client connected');
 });
 
-// API: Analyze selected events with LLM
-app.post('/api/analyze', async (req, res) => {
-  try {
-    const { keys, model, apiKey, prompt } = parseOrRespond(analyzeBodySchema, req.body, res) || {};
-    if (!keys) return;
-
-    // Retrieve selected events from database
-    const placeholders = keys.map(() => '?').join(',');
-    const events = db.prepare(`
-      SELECT data FROM entries
-      WHERE key IN (${placeholders})
-      ORDER BY ts ASC
-    `).all(...keys);
-
-    if (events.length === 0) {
-      return res.status(404).json({ error: 'No events found' });
-    }
-
-    // Parse events
-    const parsedEvents = events
-      .map(row => tryParseJson(row.data))
-      .filter(Boolean);
-
-    if (parsedEvents.length === 0) {
-      return res.status(500).json({ error: 'Failed to parse selected events' });
-    }
-
-    // Format events for LLM
-    const eventsText = parsedEvents.map((e, i) => {
-      return `Event ${i + 1}:
-- Time: ${e.ts}
-- Type: ${e.event}
-- Runner: ${e.runner}
-- Tool: ${e.data?.tool || 'N/A'}
-- Status: ${e.data?.status || 'N/A'}
-- Duration: ${e.data?.durationMs ? `${e.data.durationMs}ms` : 'N/A'}
-- Args: ${JSON.stringify(e.data?.args || {}, null, 2)}`;
-    }).join('\n\n');
-
-    // Prepare LLM request
-    const systemPrompt = prompt || `You are an AI agent behavior analyst. Analyze the following sequence of agent tool executions and provide insights about:
-1. What the agent was trying to accomplish
-2. Efficiency and performance patterns
-3. Any potential issues or improvements
-4. Overall workflow assessment
-
-Be concise and actionable.`;
-
-    const userMessage = `Analyze these ${parsedEvents.length} agent events:\n\n${eventsText}`;
-
-    // Call Anthropic API
-    const analysis = await callAnthropicAPI(model || 'claude-sonnet-4-6', systemPrompt, userMessage, apiKey);
-
-    // Save analysis to database
-    const analysisId = db.prepare(`
-      INSERT INTO analyses (timestamp, model, event_count, event_keys, analysis, prompt)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(
-      new Date().toISOString(),
-      model || 'claude-sonnet-4-6',
-      parsedEvents.length,
-      JSON.stringify(keys),
-      analysis,
-      prompt || null
-    ).lastInsertRowid;
-
-    res.json({
-      success: true,
-      analysis,
-      eventCount: parsedEvents.length,
-      model: model || 'claude-sonnet-4-6',
-      provider: 'anthropic',
-      analysisId
-    });
-
-  } catch (error) {
-    logger.error('Analysis error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// API: Save selected events for MCP bridge (CLI analysis)
-app.post('/api/selection', (req, res) => {
-  try {
-    const { keys } = parseOrRespond(selectionBodySchema, req.body, res) || {};
-    if (!keys) return;
-
-    // Fetch full event data for the selected keys
-    const placeholders = keys.map(() => '?').join(',');
-    const rows = db.prepare(`
-      SELECT key, data FROM entries
-      WHERE key IN (${placeholders})
-      ORDER BY ts ASC
-    `).all(...keys);
-
-    if (rows.length === 0) {
-      return res.status(404).json({ error: 'No events found for the provided keys' });
-    }
-
-    const events = rows.map(row => {
-      const cepEvent = tryParseJson(row.data);
-      if (!cepEvent) return null;
-      decodeBase64Fields(cepEvent);
-      return { __key: row.key, ...cepEvent };
-    }).filter(Boolean);
-
-    if (events.length === 0) {
-      return res.status(500).json({ error: 'Failed to parse selected event data' });
-    }
-
-    const selection = {
-      timestamp: new Date().toISOString(),
-      count: events.length,
-      events
-    };
-
-    // Write to selection.json next to the database file
-    const selectionPath = path.join(path.dirname(dbPath), 'selection.json');
-    fs.writeFileSync(selectionPath, JSON.stringify(selection, null, 2));
-
-    res.json({ success: true, count: events.length });
-  } catch (error) {
-    logger.error('Save selection error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// API: Get current selection
-app.get('/api/selection', (req, res) => {
-  try {
-    const selectionPath = path.join(path.dirname(dbPath), 'selection.json');
-
-    if (!fs.existsSync(selectionPath)) {
-      return res.json({ timestamp: null, count: 0, events: [] });
-    }
-
-    const data = tryParseJson(fs.readFileSync(selectionPath, 'utf-8'));
-    if (!data) {
-      return res.status(500).json({ error: 'Failed to parse selection file' });
-    }
-    res.json(data);
-  } catch (error) {
-    logger.error('Get selection error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
 // Helper function to call Anthropic API
 async function callAnthropicAPI(model, systemPrompt, userMessage, apiKey) {
   const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -1284,151 +856,6 @@ async function callAnthropicAPI(model, systemPrompt, userMessage, apiKey) {
   const data = await response.json();
   return data.content[0].text;
 }
-
-// API: Get tags for entries
-app.get('/api/tags', (req, res) => {
-  try {
-    const tags = db.prepare('SELECT entry_key, tag FROM tags').all();
-
-    const tagsByKey = {};
-    for (const row of tags) {
-      if (!tagsByKey[row.entry_key]) {
-        tagsByKey[row.entry_key] = [];
-      }
-      tagsByKey[row.entry_key].push(row.tag);
-    }
-
-    res.json(tagsByKey);
-  } catch (error) {
-    logger.error('Get tags error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// API: Add/remove tag
-app.post('/api/tags', (req, res) => {
-  try {
-    const { entryKey, tag, action } = parseOrRespond(tagMutationBodySchema, req.body, res) || {};
-    if (!action) return;
-
-    if (action === 'add') {
-      db.prepare('INSERT OR IGNORE INTO tags (entry_key, tag) VALUES (?, ?)').run(entryKey, tag);
-    } else if (action === 'remove') {
-      db.prepare('DELETE FROM tags WHERE entry_key = ? AND tag = ?').run(entryKey, tag);
-    }
-
-    res.json({ success: true });
-  } catch (error) {
-    logger.error('Tag operation error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// API: Get notes
-app.get('/api/notes', (req, res) => {
-  try {
-    const notes = db.prepare('SELECT entry_key, note FROM notes').all();
-
-    const notesByKey = {};
-    for (const row of notes) {
-      notesByKey[row.entry_key] = row.note;
-    }
-
-    res.json(notesByKey);
-  } catch (error) {
-    logger.error('Get notes error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// API: Set note
-app.post('/api/notes', (req, res) => {
-  try {
-    const { entryKey, note } = parseOrRespond(noteMutationBodySchema, req.body, res) || {};
-    if (!entryKey) return;
-
-    if (note && note.trim()) {
-      db.prepare('INSERT OR REPLACE INTO notes (entry_key, note) VALUES (?, ?)').run(entryKey, note);
-    } else {
-      db.prepare('DELETE FROM notes WHERE entry_key = ?').run(entryKey);
-    }
-
-    res.json({ success: true });
-  } catch (error) {
-    logger.error('Note operation error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// API: Export tags and notes
-app.get('/api/export', (req, res) => {
-  try {
-    const tags = db.prepare('SELECT entry_key, tag FROM tags').all();
-    const notes = db.prepare('SELECT entry_key, note FROM notes').all();
-
-    const tagsByKey = {};
-    for (const row of tags) {
-      if (!tagsByKey[row.entry_key]) {
-        tagsByKey[row.entry_key] = [];
-      }
-      tagsByKey[row.entry_key].push(row.tag);
-    }
-
-    const notesByKey = {};
-    for (const row of notes) {
-      notesByKey[row.entry_key] = row.note;
-    }
-
-    res.json({
-      exportedAt: new Date().toISOString(),
-      tagsByKey,
-      notesByKey
-    });
-  } catch (error) {
-    logger.error('Export error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// API: Import tags and notes
-app.post('/api/import', (req, res) => {
-  try {
-    const parsedBody = parseOrRespond(importBodySchema, req.body, res);
-    if (!parsedBody) return;
-
-    const { tagsByKey, notesByKey } = parsedBody;
-
-    // Atomic replace: delete + insert in a single transaction
-    const insertTag = db.prepare('INSERT OR IGNORE INTO tags (entry_key, tag) VALUES (?, ?)');
-    const insertNote = db.prepare('INSERT OR REPLACE INTO notes (entry_key, note) VALUES (?, ?)');
-
-    const importAll = db.transaction(() => {
-      db.exec('DELETE FROM tags');
-      db.exec('DELETE FROM notes');
-
-      if (tagsByKey) {
-        for (const [key, tags] of Object.entries(tagsByKey)) {
-          for (const tag of tags) {
-            insertTag.run(key, tag);
-          }
-        }
-      }
-
-      if (notesByKey) {
-        for (const [key, note] of Object.entries(notesByKey)) {
-          insertNote.run(key, note);
-        }
-      }
-    });
-
-    importAll();
-
-    res.json({ success: true });
-  } catch (error) {
-    logger.error('Import error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
 
 // Start server
 app.listen(PORT, HOST, () => {
