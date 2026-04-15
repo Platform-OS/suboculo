@@ -713,6 +713,40 @@ ${analysisResult.analysis}
     return e?.data?.agentType || e?.data?.agentId || e?.subagentType || "lead";
   }
 
+  function isClaudeMcpToolEvent(entry) {
+    return entry?.runner === "claude-code" && typeof entry?.data?.tool === "string" && entry.data.tool.startsWith("mcp__");
+  }
+
+  function durationColumnLabel(entry) {
+    return isClaudeMcpToolEvent(entry) ? "Runner elapsed" : "Duration";
+  }
+
+  function durationDisplay(entry) {
+    const durationMs = entry?.data?.durationMs;
+    if (typeof durationMs !== "number") return "";
+    return durationMs === 0 ? "<1ms" : `${durationMs}ms`;
+  }
+
+  function durationSourceLabel(source) {
+    if (source === "reported_by_runner") return "runner-reported";
+    if (source === "derived_hook_timestamps") return "derived from hooks";
+    return source || "";
+  }
+
+  function durationMeaningLabel(entry) {
+    if (entry?.data?.durationKind === "mcp_roundtrip" || isClaudeMcpToolEvent(entry)) {
+      return "Claude-observed MCP round-trip";
+    }
+    if (entry?.data?.durationKind === "hook_wall_time") {
+      return "Hook-observed wall time";
+    }
+    return "Tool/event duration";
+  }
+
+  function formatDurationValue(ms) {
+    return typeof ms === "number" ? (ms === 0 ? "<1ms" : `${ms}ms`) : "—";
+  }
+
   function shortAttemptLabel(attemptKey) {
     if (!attemptKey) return "";
     const marker = "::attempt:";
@@ -982,7 +1016,7 @@ ${analysisResult.analysis}
                   <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Tool</th>
                   <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Agent</th>
                   <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Status</th>
-                  <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Duration</th>
+                  <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Elapsed</th>
                   <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Tokens</th>
                   <th class="px-4 py-3 font-semibold text-muted-foreground uppercase text-xs tracking-wide">Tags</th>
                 </tr>
@@ -994,7 +1028,7 @@ ${analysisResult.analysis}
                   {@const isChecked = selectedEntries.has(key)}
                   {@const tags = tagsByKey[key] || []}
                   {@const durationMs = e.data?.durationMs}
-                  {@const dur = typeof durationMs === "number" ? (durationMs === 0 ? "<1ms" : `${durationMs}ms`) : ""}
+                  {@const dur = durationDisplay(e)}
                   {@const cepEvent = e.event || ""}
                   {@const cepRunner = e.runner || "unknown"}
                   {@const cepStatus = e.data?.status || ""}
@@ -1089,7 +1123,7 @@ ${analysisResult.analysis}
                         <span class="text-muted-foreground">—</span>
                       {/if}
                     </td>
-                    <td class="px-4 py-3 text-xs font-medium {typeof durationMs === 'number' && durationMs > 1000 ? 'text-orange-600' : ''}" on:click={() => selectEntry(key)}>
+                    <td class="px-4 py-3 text-xs font-medium {typeof durationMs === 'number' && durationMs > 1000 ? 'text-orange-600' : ''}" on:click={() => selectEntry(key)} title={typeof durationMs === "number" ? `${durationColumnLabel(e)}${e.data?.durationSource ? ` • ${durationSourceLabel(e.data.durationSource)}` : ""}` : undefined}>
                       {dur}
                     </td>
                     <td class="px-4 py-3 text-xs font-medium" on:click={() => selectEntry(key)}>
@@ -1224,7 +1258,23 @@ ${analysisResult.analysis}
                   </div>
                 {/if}
                 {#if typeof selected.data?.durationMs === "number"}
-                  <div><span class="font-medium">Duration:</span> {selected.data.durationMs === 0 ? "<1ms" : `${selected.data.durationMs}ms`}</div>
+                  <div><span class="font-medium">{durationColumnLabel(selected)}:</span> {durationDisplay(selected)}</div>
+                  <div><span class="font-medium">Meaning:</span> {durationMeaningLabel(selected)}</div>
+                  {#if selected.data?.durationSource}
+                    <div><span class="font-medium">Timing source:</span> {durationSourceLabel(selected.data.durationSource)}</div>
+                  {/if}
+                  {#if selected.data?.timingBreakdown}
+                    <div class="pt-1"><span class="font-medium">Hook wall time:</span> {formatDurationValue(selected.data.timingBreakdown.hookWallTimeMs)}</div>
+                    {#if selected.data.timingBreakdown.runnerElapsedMs != null}
+                      <div><span class="font-medium">Runner elapsed:</span> {formatDurationValue(selected.data.timingBreakdown.runnerElapsedMs)}</div>
+                    {/if}
+                    {#if selected.data.timingBreakdown.preRunnerOverheadMs != null}
+                      <div><span class="font-medium">Pre-runner overhead:</span> {formatDurationValue(selected.data.timingBreakdown.preRunnerOverheadMs)}</div>
+                    {/if}
+                    {#if selected.data.timingBreakdown.postRunnerOverheadMs != null}
+                      <div><span class="font-medium">Post-runner overhead:</span> {formatDurationValue(selected.data.timingBreakdown.postRunnerOverheadMs)}</div>
+                    {/if}
+                  {/if}
                 {/if}
               </div>
 

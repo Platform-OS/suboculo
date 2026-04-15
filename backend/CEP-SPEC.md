@@ -75,6 +75,7 @@ Emitted when a tool invocation completes.
 - `args` (object): Tool arguments (same as tool.start)
 - `durationMs` (number): Execution duration in milliseconds
 - `status` (string): One of "success", "error", "timeout", "cancelled"
+- `durationSource` (string, optional): One of "reported_by_runner", "derived_hook_timestamps"
 - `outputLen` (number, optional): Length of output
 - `outputPreview` (string, optional): Preview of output
 
@@ -92,6 +93,7 @@ Emitted when a tool invocation completes.
       "filePath": "/home/user/projects/scraper/main.py"
     },
     "durationMs": 42,
+    "durationSource": "reported_by_runner",
     "status": "success",
     "outputLen": 1024,
     "outputPreview": "import requests\nfrom bs4 import Beautiful..."
@@ -175,6 +177,14 @@ When building an adapter to translate from a native runner format to CEP:
 3. **Map status codes**: Translate runner-specific status to CEP status enum
 4. **Preserve original data**: Put runner-specific fields in `meta` object
 5. **Pair events**: For tool.start/tool.end, use the same `traceId`
+6. **Record timing provenance**: Prefer runner-reported duration when available; otherwise derive duration from timestamps and set `data.durationSource` accordingly
+
+## Timing Notes
+
+- `data.durationMs` is a duration value, not a guarantee of tool-internal execution time
+- `data.durationSource=reported_by_runner` means the runner supplied the duration directly
+- `data.durationSource=derived_hook_timestamps` means the duration was derived by pairing start/end timestamps
+- duration precision and cross-runner comparability depend on integration quality
 
 ## Ingestion Methods
 

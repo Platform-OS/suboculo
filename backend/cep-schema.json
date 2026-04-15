@@ -69,7 +69,12 @@
         },
         "durationMs": {
           "type": "number",
-          "description": "Duration in milliseconds (for tool.end)"
+          "description": "Duration in milliseconds for tool.end; may be runner-reported or derived, see durationSource"
+        },
+        "durationSource": {
+          "type": "string",
+          "enum": ["reported_by_runner", "derived_hook_timestamps"],
+          "description": "Provenance of durationMs for tool.end"
         },
         "status": {
           "type": "string",

@@ -166,6 +166,7 @@ function insertCEPEvent(event) {
   const data = event.data || {};
   const tool = data.tool || null;
   let durationMs = data.durationMs || null;
+  let durationSource = typeof data.durationSource === 'string' ? data.durationSource : null;
   const outputLen = data.outputLen || null;
   const outputPreview = data.outputPreview || null;
   const title = data.title || null;
@@ -174,8 +175,27 @@ function insertCEPEvent(event) {
   const childSessionId = data.childSessionId || null;
   const args = data.args ? JSON.stringify(data.args) : null;
   const status = data.status || null;
+  let hookStartedAt = null;
+  let runnerTiming = null;
 
-  // Calculate duration for tool.end events
+  // Prefer runner-reported elapsed time from Claude transcript progress events
+  if (event.event === 'tool.end' && event.traceId && !durationMs) {
+    try {
+      runnerTiming = readClaudeMcpTimingFromTranscript(
+        data.transcriptPath,
+        event.traceId,
+        event.ts
+      );
+      if (runnerTiming?.runnerElapsedMs != null) {
+        durationMs = runnerTiming.runnerElapsedMs;
+        durationSource = 'reported_by_runner';
+      }
+    } catch {
+      // Non-fatal: fall back to hook timestamp pairing
+    }
+  }
+
+  // Fallback: calculate duration from hook timestamps
   if (event.event === 'tool.end' && event.traceId && !durationMs) {
     try {
       const startEvent = db.prepare(`
@@ -186,12 +206,31 @@ function insertCEPEvent(event) {
 
       if (startEvent) {
         const startData = JSON.parse(startEvent.data);
+        hookStartedAt = startData.ts || null;
         const startTime = new Date(startData.ts);
         const endTime = new Date(event.ts);
         durationMs = endTime - startTime;
+        durationSource = 'derived_hook_timestamps';
       }
-    } catch (err) {
+    } catch {
       // Duration calculation failed, continue without it
+    }
+  }
+
+  if (durationMs != null && !durationSource) {
+    durationSource = 'reported_by_runner';
+  }
+
+  if (!hookStartedAt && event.event === 'tool.end' && event.traceId) {
+    try {
+      const startEvent = db.prepare(`
+        SELECT ts FROM entries
+        WHERE traceId = ? AND event = 'tool.start'
+        ORDER BY ts DESC LIMIT 1
+      `).get(event.traceId);
+      hookStartedAt = startEvent?.ts || null;
+    } catch {
+      // Non-fatal
     }
   }
 
@@ -202,6 +241,28 @@ function insertCEPEvent(event) {
   if (durationMs != null) {
     if (!event.data) event.data = {};
     event.data.durationMs = durationMs;
+    if (durationSource) {
+      event.data.durationSource = durationSource;
+    }
+  }
+  if (event.event === 'tool.end') {
+    if (!event.data) event.data = {};
+    const timingBreakdown = {
+      hookStartedAt,
+      hookCompletedAt: event.ts || null,
+      runnerStartedAt: runnerTiming?.runnerStartedAt || null,
+      runnerCompletedAt: runnerTiming?.runnerCompletedAt || null,
+      hookWallTimeMs: diffMs(hookStartedAt, event.ts),
+      runnerElapsedMs: runnerTiming?.runnerElapsedMs ?? null,
+      preRunnerOverheadMs: diffMs(hookStartedAt, runnerTiming?.runnerStartedAt),
+      postRunnerOverheadMs: diffMs(runnerTiming?.runnerCompletedAt, event.ts)
+    };
+    if (Object.values(timingBreakdown).some((value) => value != null)) {
+      event.data.timingBreakdown = timingBreakdown;
+    }
+    event.data.durationKind = durationSource === 'reported_by_runner' && runnerTiming?.runnerElapsedMs != null
+      ? 'mcp_roundtrip'
+      : 'hook_wall_time';
   }
   if (status && (!event.data || !event.data.status)) {
     if (!event.data) event.data = {};
@@ -313,6 +374,88 @@ const TS_RE = /"timestamp":"([^"]+)"/;
 function extractTimestamp(line) {
   const m = TS_RE.exec(line);
   return m ? m[1] : null;
+}
+
+function diffMs(startTs, endTs) {
+  if (!startTs || !endTs) return null;
+  const start = new Date(startTs);
+  const end = new Date(endTs);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+  return end - start;
+}
+
+function readClaudeMcpTimingFromTranscript(transcriptPath, traceId, endTs) {
+  if (!transcriptPath || !traceId || !endTs || !existsSync(transcriptPath)) return null;
+
+  const { size: fileSize } = statSync(transcriptPath);
+  if (fileSize === 0) return null;
+
+  const offset = findOffsetByTimestamp(
+    transcriptPath,
+    new Date(new Date(endTs).getTime() - 60000).toISOString()
+  );
+  const upperTs = new Date(new Date(endTs).getTime() + 5000).toISOString();
+  const buf = Buffer.alloc(64 * 1024);
+  let fd;
+  let startedAt = null;
+  let completedAt = null;
+  let elapsedTimeMs = null;
+
+  try {
+    fd = openSync(transcriptPath, 'r');
+    let pos = offset;
+
+    while (pos < fileSize) {
+      const { line, nextOffset } = readLineAt(fd, pos, fileSize, buf);
+      if (!line) break;
+      pos = nextOffset;
+
+      const ts = extractTimestamp(line);
+      if (ts && ts > upperTs) break;
+
+      if (!line.includes(traceId)) continue;
+      if (!line.includes('"mcp_progress"')) continue;
+      let entry;
+      try { entry = JSON.parse(line); } catch { continue; }
+
+      if (entry?.type !== 'progress') continue;
+      if (entry?.toolUseID !== traceId && entry?.parentToolUseID !== traceId) continue;
+
+      const data = entry.data || {};
+      if (data.type !== 'mcp_progress') continue;
+
+      if (data.status === 'started' && !startedAt) {
+        startedAt = entry.timestamp || ts || null;
+        continue;
+      }
+
+      if (data.status !== 'completed') continue;
+
+      completedAt = entry.timestamp || ts || null;
+      const elapsed = data.elapsedTimeMs;
+      if (typeof elapsed === 'number' && Number.isFinite(elapsed) && elapsed >= 0) {
+        elapsedTimeMs = elapsed;
+      }
+
+      if (completedAt && elapsedTimeMs != null) {
+        break;
+      }
+    }
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+
+  if (!startedAt && completedAt && elapsedTimeMs != null) {
+    startedAt = new Date(new Date(completedAt).getTime() - elapsedTimeMs).toISOString();
+  }
+
+  if (!startedAt && !completedAt && elapsedTimeMs == null) return null;
+
+  return {
+    runnerStartedAt: startedAt,
+    runnerCompletedAt: completedAt,
+    runnerElapsedMs: elapsedTimeMs ?? diffMs(startedAt, completedAt)
+  };
 }
 
 // Binary search JSONL file for byte offset of first line with timestamp >= targetTs
