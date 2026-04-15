@@ -1,8 +1,256 @@
+const { existsSync, openSync, readSync, closeSync, statSync } = require('fs');
+
 const {
   parseOrRespond,
   eventBodySchema,
   eventBatchBodySchema
 } = require('./validation');
+
+function seekPastNewline(fd, byteOffset, fileSize, buf) {
+  let pos = byteOffset;
+  while (pos < fileSize) {
+    const toRead = Math.min(buf.length, fileSize - pos);
+    const bytesRead = readSync(fd, buf, 0, toRead, pos);
+    if (bytesRead === 0) return fileSize;
+    for (let i = 0; i < bytesRead; i++) {
+      if (buf[i] === 0x0A) return pos + i + 1;
+    }
+    pos += bytesRead;
+  }
+  return fileSize;
+}
+
+function readLineAt(fd, offset, fileSize, buf) {
+  if (offset >= fileSize) return { line: null, nextOffset: fileSize };
+  let result = '';
+  let pos = offset;
+  while (pos < fileSize) {
+    const toRead = Math.min(buf.length, fileSize - pos);
+    const bytesRead = readSync(fd, buf, 0, toRead, pos);
+    if (bytesRead === 0) break;
+    const chunk = buf.toString('utf8', 0, bytesRead);
+    const nlIdx = chunk.indexOf('\n');
+    if (nlIdx !== -1) {
+      result += chunk.substring(0, nlIdx);
+      return { line: result, nextOffset: pos + nlIdx + 1 };
+    }
+    result += chunk;
+    pos += bytesRead;
+  }
+  return { line: result || null, nextOffset: fileSize };
+}
+
+const TS_RE = /"timestamp":"([^"]+)"/;
+function extractTimestamp(line) {
+  const m = TS_RE.exec(line);
+  return m ? m[1] : null;
+}
+
+function diffMs(startTs, endTs) {
+  if (!startTs || !endTs) return null;
+  const start = new Date(startTs);
+  const end = new Date(endTs);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+  return end - start;
+}
+
+function findOffsetByTimestamp(filePath, targetTs) {
+  const { size: fileSize } = statSync(filePath);
+  if (fileSize === 0) return 0;
+
+  let fd;
+  const buf = Buffer.alloc(8192);
+  const target = new Date(new Date(targetTs).getTime() - 2000).toISOString();
+
+  try {
+    fd = openSync(filePath, 'r');
+
+    let lo = 0;
+    let hi = fileSize;
+    let bestOffset = fileSize;
+
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      const lineStart = mid === 0 ? 0 : seekPastNewline(fd, mid, fileSize, buf);
+
+      if (lineStart >= fileSize) {
+        hi = mid;
+        continue;
+      }
+
+      const { line, nextOffset } = readLineAt(fd, lineStart, fileSize, buf);
+      if (!line) {
+        hi = mid;
+        continue;
+      }
+
+      const ts = extractTimestamp(line);
+      if (!ts || ts < target) {
+        lo = nextOffset;
+      } else {
+        hi = mid;
+        bestOffset = lineStart;
+      }
+    }
+
+    return bestOffset;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+function readClaudeMcpTimingFromTranscript(transcriptPath, traceId, endTs) {
+  if (!transcriptPath || !traceId || !endTs || !existsSync(transcriptPath)) return null;
+
+  const { size: fileSize } = statSync(transcriptPath);
+  if (fileSize === 0) return null;
+
+  const offset = findOffsetByTimestamp(
+    transcriptPath,
+    new Date(new Date(endTs).getTime() - 60000).toISOString()
+  );
+  const upperTs = new Date(new Date(endTs).getTime() + 5000).toISOString();
+  const buf = Buffer.alloc(64 * 1024);
+  let fd;
+  let startedAt = null;
+  let completedAt = null;
+  let elapsedTimeMs = null;
+
+  try {
+    fd = openSync(transcriptPath, 'r');
+    let pos = offset;
+
+    while (pos < fileSize) {
+      const { line, nextOffset } = readLineAt(fd, pos, fileSize, buf);
+      if (!line) break;
+      pos = nextOffset;
+
+      const ts = extractTimestamp(line);
+      if (ts && ts > upperTs) break;
+
+      if (!line.includes(traceId)) continue;
+      if (!line.includes('"mcp_progress"')) continue;
+      let entry;
+      try { entry = JSON.parse(line); } catch { continue; }
+
+      if (entry?.type !== 'progress') continue;
+      if (entry?.toolUseID !== traceId && entry?.parentToolUseID !== traceId) continue;
+
+      const data = entry.data || {};
+      if (data.type !== 'mcp_progress') continue;
+      if (data.status === 'started' && !startedAt) {
+        startedAt = entry.timestamp || ts || null;
+        continue;
+      }
+      if (data.status !== 'completed') continue;
+
+      completedAt = entry.timestamp || ts || null;
+      const elapsed = data.elapsedTimeMs;
+      if (typeof elapsed === 'number' && Number.isFinite(elapsed) && elapsed >= 0) {
+        elapsedTimeMs = elapsed;
+      }
+      if (completedAt && elapsedTimeMs != null) {
+        break;
+      }
+    }
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+
+  if (!startedAt && completedAt && elapsedTimeMs != null) {
+    startedAt = new Date(new Date(completedAt).getTime() - elapsedTimeMs).toISOString();
+  }
+
+  if (!startedAt && !completedAt && elapsedTimeMs == null) return null;
+
+  return {
+    runnerStartedAt: startedAt,
+    runnerCompletedAt: completedAt,
+    runnerElapsedMs: elapsedTimeMs ?? diffMs(startedAt, completedAt)
+  };
+}
+
+function attachBestDuration(event, db, tryParseJson) {
+  if (event.event !== 'tool.end' || !event.traceId) return;
+
+  if (!event.data) event.data = {};
+  if (typeof event.data.durationMs === 'number' && !event.data.durationSource) {
+    event.data.durationSource = 'reported_by_runner';
+    event.data.durationKind = 'reported_elapsed';
+    return;
+  }
+  if (typeof event.data.durationMs === 'number') return;
+
+  let hookStartedAt = null;
+  let runnerTiming = null;
+
+  try {
+    runnerTiming = readClaudeMcpTimingFromTranscript(
+      event.data.transcriptPath,
+      event.traceId,
+      event.ts
+    );
+    if (runnerTiming?.runnerElapsedMs != null) {
+      event.data.durationMs = runnerTiming.runnerElapsedMs;
+      event.data.durationSource = 'reported_by_runner';
+    }
+  } catch {
+    // fall through to hook-paired timing
+  }
+
+  try {
+    const startEvent = db.prepare(`
+      SELECT data FROM entries
+      WHERE traceId = ? AND event = 'tool.start'
+      ORDER BY ts DESC LIMIT 1
+    `).get(event.traceId);
+
+    if (startEvent) {
+      const startData = tryParseJson(startEvent.data);
+      if (startData?.ts) {
+        hookStartedAt = startData.ts;
+        const startTime = new Date(startData.ts);
+        const endTime = new Date(event.ts);
+        if (event.data.durationMs == null) {
+          event.data.durationMs = endTime - startTime;
+          event.data.durationSource = 'derived_hook_timestamps';
+        }
+      }
+    }
+  } catch {
+    // non-fatal
+  }
+
+  if (!hookStartedAt) {
+    try {
+      const startRow = db.prepare(`
+        SELECT ts FROM entries
+        WHERE traceId = ? AND event = 'tool.start'
+        ORDER BY ts DESC LIMIT 1
+      `).get(event.traceId);
+      hookStartedAt = startRow?.ts || null;
+    } catch {
+      // non-fatal
+    }
+  }
+
+  const timingBreakdown = {
+    hookStartedAt,
+    hookCompletedAt: event.ts || null,
+    runnerStartedAt: runnerTiming?.runnerStartedAt || null,
+    runnerCompletedAt: runnerTiming?.runnerCompletedAt || null,
+    hookWallTimeMs: diffMs(hookStartedAt, event.ts),
+    runnerElapsedMs: runnerTiming?.runnerElapsedMs ?? null,
+    preRunnerOverheadMs: diffMs(hookStartedAt, runnerTiming?.runnerStartedAt),
+    postRunnerOverheadMs: diffMs(runnerTiming?.runnerCompletedAt, event.ts)
+  };
+  if (Object.values(timingBreakdown).some((value) => value != null)) {
+    event.data.timingBreakdown = timingBreakdown;
+  }
+  event.data.durationKind = event.data.durationSource === 'reported_by_runner' && runnerTiming?.runnerElapsedMs != null
+    ? 'mcp_roundtrip'
+    : 'hook_wall_time';
+}
 
 function registerRuntimeRoutes(app, deps) {
   const {
@@ -23,29 +271,7 @@ function registerRuntimeRoutes(app, deps) {
       const event = parseOrRespond(eventBodySchema, req.body, res);
       if (!event) return;
 
-      if (event.event === 'tool.end' && event.traceId) {
-        try {
-          const startEvent = db.prepare(`
-            SELECT data FROM entries
-            WHERE traceId = ? AND event = 'tool.start'
-            ORDER BY ts DESC LIMIT 1
-          `).get(event.traceId);
-
-          if (startEvent) {
-            const startData = tryParseJson(startEvent.data);
-            if (startData?.ts) {
-              const startTime = new Date(startData.ts);
-              const endTime = new Date(event.ts);
-              const durationMs = endTime - startTime;
-              if (!event.data) event.data = {};
-              event.data.durationMs = durationMs;
-              event.data.durationSource = 'derived_hook_timestamps';
-            }
-          }
-        } catch (err) {
-          logger.warn('Failed to calculate duration:', err.message);
-        }
-      }
+      attachBestDuration(event, db, tryParseJson);
 
       decodeBase64Fields(event);
       sseEmitter.emit('event', {
@@ -93,29 +319,7 @@ function registerRuntimeRoutes(app, deps) {
         });
       }
 
-      if (event.event === 'tool.end' && event.traceId) {
-        try {
-          const startEvent = db.prepare(`
-            SELECT data FROM entries
-            WHERE traceId = ? AND event = 'tool.start'
-            ORDER BY ts DESC LIMIT 1
-          `).get(event.traceId);
-
-          if (startEvent) {
-            const startData = tryParseJson(startEvent.data);
-            if (startData?.ts) {
-              const startTime = new Date(startData.ts);
-              const endTime = new Date(event.ts);
-              const durationMs = endTime - startTime;
-              if (!event.data) event.data = {};
-              event.data.durationMs = durationMs;
-              event.data.durationSource = 'derived_hook_timestamps';
-            }
-          }
-        } catch (err) {
-          logger.warn('Failed to calculate duration:', err.message);
-        }
-      }
+      attachBestDuration(event, db, tryParseJson);
 
       const key = insertCEPEvent(db, event);
       upsertTaskRunForRootSession(event.parentSessionId || event.sessionId);
